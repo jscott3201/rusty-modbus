@@ -1,0 +1,19 @@
+[package]
+name = "modbus-sim"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+modbus-types = { path = "../modbus-types", features = ["serde"] }
+modbus-server = { path = "../modbus-server" }
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "2"
+rand = "0.9"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+modbus-client = { path = "../modbus-client" }

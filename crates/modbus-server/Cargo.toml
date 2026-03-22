@@ -1,0 +1,20 @@
+[package]
+name = "modbus-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+modbus-types = { path = "../modbus-types" }
+modbus-codec = { path = "../modbus-codec" }
+modbus-frame = { path = "../modbus-frame" }
+modbus-tcp = { path = "../modbus-tcp" }
+tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net"] }
+bytes = "1"
+parking_lot = "0.12"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+modbus-client = { path = "../modbus-client" }

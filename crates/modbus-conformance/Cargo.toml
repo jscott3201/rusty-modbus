@@ -1,0 +1,25 @@
+[package]
+name = "modbus-conformance"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+modbus-types = { path = "../modbus-types" }
+modbus-codec = { path = "../modbus-codec" }
+modbus-frame = { path = "../modbus-frame", features = ["rtu"] }
+modbus-tcp = { path = "../modbus-tcp" }
+modbus-rtu = { path = "../modbus-rtu" }
+modbus-tls = { path = "../modbus-tls" }
+modbus-pool = { path = "../modbus-pool" }
+modbus-gateway = { path = "../modbus-gateway" }
+modbus-server = { path = "../modbus-server" }
+modbus-client = { path = "../modbus-client" }
+modbus-sim = { path = "../modbus-sim" }
+bytes = "1"
+futures-util = "0.3"
+zerocopy = { version = "0.8", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }

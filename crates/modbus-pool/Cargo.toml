@@ -1,0 +1,18 @@
+[package]
+name = "modbus-pool"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+modbus-tcp = { path = "../modbus-tcp" }
+modbus-frame = { path = "../modbus-frame" }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+parking_lot = "0.12"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+modbus-types = { path = "../modbus-types" }

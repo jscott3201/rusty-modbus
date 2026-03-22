@@ -1,0 +1,62 @@
+[package]
+name = "modbus-benchmarks"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+modbus-types = { path = "../crates/modbus-types" }
+modbus-codec = { path = "../crates/modbus-codec" }
+modbus-frame = { path = "../crates/modbus-frame", features = ["rtu"] }
+modbus-tcp = { path = "../crates/modbus-tcp" }
+modbus-rtu = { path = "../crates/modbus-rtu" }
+modbus-tls = { path = "../crates/modbus-tls" }
+modbus-client = { path = "../crates/modbus-client" }
+modbus-server = { path = "../crates/modbus-server" }
+modbus-sim = { path = "../crates/modbus-sim" }
+modbus-pool = { path = "../crates/modbus-pool" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "net"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
+bytes = "1"
+hdrhistogram = "7"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.38"
+rcgen = "0.13"
+tempfile = "3"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+[[bin]]
+name = "stress-test"
+path = "src/bin/stress_test.rs"
+
+[[bench]]
+name = "codec"
+harness = false
+
+[[bench]]
+name = "tcp_latency"
+harness = false
+
+[[bench]]
+name = "tcp_throughput"
+harness = false
+
+[[bench]]
+name = "tls_latency"
+harness = false
+
+[[bench]]
+name = "tls_throughput"
+harness = false
+
+[[bench]]
+name = "rtu_tcp_latency"
+harness = false
+
+[[bench]]
+name = "rtu_tcp_throughput"
+harness = false

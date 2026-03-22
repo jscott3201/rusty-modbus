@@ -1,0 +1,30 @@
+[package]
+name = "modbus-tls"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+modbus-types = { path = "../modbus-types" }
+modbus-codec = { path = "../modbus-codec" }
+modbus-frame = { path = "../modbus-frame" }
+modbus-tcp = { path = "../modbus-tcp" }
+tokio = { version = "1", features = ["net", "rt", "time"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+rustls-pemfile = "2"
+x509-parser = "0.16"
+bytes = "1"
+thiserror = "2"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+webpki-roots = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+rcgen = "0.13"
+tempfile = "3"
+modbus-codec = { path = "../modbus-codec" }
+modbus-client = { path = "../modbus-client" }
+modbus-server = { path = "../modbus-server" }
