@@ -1,0 +1,30 @@
+[package]
+name = "rusty-modbus-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Modbus CLI diagnostic tool — read, write, shell, discover"
+
+[[bin]]
+name = "modbus"
+path = "src/main.rs"
+
+[dependencies]
+rusty-modbus = { path = "../rusty-modbus", features = ["full"] }
+rusty-modbus-types = { path = "../rusty-modbus-types" }
+rusty-modbus-client = { path = "../rusty-modbus-client" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rustyline = "17"
+ipnet = "2"
+
+[dev-dependencies]
+rusty-modbus-sim = { path = "../rusty-modbus-sim" }

@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use modbus_frame::frame::{Frame, FrameHeader};
-use modbus_frame::rtu_tcp::RtuOverTcpCodec;
-use modbus_rtu::{RtuOverTcpTransport, RtuTcpRecvStream, RtuTcpSink};
-use modbus_server::handler;
-use modbus_server::store::DataStore;
-use modbus_tcp::TcpConfig;
-use modbus_types::UnitId;
+use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_frame::rtu_tcp::RtuOverTcpCodec;
+use rusty_modbus_rtu::{RtuOverTcpTransport, RtuTcpRecvStream, RtuTcpSink};
+use rusty_modbus_server::handler;
+use rusty_modbus_server::store::DataStore;
+use rusty_modbus_tcp::TcpConfig;
+use rusty_modbus_types::UnitId;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::codec::Framed;
@@ -34,7 +34,7 @@ pub async fn make_rtu_tcp_server<S: DataStore + 'static>(
                 while let Some(Ok(frame)) = stream.next().await {
                     let unit_id = UnitId(frame.unit_id());
                     if let Some(resp_pdu) =
-                        handler::process_request(&frame.pdu, unit_id, conn_store.as_ref(), &modbus_server::DeviceIdentification::default())
+                        handler::process_request(&frame.pdu, unit_id, conn_store.as_ref(), &rusty_modbus_server::DeviceIdentification::default())
                             .await
                     {
                         let resp = Frame {

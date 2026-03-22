@@ -1,0 +1,26 @@
+[package]
+name = "rusty-modbus-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Async Modbus server with pluggable DataStore backend"
+
+[dependencies]
+rusty-modbus-types = { path = "../rusty-modbus-types" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame" }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
+tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net"] }
+bytes = "1"
+parking_lot = "0.12"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+rusty-modbus-client = { path = "../rusty-modbus-client" }

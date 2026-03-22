@@ -3,10 +3,10 @@
 use std::cell::RefCell;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use modbus_benchmarks::frame_builders::*;
-use modbus_benchmarks::helpers::{current_rss_bytes, make_store};
-use modbus_benchmarks::rtu_helpers::{make_rtu_tcp_client, make_rtu_tcp_server};
-use modbus_tcp::transport::{TransportSink, TransportStream};
+use rusty_modbus_benchmarks::frame_builders::*;
+use rusty_modbus_benchmarks::helpers::{current_rss_bytes, make_store};
+use rusty_modbus_benchmarks::rtu_helpers::{make_rtu_tcp_client, make_rtu_tcp_server};
+use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use tokio::runtime::Runtime;
 
 fn bench_rtu_tcp_read_holding_registers_latency(c: &mut Criterion) {

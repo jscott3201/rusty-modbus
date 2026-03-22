@@ -3,12 +3,12 @@
 //! Build complete Frames from codec types for use with raw `TransportSink`/`TransportStream`.
 
 use bytes::Bytes;
-use modbus_codec::request::{
+use rusty_modbus_codec::request::{
     Encode, ReadCoilsRequest, ReadHoldingRegistersRequest, WriteMultipleRegistersRequest,
     WriteSingleRegisterRequest,
 };
-use modbus_frame::frame::{Frame, FrameHeader};
-use modbus_types::{Address, MbapHeader, Quantity};
+use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_types::{Address, MbapHeader, Quantity};
 
 /// Build an MBAP-framed FC 03 Read Holding Registers request.
 pub fn read_holding_registers_mbap(txn_id: u16, unit_id: u8, address: u16, quantity: u16) -> Frame {

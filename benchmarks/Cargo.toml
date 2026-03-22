@@ -1,21 +1,21 @@
 [package]
-name = "modbus-benchmarks"
-version = "0.1.0"
+name = "rusty-modbus-benchmarks"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
-modbus-types = { path = "../crates/modbus-types" }
-modbus-codec = { path = "../crates/modbus-codec" }
-modbus-frame = { path = "../crates/modbus-frame", features = ["rtu"] }
-modbus-tcp = { path = "../crates/modbus-tcp" }
-modbus-rtu = { path = "../crates/modbus-rtu" }
-modbus-tls = { path = "../crates/modbus-tls" }
-modbus-client = { path = "../crates/modbus-client" }
-modbus-server = { path = "../crates/modbus-server" }
-modbus-sim = { path = "../crates/modbus-sim" }
-modbus-pool = { path = "../crates/modbus-pool" }
+rusty-modbus-types = { path = "../crates/rusty-modbus-types" }
+rusty-modbus-codec = { path = "../crates/rusty-modbus-codec" }
+rusty-modbus-frame = { path = "../crates/rusty-modbus-frame", features = ["rtu"] }
+rusty-modbus-tcp = { path = "../crates/rusty-modbus-tcp" }
+rusty-modbus-rtu = { path = "../crates/rusty-modbus-rtu" }
+rusty-modbus-tls = { path = "../crates/rusty-modbus-tls" }
+rusty-modbus-client = { path = "../crates/rusty-modbus-client" }
+rusty-modbus-server = { path = "../crates/rusty-modbus-server" }
+rusty-modbus-sim = { path = "../crates/rusty-modbus-sim" }
+rusty-modbus-pool = { path = "../crates/rusty-modbus-pool" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "net"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
 bytes = "1"
@@ -24,7 +24,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.38"
-rcgen = "0.13"
+rcgen = "0.14"
 tempfile = "3"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 tokio-util = { version = "0.7", features = ["codec"] }

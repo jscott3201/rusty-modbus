@@ -1,0 +1,19 @@
+[package]
+name = "rusty-modbus-codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Modbus sans-IO encode/decode codec (no_std)"
+
+[dependencies]
+rusty-modbus-types = { path = "../rusty-modbus-types", default-features = false }
+
+[features]
+default = []
+std = ["rusty-modbus-types/std"]

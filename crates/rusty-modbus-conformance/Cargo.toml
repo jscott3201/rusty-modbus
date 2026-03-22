@@ -1,0 +1,25 @@
+[package]
+name = "rusty-modbus-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rusty-modbus-types = { path = "../rusty-modbus-types" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame", features = ["rtu"] }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
+rusty-modbus-rtu = { path = "../rusty-modbus-rtu" }
+rusty-modbus-tls = { path = "../rusty-modbus-tls" }
+rusty-modbus-pool = { path = "../rusty-modbus-pool" }
+rusty-modbus-gateway = { path = "../rusty-modbus-gateway" }
+rusty-modbus-server = { path = "../rusty-modbus-server" }
+rusty-modbus-client = { path = "../rusty-modbus-client" }
+rusty-modbus-sim = { path = "../rusty-modbus-sim" }
+bytes = "1"
+futures-util = "0.3"
+zerocopy = { version = "0.8", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }

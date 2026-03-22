@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use hdrhistogram::Histogram;
-use modbus_benchmarks::frame_builders;
-use modbus_benchmarks::helpers::{current_rss_bytes, make_store, make_tcp_client, make_tcp_server_with_store};
-use modbus_benchmarks::rtu_helpers::{make_rtu_tcp_client, make_rtu_tcp_server};
-use modbus_benchmarks::tls_helpers::{generate_test_certs, make_tls_client, make_tls_server};
-use modbus_tcp::transport::{TransportSink, TransportStream};
-use modbus_types::UnitId;
+use rusty_modbus_benchmarks::frame_builders;
+use rusty_modbus_benchmarks::helpers::{current_rss_bytes, make_store, make_tcp_client, make_tcp_server_with_store};
+use rusty_modbus_benchmarks::rtu_helpers::{make_rtu_tcp_client, make_rtu_tcp_server};
+use rusty_modbus_benchmarks::tls_helpers::{generate_test_certs, make_tls_client, make_tls_server};
+use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
+use rusty_modbus_types::UnitId;
 use serde::Serialize;
 use tokio::task::JoinHandle;
 

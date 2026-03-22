@@ -1,0 +1,24 @@
+[package]
+name = "rusty-modbus-pool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Modbus connection pooling with health checks and backoff"
+
+[dependencies]
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame" }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+parking_lot = "0.12"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+rusty-modbus-types = { path = "../rusty-modbus-types" }

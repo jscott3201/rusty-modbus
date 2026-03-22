@@ -1,8 +1,8 @@
 //! TCP transport throughput benchmarks — batched operations.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use modbus_benchmarks::helpers::{make_tcp_client, make_tcp_server};
-use modbus_types::UnitId;
+use rusty_modbus_benchmarks::helpers::{make_tcp_client, make_tcp_server};
+use rusty_modbus_types::UnitId;
 use tokio::runtime::Runtime;
 
 fn bench_tcp_read_holding_registers_throughput(c: &mut Criterion) {

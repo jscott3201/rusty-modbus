@@ -2,15 +2,15 @@
 
 use bytes::BytesMut;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use modbus_codec::request::{
+use rusty_modbus_codec::request::{
     Encode, ReadCoilsRequest, ReadHoldingRegistersRequest, WriteMultipleCoilsRequest,
     WriteMultipleRegistersRequest,
 };
-use modbus_codec::response::{ReadCoilsResponse, ReadHoldingRegistersResponse};
-use modbus_frame::crc::crc16;
-use modbus_frame::frame::{Frame, FrameHeader};
-use modbus_frame::mbap::MbapCodec;
-use modbus_types::{Address, MbapHeader, Quantity};
+use rusty_modbus_codec::response::{ReadCoilsResponse, ReadHoldingRegistersResponse};
+use rusty_modbus_frame::crc::crc16;
+use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_frame::mbap::MbapCodec;
+use rusty_modbus_types::{Address, MbapHeader, Quantity};
 use tokio_util::codec::{Decoder, Encoder};
 
 // ── Encode benchmarks ────────────────────────────────────────────
@@ -142,7 +142,7 @@ fn bench_verify_crc_frame(c: &mut Criterion) {
     let frame = [&data[..], &crc.to_le_bytes()].concat();
 
     c.bench_function("verify_crc_frame", |b| {
-        b.iter(|| black_box(modbus_frame::crc::verify_crc(black_box(&frame))));
+        b.iter(|| black_box(rusty_modbus_frame::crc::verify_crc(black_box(&frame))));
     });
 }
 

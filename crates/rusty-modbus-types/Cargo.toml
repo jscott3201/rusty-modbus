@@ -1,0 +1,21 @@
+[package]
+name = "rusty-modbus-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Modbus protocol types, newtypes, and constants (no_std)"
+
+[dependencies]
+zerocopy = { version = "0.8", features = ["derive"] }
+serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
+
+[features]
+default = []
+std = []
+serde = ["dep:serde"]

@@ -1,0 +1,32 @@
+[package]
+name = "rusty-modbus-rtu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Modbus RTU transport — serial and RTU-over-TCP"
+
+[dependencies]
+rusty-modbus-types = { path = "../rusty-modbus-types" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame", features = ["rtu"] }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
+tokio = { version = "1", features = ["net", "rt", "time", "macros"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+thiserror = "2"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+socket2 = { version = "0.5", features = ["all"] }
+tokio-serial = { version = "5", optional = true }
+
+[features]
+default = ["serial"]
+serial = ["dep:tokio-serial"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

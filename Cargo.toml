@@ -3,6 +3,12 @@ resolver = "3"
 members = ["crates/*", "benchmarks"]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
+authors = ["Justin Scott <jscott3201@gmail.com>"]
+repository = "https://github.com/jscott3201/rusty-modbus"
+homepage = "https://github.com/jscott3201/rusty-modbus"
+keywords = ["modbus", "industrial", "scada", "iot", "protocol"]
+categories = ["network-programming", "embedded"]

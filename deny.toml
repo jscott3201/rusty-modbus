@@ -1,0 +1,44 @@
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+exclude = ["rusty-modbus-benchmarks"]
+
+[advisories]
+ignore = [
+    # rustls-pemfile unmaintained — waiting for upstream migration
+    "RUSTSEC-2025-0134",
+    # time crate DoS via stack exhaustion — transitive dep, low risk for our use
+    "RUSTSEC-2026-0009",
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "MPL-2.0",
+    "Unlicense",
+]
+exceptions = [
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

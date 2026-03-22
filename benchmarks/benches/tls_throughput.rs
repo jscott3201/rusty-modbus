@@ -3,10 +3,10 @@
 use std::cell::RefCell;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use modbus_benchmarks::frame_builders::*;
-use modbus_benchmarks::helpers::make_store;
-use modbus_benchmarks::tls_helpers::{generate_test_certs, make_tls_client, make_tls_server};
-use modbus_tcp::transport::{TransportSink, TransportStream};
+use rusty_modbus_benchmarks::frame_builders::*;
+use rusty_modbus_benchmarks::helpers::make_store;
+use rusty_modbus_benchmarks::tls_helpers::{generate_test_certs, make_tls_client, make_tls_server};
+use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use tokio::runtime::Runtime;
 
 fn bench_tls_read_holding_registers_throughput(c: &mut Criterion) {

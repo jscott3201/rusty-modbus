@@ -1,0 +1,25 @@
+[package]
+name = "rusty-modbus-frame"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Modbus framing — MBAP/RTU codecs, CRC-16, owned Bytes types"
+
+[dependencies]
+rusty-modbus-types = { path = "../rusty-modbus-types" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec" }
+bytes = "1"
+tokio-util = { version = "0.7", features = ["codec"] }
+thiserror = "2"
+zerocopy = "0.8"
+
+[features]
+default = ["std"]
+std = ["rusty-modbus-types/std", "rusty-modbus-codec/std"]
+rtu = []

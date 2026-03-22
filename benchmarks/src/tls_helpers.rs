@@ -6,14 +6,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use modbus_frame::frame::{Frame, FrameHeader};
-use modbus_server::handler;
-use modbus_server::store::DataStore;
-use modbus_tcp::transport::{TransportSink, TransportStream};
-use modbus_tls::config::{TlsClientConfig, TlsServerConfig};
-use modbus_tls::{TlsServerListener, TlsTransport};
-use modbus_types::{MbapHeader, UnitId};
-use rcgen::{CertificateParams, KeyPair};
+use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_server::handler;
+use rusty_modbus_server::store::DataStore;
+use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
+use rusty_modbus_tls::config::{TlsClientConfig, TlsServerConfig};
+use rusty_modbus_tls::{TlsServerListener, TlsTransport};
+use rusty_modbus_types::{MbapHeader, UnitId};
+use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
 use tempfile::NamedTempFile;
 use tokio::task::JoinHandle;
 
@@ -31,7 +31,7 @@ pub fn generate_test_certs() -> TestCerts {
     let mut ca_params = CertificateParams::new(vec!["Test CA".to_string()]).unwrap();
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     let ca_key = KeyPair::generate().unwrap();
-    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+    let ca = CertifiedIssuer::self_signed(ca_params, ca_key).unwrap();
 
     let mut server_params = CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
     server_params
@@ -41,17 +41,17 @@ pub fn generate_test_certs() -> TestCerts {
         )));
     let server_key = KeyPair::generate().unwrap();
     let server_cert = server_params
-        .signed_by(&server_key, &ca_cert, &ca_key)
+        .signed_by(&server_key, &*ca)
         .unwrap();
 
     let client_params = CertificateParams::new(vec!["Test Client".to_string()]).unwrap();
     let client_key = KeyPair::generate().unwrap();
     let client_cert = client_params
-        .signed_by(&client_key, &ca_cert, &ca_key)
+        .signed_by(&client_key, &*ca)
         .unwrap();
 
     let mut ca_file = NamedTempFile::new().unwrap();
-    ca_file.write_all(ca_cert.pem().as_bytes()).unwrap();
+    ca_file.write_all(ca.pem().as_bytes()).unwrap();
 
     let mut server_cert_file = NamedTempFile::new().unwrap();
     server_cert_file
@@ -111,7 +111,7 @@ pub async fn make_tls_server<S: DataStore + 'static>(
                     };
                     let unit_id = UnitId(frame.unit_id());
                     if let Some(resp_pdu) =
-                        handler::process_request(&frame.pdu, unit_id, conn_store.as_ref(), &modbus_server::DeviceIdentification::default())
+                        handler::process_request(&frame.pdu, unit_id, conn_store.as_ref(), &rusty_modbus_server::DeviceIdentification::default())
                             .await
                     {
                         let header =
@@ -136,7 +136,7 @@ pub async fn make_tls_server<S: DataStore + 'static>(
 pub async fn make_tls_client(
     certs: &TestCerts,
     addr: SocketAddr,
-) -> (modbus_tls::TlsSink, modbus_tls::TlsRecvStream) {
+) -> (rusty_modbus_tls::TlsSink, rusty_modbus_tls::TlsRecvStream) {
     let config = TlsClientConfig {
         ca_cert: certs.ca_cert.path().to_path_buf(),
         client_cert: certs.client_cert.path().to_path_buf(),

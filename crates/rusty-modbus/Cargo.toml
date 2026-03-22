@@ -1,32 +1,37 @@
 [package]
 name = "rusty-modbus"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Complete Modbus protocol stack — TCP, RTU, TLS"
 
 [dependencies]
-modbus-types = { path = "../modbus-types" }
-modbus-codec = { path = "../modbus-codec" }
-modbus-frame = { path = "../modbus-frame" }
-modbus-tcp = { path = "../modbus-tcp", optional = true }
-modbus-rtu = { path = "../modbus-rtu", default-features = false, optional = true }
-modbus-pool = { path = "../modbus-pool", optional = true }
-modbus-client = { path = "../modbus-client", optional = true }
-modbus-server = { path = "../modbus-server", optional = true }
-modbus-gateway = { path = "../modbus-gateway", optional = true }
-modbus-tls = { path = "../modbus-tls", optional = true }
+rusty-modbus-types = { path = "../rusty-modbus-types" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame" }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp", optional = true }
+rusty-modbus-rtu = { path = "../rusty-modbus-rtu", default-features = false, optional = true }
+rusty-modbus-pool = { path = "../rusty-modbus-pool", optional = true }
+rusty-modbus-client = { path = "../rusty-modbus-client", optional = true }
+rusty-modbus-server = { path = "../rusty-modbus-server", optional = true }
+rusty-modbus-gateway = { path = "../rusty-modbus-gateway", optional = true }
+rusty-modbus-tls = { path = "../rusty-modbus-tls", optional = true }
 
 [features]
 default = ["tcp"]
-tcp = ["dep:modbus-tcp", "dep:modbus-client", "modbus-client/tcp"]
-rtu = ["dep:modbus-rtu"]
+tcp = ["dep:rusty-modbus-tcp", "dep:rusty-modbus-client", "rusty-modbus-client/tcp"]
+rtu = ["dep:rusty-modbus-rtu"]
 rtu-tcp = ["rtu"]
-tls = ["dep:modbus-tls"]
-server = ["dep:modbus-server"]
-gateway = ["dep:modbus-gateway", "rtu"]
-pool = ["dep:modbus-pool"]
+tls = ["dep:rusty-modbus-tls"]
+server = ["dep:rusty-modbus-server"]
+gateway = ["dep:rusty-modbus-gateway", "rtu"]
+pool = ["dep:rusty-modbus-pool"]
 full = ["tcp", "rtu", "rtu-tcp", "tls", "server", "gateway", "pool"]
 
 [dev-dependencies]

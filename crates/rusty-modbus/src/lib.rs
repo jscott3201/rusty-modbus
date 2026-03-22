@@ -20,45 +20,45 @@
 #![warn(missing_docs, clippy::all, clippy::pedantic)]
 
 // Always available — foundation crates.
-pub use modbus_types as types;
-pub use modbus_codec as codec;
-pub use modbus_frame as frame;
+pub use rusty_modbus_types as types;
+pub use rusty_modbus_codec as codec;
+pub use rusty_modbus_frame as frame;
 
 // TCP transport + client (default feature).
 #[cfg(feature = "tcp")]
-pub use modbus_tcp as tcp;
+pub use rusty_modbus_tcp as tcp;
 
 #[cfg(feature = "tcp")]
-pub use modbus_client as client;
+pub use rusty_modbus_client as client;
 
-/// Convenience alias for [`modbus_client::ModbusClient`].
+/// Convenience alias for [`rusty_modbus_client::ModbusClient`].
 #[cfg(feature = "tcp")]
-pub type Client = modbus_client::ModbusClient;
+pub type Client = rusty_modbus_client::ModbusClient;
 
 // RTU transport.
 #[cfg(feature = "rtu")]
-pub use modbus_rtu as rtu;
+pub use rusty_modbus_rtu as rtu;
 
 // TLS transport.
 #[cfg(feature = "tls")]
-pub use modbus_tls as tls;
+pub use rusty_modbus_tls as tls;
 
 // Connection pool.
 #[cfg(feature = "pool")]
-pub use modbus_pool as pool;
+pub use rusty_modbus_pool as pool;
 
 // Server.
 #[cfg(feature = "server")]
-pub use modbus_server as server;
+pub use rusty_modbus_server as server;
 
-/// Convenience alias for [`modbus_server::ModbusServer`].
+/// Convenience alias for [`rusty_modbus_server::ModbusServer`].
 #[cfg(feature = "server")]
-pub type Server<S> = modbus_server::ModbusServer<S>;
+pub type Server<S> = rusty_modbus_server::ModbusServer<S>;
 
 // Gateway.
 #[cfg(feature = "gateway")]
-pub use modbus_gateway as gateway;
+pub use rusty_modbus_gateway as gateway;
 
-/// Convenience alias for [`modbus_gateway::ModbusGateway`].
+/// Convenience alias for [`rusty_modbus_gateway::ModbusGateway`].
 #[cfg(feature = "gateway")]
-pub type Gateway = modbus_gateway::ModbusGateway;
+pub type Gateway = rusty_modbus_gateway::ModbusGateway;
