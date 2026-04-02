@@ -4,10 +4,12 @@ use rusty_modbus_codec::request::{Encode, ReadFifoQueueRequest};
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_types::{Address, FunctionCode, UnitId};
 
+use rusty_modbus_tcp::transport::TransportSink;
+
 use crate::client::ModbusClient;
 use crate::error::ClientError;
 
-impl ModbusClient {
+impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read FIFO queue (FC 0x18).
     ///
     /// Returns the register values from the FIFO queue at the given
@@ -30,23 +32,27 @@ impl ModbusClient {
         };
 
         let mut buf = [0u8; 3];
-        let len = req.encode_into(&mut buf).map_err(|_| ClientError::Codec(
-            rusty_modbus_codec::DecodeError::Truncated { expected: 3, actual: 0 },
-        ))?;
+        let len = req.encode_into(&mut buf).map_err(|_| {
+            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
+                expected: 3,
+                actual: 0,
+            })
+        })?;
 
-        let response = self.send_with_retry(
-            unit_id, FunctionCode::ReadFifoQueue, &buf[..len],
-        ).await?;
+        let response = self
+            .send_with_retry(unit_id, FunctionCode::ReadFifoQueue, &buf[..len])
+            .await?;
 
         match response {
-            OwnedResponsePdu::ReadFifoQueue(fifo) => {
-                Ok(fifo.fifo_values
-                    .chunks_exact(2)
-                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                    .collect())
-            }
+            OwnedResponsePdu::ReadFifoQueue(fifo) => Ok(fifo
+                .fifo_values
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect()),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
-            _ => Err(ClientError::Codec(rusty_modbus_codec::DecodeError::UnknownFunctionCode(0))),
+            _ => Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+            )),
         }
     }
 }

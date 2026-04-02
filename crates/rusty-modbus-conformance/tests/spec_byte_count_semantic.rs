@@ -9,7 +9,7 @@
 //! but not byte_count == f(quantity) (semantic check). These tests verify the semantic
 //! constraint is enforced.
 
-use rusty_modbus_codec::{decode_request, DecodeError};
+use rusty_modbus_codec::decode_request;
 
 // ── FC 0F: byte_count must equal ceil(quantity / 8) ───────────────
 
@@ -62,7 +62,9 @@ fn fc10_byte_count_semantic_mismatch_rejected() {
     // quantity=2 → expected byte_count = 4
     // But byte_count=6 with 6 data bytes → wire-valid but semantically wrong
     // Spec Figure 22: "Byte Count == Quantity of Registers x 2"
-    let bad = [0x10, 0x00, 0x00, 0x00, 0x02, 0x06, 0x00, 0x0A, 0x01, 0x02, 0x03, 0x04];
+    let bad = [
+        0x10, 0x00, 0x00, 0x00, 0x02, 0x06, 0x00, 0x0A, 0x01, 0x02, 0x03, 0x04,
+    ];
     let result = decode_request(&bad);
     assert!(
         result.is_err(),
@@ -76,10 +78,9 @@ fn fc10_byte_count_semantic_mismatch_rejected() {
 fn fc17_write_byte_count_matches_quantity() {
     // write_quantity=3 → write_byte_count should be 3×2 = 6
     let valid = [
-        0x17,
-        0x00, 0x00, 0x00, 0x01, // read addr=0, qty=1
+        0x17, 0x00, 0x00, 0x00, 0x01, // read addr=0, qty=1
         0x00, 0x00, 0x00, 0x03, // write addr=0, qty=3
-        0x06,                   // write_byte_count=6
+        0x06, // write_byte_count=6
         0x00, 0x01, 0x00, 0x02, 0x00, 0x03,
     ];
     assert!(decode_request(&valid).is_ok());
@@ -91,10 +92,9 @@ fn fc17_write_byte_count_semantic_mismatch_rejected() {
     // But write_byte_count=6 with 6 data bytes → wire-valid but semantically wrong
     // Spec Figure 27: "Byte Count == Quantity of Write x 2"
     let bad = [
-        0x17,
-        0x00, 0x00, 0x00, 0x01, // read addr=0, qty=1
+        0x17, 0x00, 0x00, 0x00, 0x01, // read addr=0, qty=1
         0x00, 0x00, 0x00, 0x02, // write addr=0, qty=2
-        0x06,                   // write_byte_count=6 (should be 4)
+        0x06, // write_byte_count=6 (should be 4)
         0x00, 0x01, 0x00, 0x02, 0x00, 0x03,
     ];
     let result = decode_request(&bad);

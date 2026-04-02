@@ -5,10 +5,9 @@
 
 use std::sync::Arc;
 
-use rusty_modbus_frame::frame::FrameHeader;
 use rusty_modbus_frame::OwnedResponsePdu;
+use rusty_modbus_frame::frame::FrameHeader;
 use rusty_modbus_tcp::transport::TransportStream;
-use rusty_modbus_tcp::TcpRecvStream;
 use tokio::sync::watch;
 
 use crate::error::ClientError;
@@ -20,8 +19,8 @@ use rusty_modbus_types::TransactionId;
 /// Reads frames from the transport stream, looks up the transaction ID,
 /// and completes the pending transaction. Runs until the transport closes
 /// or the shutdown signal is received.
-pub(crate) fn spawn_reader(
-    mut stream: TcpRecvStream,
+pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
+    mut stream: R,
     txn_mgr: Arc<TransactionManager>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {

@@ -6,10 +6,12 @@ use rusty_modbus_frame::OwnedDeviceIdentification;
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_types::{DeviceIdCode, FunctionCode, UnitId};
 
+use rusty_modbus_tcp::transport::TransportSink;
+
 use crate::client::ModbusClient;
 use crate::error::ClientError;
 
-impl ModbusClient {
+impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read Device Identification (FC 0x2B / MEI 0x0E).
     ///
     /// Sends a `BasicStream` request and collects continuation responses
@@ -52,7 +54,7 @@ impl ModbusClient {
                 _ => {
                     return Err(ClientError::Codec(
                         rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
-                    ))
+                    ));
                 }
             };
 
@@ -63,8 +65,8 @@ impl ModbusClient {
             decode_buf.push(0x0E);
             decode_buf.extend_from_slice(&pdu_data);
 
-            let dev_id =
-                ReadDeviceIdentificationResponse::decode(&decode_buf).map_err(ClientError::Codec)?;
+            let dev_id = ReadDeviceIdentificationResponse::decode(&decode_buf)
+                .map_err(ClientError::Codec)?;
 
             for obj in dev_id.objects() {
                 let value = String::from_utf8_lossy(obj.value).into_owned();
