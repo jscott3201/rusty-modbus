@@ -25,3 +25,4 @@ rusty-modbus-frame = { path = "../rusty-modbus-frame" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+bytes = "1"

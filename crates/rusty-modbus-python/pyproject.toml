@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rusty_modbus"
+version = "0.1.0"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",
@@ -16,5 +17,3 @@ classifiers = [
 features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "module"
