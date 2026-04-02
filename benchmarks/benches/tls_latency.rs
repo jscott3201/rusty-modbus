@@ -1,8 +1,10 @@
 //! TLS transport latency benchmarks — single request round-trip.
 
+#![allow(clippy::await_holding_refcell_ref)]
+
 use std::cell::RefCell;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use rusty_modbus_benchmarks::frame_builders::*;
 use rusty_modbus_benchmarks::helpers::{current_rss_bytes, make_store};
 use rusty_modbus_benchmarks::tls_helpers::{generate_test_certs, make_tls_client, make_tls_server};

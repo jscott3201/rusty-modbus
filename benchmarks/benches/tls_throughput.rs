@@ -1,8 +1,10 @@
 //! TLS transport throughput benchmarks — batched operations.
 
+#![allow(clippy::await_holding_refcell_ref)]
+
 use std::cell::RefCell;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rusty_modbus_benchmarks::frame_builders::*;
 use rusty_modbus_benchmarks::helpers::make_store;
 use rusty_modbus_benchmarks::tls_helpers::{generate_test_certs, make_tls_client, make_tls_server};
@@ -31,10 +33,11 @@ fn bench_tls_read_holding_registers_throughput(c: &mut Criterion) {
                 let txn_id = &txn_id;
                 b.to_async(&rt).iter(|| async move {
                     for _ in 0..n {
-                        let mut id = txn_id.borrow_mut();
-                        *id = id.wrapping_add(1);
-                        let frame = read_holding_registers_mbap(*id, 1, 0, 10);
-                        drop(id);
+                        let frame = {
+                            let mut id = txn_id.borrow_mut();
+                            *id = id.wrapping_add(1);
+                            read_holding_registers_mbap(*id, 1, 0, 10)
+                        };
                         sink.borrow_mut().send(frame).await.unwrap();
                         stream.borrow_mut().recv().await.unwrap();
                     }
@@ -68,11 +71,11 @@ fn bench_tls_write_single_register_throughput(c: &mut Criterion) {
                 let txn_id = &txn_id;
                 b.to_async(&rt).iter(|| async move {
                     for i in 0..n {
-                        let mut id = txn_id.borrow_mut();
-                        *id = id.wrapping_add(1);
-                        let frame =
-                            write_single_register_mbap(*id, 1, (i % 100) as u16, 0x1234);
-                        drop(id);
+                        let frame = {
+                            let mut id = txn_id.borrow_mut();
+                            *id = id.wrapping_add(1);
+                            write_single_register_mbap(*id, 1, (i % 100) as u16, 0x1234)
+                        };
                         sink.borrow_mut().send(frame).await.unwrap();
                         stream.borrow_mut().recv().await.unwrap();
                     }
@@ -106,10 +109,11 @@ fn bench_tls_mixed_read_write_throughput(c: &mut Criterion) {
                 let txn_id = &txn_id;
                 b.to_async(&rt).iter(|| async move {
                     for i in 0..n {
-                        let mut id = txn_id.borrow_mut();
-                        *id = id.wrapping_add(1);
-                        let cur_id = *id;
-                        drop(id);
+                        let cur_id = {
+                            let mut id = txn_id.borrow_mut();
+                            *id = id.wrapping_add(1);
+                            *id
+                        };
                         if i % 2 == 0 {
                             let frame = read_holding_registers_mbap(cur_id, 1, 0, 10);
                             sink.borrow_mut().send(frame).await.unwrap();

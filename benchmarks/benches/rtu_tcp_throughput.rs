@@ -1,8 +1,10 @@
 //! RTU-over-TCP transport throughput benchmarks — batched operations.
 
+#![allow(clippy::await_holding_refcell_ref)]
+
 use std::cell::RefCell;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rusty_modbus_benchmarks::frame_builders::*;
 use rusty_modbus_benchmarks::helpers::make_store;
 use rusty_modbus_benchmarks::rtu_helpers::{make_rtu_tcp_client, make_rtu_tcp_server};

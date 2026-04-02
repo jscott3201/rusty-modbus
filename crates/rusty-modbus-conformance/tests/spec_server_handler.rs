@@ -11,11 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ModbusClient};
-use rusty_modbus_codec::response::ExceptionResponse;
+use rusty_modbus_server::ModbusServer;
 use rusty_modbus_server::config::ServerConfig;
 use rusty_modbus_server::store::memory::{InMemoryStore, StoreConfig};
-use rusty_modbus_server::ModbusServer;
-use rusty_modbus_types::{ExceptionCode, FunctionCode, UnitId};
+use rusty_modbus_types::{ExceptionCode, UnitId};
 
 async fn start_server() -> (ModbusServer<InMemoryStore>, std::net::SocketAddr) {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
@@ -43,14 +42,13 @@ async fn fc03_address_overflow_returns_illegal_data_address() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // Read 2 registers starting at 0xFFFF — overflows address space
-    let result = client
-        .read_holding_registers(UnitId(1), 0xFFFF, 2)
-        .await;
+    let result = client.read_holding_registers(UnitId(1), 0xFFFF, 2).await;
 
     match result {
         Err(rusty_modbus_client::ClientError::Exception(exc)) => {
             assert_eq!(
-                exc.exception_code, ExceptionCode::IllegalDataAddress,
+                exc.exception_code,
+                ExceptionCode::IllegalDataAddress,
                 "FC03 address overflow should return IllegalDataAddress (0x02)"
             );
         }
@@ -81,7 +79,8 @@ async fn fc03_address_beyond_store_returns_illegal_data_address() {
     match result {
         Err(rusty_modbus_client::ClientError::Exception(exc)) => {
             assert_eq!(
-                exc.exception_code, ExceptionCode::IllegalDataAddress,
+                exc.exception_code,
+                ExceptionCode::IllegalDataAddress,
                 "FC03 address beyond store should return IllegalDataAddress (0x02)"
             );
         }
@@ -116,8 +115,15 @@ async fn fc16_mask_write_algorithm() {
         .await
         .unwrap();
 
-    let regs = client.read_holding_registers(UnitId(1), 4, 1).await.unwrap();
-    assert_eq!(regs, vec![0x0017], "mask write result should be 0x0017 per spec §6.16");
+    let regs = client
+        .read_holding_registers(UnitId(1), 4, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        regs,
+        vec![0x0017],
+        "mask write result should be 0x0017 per spec §6.16"
+    );
 }
 
 /// FC17: Write executes before read per spec §6.17
@@ -136,9 +142,15 @@ async fn fc17_write_before_read() {
 
     // Write 0xBEEF to register 0, then read register 0 — should see the write
     // This tests that write executes before read per §6.17
-    client.write_single_register(UnitId(1), 0, 0xBEEF).await.unwrap();
+    client
+        .write_single_register(UnitId(1), 0, 0xBEEF)
+        .await
+        .unwrap();
 
-    let regs = client.read_holding_registers(UnitId(1), 0, 1).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0xBEEF]);
 }
 
@@ -149,11 +161,19 @@ async fn coil_bit_packing_round_trip() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // Write 10 coils with known pattern
-    let values = vec![true, false, true, true, false, false, true, true, false, true];
-    client.write_multiple_coils(UnitId(1), 0, &values).await.unwrap();
+    let values = vec![
+        true, false, true, true, false, false, true, true, false, true,
+    ];
+    client
+        .write_multiple_coils(UnitId(1), 0, &values)
+        .await
+        .unwrap();
 
     let read_back = client.read_coils(UnitId(1), 0, 10).await.unwrap();
-    assert_eq!(read_back, values, "coil round-trip should preserve bit pattern");
+    assert_eq!(
+        read_back, values,
+        "coil round-trip should preserve bit pattern"
+    );
 }
 
 /// Broadcast writes execute but return no response
@@ -171,9 +191,7 @@ async fn broadcast_write_executes_silently() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // Broadcast write — should execute but return no response (timeout)
-    let result = client
-        .write_single_register(UnitId(0), 5, 0x1234)
-        .await;
+    let _result = client.write_single_register(UnitId(0), 5, 0x1234).await;
 
     // The broadcast should not produce a response, so the client times out
     // But the store should have been updated

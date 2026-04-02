@@ -1,9 +1,9 @@
 //! Codec encode/decode and CRC-16 micro-benchmarks.
 
 use bytes::BytesMut;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rusty_modbus_codec::request::{
-    Encode, ReadCoilsRequest, ReadHoldingRegistersRequest, WriteMultipleCoilsRequest,
+    Encode, ReadHoldingRegistersRequest, WriteMultipleCoilsRequest,
     WriteMultipleRegistersRequest,
 };
 use rusty_modbus_codec::response::{ReadCoilsResponse, ReadHoldingRegistersResponse};
@@ -112,26 +112,18 @@ fn bench_crc16(c: &mut Criterion) {
     let mut group = c.benchmark_group("crc16");
 
     let small = [0x01, 0x03, 0x00, 0x00, 0x00, 0x0A, 0xC5, 0xCD];
-    let medium = vec![0xAAu8; 64];
+    let medium = [0xAAu8; 64];
     let large = vec![0x55u8; 253];
 
     group.bench_with_input(BenchmarkId::new("small", "8B"), &small[..], |b, data| {
         b.iter(|| black_box(crc16(black_box(data))));
     });
-    group.bench_with_input(
-        BenchmarkId::new("medium", "64B"),
-        &medium[..],
-        |b, data| {
-            b.iter(|| black_box(crc16(black_box(data))));
-        },
-    );
-    group.bench_with_input(
-        BenchmarkId::new("large", "253B"),
-        &large[..],
-        |b, data| {
-            b.iter(|| black_box(crc16(black_box(data))));
-        },
-    );
+    group.bench_with_input(BenchmarkId::new("medium", "64B"), &medium[..], |b, data| {
+        b.iter(|| black_box(crc16(black_box(data))));
+    });
+    group.bench_with_input(BenchmarkId::new("large", "253B"), &large[..], |b, data| {
+        b.iter(|| black_box(crc16(black_box(data))));
+    });
 
     group.finish();
 }
