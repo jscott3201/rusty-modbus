@@ -38,8 +38,9 @@
 | `crates/rusty-modbus-python/src/sync_client.rs` | `SyncModbusClient` blocking pyclass |
 | `crates/rusty-modbus-python/tests/test_config.py` | Python tests for config classes |
 | `crates/rusty-modbus-python/tests/test_errors.py` | Python tests for exception hierarchy |
-| `crates/rusty-modbus-python/tests/test_sync_client.py` | Python integration tests for sync client |
-| `crates/rusty-modbus-python/tests/test_async_client.py` | Python integration tests for async client |
+| `crates/rusty-modbus-python/tests/test_sync_client.py` | Python tests for sync client connection errors |
+| `crates/rusty-modbus-python/tests/test_async_client.py` | Python tests for async client connection errors |
+| `crates/rusty-modbus-python/tests/test_integration.py` | Full-stack integration tests with embedded server |
 
 ---
 
@@ -296,7 +297,18 @@ Fully backward-compatible — existing code uses the default."
 - Create: `crates/rusty-modbus-python/pyproject.toml`
 - Create: `crates/rusty-modbus-python/src/lib.rs`
 
-- [ ] **Step 1: Create `Cargo.toml`**
+- [ ] **Step 1: Exclude the Python crate from workspace builds**
+
+The Python crate requires Python dev headers to compile (cdylib). Exclude it from `cargo test --workspace` so CI and local builds don't break for users without Python. In the root `Cargo.toml`, add the exclude:
+
+```toml
+[workspace]
+resolver = "3"
+members = ["crates/*", "benchmarks"]
+exclude = ["crates/rusty-modbus-python"]
+```
+
+- [ ] **Step 2: Create `Cargo.toml`**
 
 ```toml
 [package]
@@ -348,14 +360,15 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "module"
 ```
 
-- [ ] **Step 3: Create minimal `src/lib.rs`**
+- [ ] **Step 4: Create minimal `src/lib.rs`**
+
+Note: we do NOT use `#![forbid(unsafe_code)]` here — PyO3 proc macros generate unsafe blocks internally.
 
 ```rust
 //! Python bindings for the rusty-modbus client.
-
-#![forbid(unsafe_code)]
 
 use pyo3::prelude::*;
 
@@ -439,7 +452,15 @@ impl From<ClientError> for PyErr {
                     exc.exception_code,
                     exc.function_code.code(),
                 );
-                ModbusExceptionError::new_err((msg, code))
+                // Store exception_code as a named attribute accessible via e.exception_code.
+                // create_exception! args go into e.args, so we use Python to set the attr.
+                let err = ModbusExceptionError::new_err(msg);
+                Python::with_gil(|py| {
+                    if let Ok(val) = err.value(py).as_any().try_into() {
+                        let _ = val.setattr("exception_code", code);
+                    }
+                });
+                err
             }
             ClientError::Transport(e) => {
                 ConnectionError::new_err(format!("transport error: {e}"))
@@ -447,9 +468,16 @@ impl From<ClientError> for PyErr {
             ClientError::NotConnected => ConnectionError::new_err("not connected"),
             ClientError::ShuttingDown => ConnectionError::new_err("client is shutting down"),
             ClientError::RetriesExhausted { attempts, last_error } => {
-                RetryError::new_err(format!(
+                let msg = format!(
                     "retries exhausted after {attempts} attempts: {last_error}"
-                ))
+                );
+                let err = RetryError::new_err(msg);
+                Python::with_gil(|py| {
+                    if let Ok(val) = err.value(py).as_any().try_into() {
+                        let _ = val.setattr("attempts", attempts);
+                    }
+                });
+                err
             }
             ClientError::Codec(e) => ModbusError::new_err(format!("codec error: {e}")),
             ClientError::BroadcastReadNotAllowed => {
@@ -1035,7 +1063,7 @@ impl ModbusClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (sink, stream) = TlsTransport::connect(addr, &tls_config)
                 .await
-                .map_err(|e| PyValueError::new_err(format!("TLS connection failed: {e}")))?;
+                .map_err(|e| crate::errors::ConnectionError::new_err(format!("TLS connection failed: {e}")))?;
 
             let client =
                 rusty_modbus_client::ModbusClient::from_transport(sink, stream, rust_config);
@@ -1337,8 +1365,6 @@ impl ModbusClient {
 ```rust
 //! Python bindings for the rusty-modbus client.
 
-#![forbid(unsafe_code)]
-
 use pyo3::prelude::*;
 
 mod client;
@@ -1476,7 +1502,7 @@ impl SyncModbusClient {
 
         let (sink, stream) = runtime
             .block_on(TlsTransport::connect(addr, &tls_config))
-            .map_err(|e| PyValueError::new_err(format!("TLS connection failed: {e}")))?;
+            .map_err(|e| crate::errors::ConnectionError::new_err(format!("TLS connection failed: {e}")))?;
 
         let client =
             rusty_modbus_client::ModbusClient::from_transport(sink, stream, rust_config);
@@ -1710,58 +1736,7 @@ Instead, we'll use a simpler approach: write a small Rust binary that acts as a 
 
 For robust integration testing, we write a conftest.py that starts the Rust server.
 
-- [ ] **Step 1: Create `conftest.py` with server fixture**
-
-Create `crates/rusty-modbus-python/tests/conftest.py`:
-
-```python
-"""Shared fixtures for Python integration tests."""
-import subprocess
-import sys
-import time
-import socket
-import pytest
-
-
-def _find_free_port():
-    """Find a free TCP port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port, timeout=5.0):
-    """Wait until a TCP port is accepting connections."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    raise RuntimeError(f"Port {port} did not open within {timeout}s")
-
-
-@pytest.fixture(scope="session")
-def modbus_server_addr():
-    """Start a Modbus test server and return its 'host:port' address.
-
-    Uses `cargo run` to build and start the stress-test binary in server mode,
-    which is already available in the workspace.  Falls back to skipping if
-    the binary isn't available.
-    """
-    port = _find_free_port()
-    addr = f"127.0.0.1:{port}"
-
-    # Use a small inline Rust server via cargo-run of the existing test infrastructure.
-    # The simplest available option: we connect and expect ConnectionError.
-    # For full integration tests, the CI will run against a real server.
-    yield addr
-```
-
-For initial tests, we focus on connection behavior and error handling rather than requiring a running server:
-
-- [ ] **Step 2: Write sync client tests**
+- [ ] **Step 1: Write sync client tests**
 
 Create `crates/rusty-modbus-python/tests/test_sync_client.py`:
 
@@ -1917,7 +1892,7 @@ fn _start_test_server(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
         let addr_str = addr.to_string();
 
-        // Spawn server in background — handles FC 0x03, 0x04, 0x06, 0x10, 0x01, 0x05.
+        // Spawn server in background — handles all FCs used by the Python bindings.
         tokio::spawn(async move {
             while let Ok((mut sink, mut stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
@@ -1930,26 +1905,57 @@ fn _start_test_server(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
                         let fc = req.pdu[0];
 
                         let resp_pdu: Vec<u8> = match fc {
+                            // ReadHoldingRegisters / ReadInputRegisters
                             0x03 | 0x04 => {
                                 // Return 2 registers: [0x0001, 0x0002]
                                 vec![fc, 0x04, 0x00, 0x01, 0x00, 0x02]
                             }
-                            0x06 => req.pdu.to_vec(), // echo
+                            // WriteSingleRegister — echo
+                            0x06 => req.pdu.to_vec(),
+                            // WriteMultipleRegisters — echo FC + addr + qty
                             0x10 => {
                                 let mut r = vec![fc];
                                 r.extend_from_slice(&req.pdu[1..5]);
                                 r
                             }
+                            // MaskWriteRegister — echo full request
+                            0x16 => req.pdu.to_vec(),
+                            // ReadWriteMultipleRegisters — return 2 regs
+                            0x17 => vec![fc, 0x04, 0x00, 0x01, 0x00, 0x02],
+                            // ReadCoils / ReadDiscreteInputs
                             0x01 | 0x02 => {
                                 // Return 1 byte: coils 0b00000101 (coil 0 ON, coil 2 ON)
                                 vec![fc, 0x01, 0x05]
                             }
-                            0x05 => req.pdu.to_vec(), // echo
+                            // WriteSingleCoil — echo
+                            0x05 => req.pdu.to_vec(),
+                            // WriteMultipleCoils — echo FC + addr + qty
                             0x0F => {
                                 let mut r = vec![fc];
                                 r.extend_from_slice(&req.pdu[1..5]);
                                 r
                             }
+                            // ReadFifoQueue — return 2 values: [0x000A, 0x000B]
+                            0x18 => vec![
+                                fc, 0x00, 0x08, // byte count for entire response
+                                0x00, 0x02, // FIFO count
+                                0x00, 0x0A, 0x00, 0x0B, // values
+                            ],
+                            // MEI / ReadDeviceIdentification
+                            0x2B => vec![
+                                fc, 0x0E, // MEI type
+                                0x01, // device ID code (basic stream)
+                                0x01, // conformity level
+                                0x00, // more follows = false
+                                0x00, // next object ID
+                                0x03, // number of objects
+                                // Object 0: VendorName = "Test"
+                                0x00, 0x04, b'T', b'e', b's', b't',
+                                // Object 1: ProductCode = "MP1"
+                                0x01, 0x03, b'M', b'P', b'1',
+                                // Object 2: Revision = "1.0"
+                                0x02, 0x03, b'1', b'.', b'0',
+                            ],
                             _ => vec![fc | 0x80, 0x01], // IllegalFunction
                         };
 
@@ -1987,30 +1993,28 @@ Create `crates/rusty-modbus-python/tests/test_integration.py`:
 
 ```python
 """Full-stack integration tests using an embedded Modbus server."""
+import asyncio
 import pytest
 from rusty_modbus import (
     ModbusClient,
     SyncModbusClient,
     ClientConfig,
+    DeviceIdentification,
     _start_test_server,
 )
 
 
 @pytest.fixture(scope="module")
-def server_addr(event_loop):
-    """Start the embedded test server once per module."""
-    import asyncio
-    addr = event_loop.run_until_complete(_start_test_server())
-    return addr
-
-
-@pytest.fixture(scope="module")
 def event_loop():
-    """Create a module-scoped event loop."""
-    import asyncio
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
+
+@pytest.fixture(scope="module")
+def server_addr(event_loop):
+    """Start the embedded test server once per module."""
+    return event_loop.run_until_complete(_start_test_server())
 
 
 # ── Sync client tests ────────────────────────────────────────────
@@ -2018,52 +2022,63 @@ def event_loop():
 
 class TestSyncIntegration:
     def test_read_holding_registers(self, server_addr):
-        client = SyncModbusClient.connect(server_addr)
-        regs = client.read_holding_registers(unit_id=1, address=0, quantity=2)
-        assert regs == [1, 2]
-        client.shutdown()
+        with SyncModbusClient.connect(server_addr) as client:
+            regs = client.read_holding_registers(unit_id=1, address=0, quantity=2)
+            assert regs == [1, 2]
 
     def test_read_input_registers(self, server_addr):
-        client = SyncModbusClient.connect(server_addr)
-        regs = client.read_input_registers(unit_id=1, address=0, quantity=2)
-        assert regs == [1, 2]
-        client.shutdown()
+        with SyncModbusClient.connect(server_addr) as client:
+            regs = client.read_input_registers(unit_id=1, address=0, quantity=2)
+            assert regs == [1, 2]
 
     def test_write_single_register(self, server_addr):
-        client = SyncModbusClient.connect(server_addr)
-        client.write_single_register(unit_id=1, address=0, value=0x1234)
-        client.shutdown()
+        with SyncModbusClient.connect(server_addr) as client:
+            client.write_single_register(unit_id=1, address=0, value=0x1234)
 
     def test_write_multiple_registers(self, server_addr):
-        client = SyncModbusClient.connect(server_addr)
-        client.write_multiple_registers(unit_id=1, address=0, values=[100, 200])
-        client.shutdown()
+        with SyncModbusClient.connect(server_addr) as client:
+            client.write_multiple_registers(unit_id=1, address=0, values=[100, 200])
+
+    def test_mask_write_register(self, server_addr):
+        with SyncModbusClient.connect(server_addr) as client:
+            client.mask_write_register(unit_id=1, address=0, and_mask=0xFF00, or_mask=0x00FF)
+
+    def test_read_write_multiple_registers(self, server_addr):
+        with SyncModbusClient.connect(server_addr) as client:
+            regs = client.read_write_multiple_registers(
+                unit_id=1,
+                read_address=0, read_quantity=2,
+                write_address=10, write_values=[100, 200],
+            )
+            assert regs == [1, 2]
 
     def test_read_coils(self, server_addr):
-        client = SyncModbusClient.connect(server_addr)
-        coils = client.read_coils(unit_id=1, address=0, quantity=3)
-        assert coils == [True, False, True]
-        client.shutdown()
+        with SyncModbusClient.connect(server_addr) as client:
+            coils = client.read_coils(unit_id=1, address=0, quantity=3)
+            assert coils == [True, False, True]
 
     def test_write_single_coil(self, server_addr):
-        client = SyncModbusClient.connect(server_addr)
-        client.write_single_coil(unit_id=1, address=0, value=True)
-        client.shutdown()
+        with SyncModbusClient.connect(server_addr) as client:
+            client.write_single_coil(unit_id=1, address=0, value=True)
 
     def test_write_multiple_coils(self, server_addr):
+        with SyncModbusClient.connect(server_addr) as client:
+            client.write_multiple_coils(unit_id=1, address=0, values=[True, False])
+
+    def test_read_fifo_queue(self, server_addr):
+        with SyncModbusClient.connect(server_addr) as client:
+            values = client.read_fifo_queue(unit_id=1, pointer_address=0)
+            assert values == [10, 11]
+
+    def test_is_connected(self, server_addr):
         client = SyncModbusClient.connect(server_addr)
-        client.write_multiple_coils(unit_id=1, address=0, values=[True, False])
+        assert client.is_connected is True
         client.shutdown()
 
     def test_context_manager(self, server_addr):
         with SyncModbusClient.connect(server_addr) as client:
             regs = client.read_holding_registers(unit_id=1, address=0, quantity=2)
             assert regs == [1, 2]
-
-    def test_is_connected(self, server_addr):
-        client = SyncModbusClient.connect(server_addr)
-        assert client.is_connected is True
-        client.shutdown()
 
 
 # ── Async client tests ───────────────────────────────────────────
@@ -2072,23 +2087,33 @@ class TestSyncIntegration:
 class TestAsyncIntegration:
     @pytest.mark.asyncio
     async def test_read_holding_registers(self, server_addr):
-        client = await ModbusClient.connect(server_addr)
-        regs = await client.read_holding_registers(unit_id=1, address=0, quantity=2)
-        assert regs == [1, 2]
-        await client.shutdown()
+        async with await ModbusClient.connect(server_addr) as client:
+            regs = await client.read_holding_registers(unit_id=1, address=0, quantity=2)
+            assert regs == [1, 2]
 
     @pytest.mark.asyncio
     async def test_write_single_register(self, server_addr):
-        client = await ModbusClient.connect(server_addr)
-        await client.write_single_register(unit_id=1, address=0, value=42)
-        await client.shutdown()
+        async with await ModbusClient.connect(server_addr) as client:
+            await client.write_single_register(unit_id=1, address=0, value=42)
 
     @pytest.mark.asyncio
     async def test_read_coils(self, server_addr):
-        client = await ModbusClient.connect(server_addr)
-        coils = await client.read_coils(unit_id=1, address=0, quantity=3)
-        assert coils == [True, False, True]
-        await client.shutdown()
+        async with await ModbusClient.connect(server_addr) as client:
+            coils = await client.read_coils(unit_id=1, address=0, quantity=3)
+            assert coils == [True, False, True]
+
+    @pytest.mark.asyncio
+    async def test_mask_write_register(self, server_addr):
+        async with await ModbusClient.connect(server_addr) as client:
+            await client.mask_write_register(
+                unit_id=1, address=0, and_mask=0xFF00, or_mask=0x00FF,
+            )
+
+    @pytest.mark.asyncio
+    async def test_read_fifo_queue(self, server_addr):
+        async with await ModbusClient.connect(server_addr) as client:
+            values = await client.read_fifo_queue(unit_id=1, pointer_address=0)
+            assert values == [10, 11]
 
     @pytest.mark.asyncio
     async def test_async_context_manager(self, server_addr):
@@ -2130,12 +2155,12 @@ git commit -m "test(python): add full-stack integration tests with embedded serv
 - [ ] **Step 1: Run the full Rust test suite to confirm no regressions**
 
 Run: `cargo test --workspace`
-Expected: All 537+ tests pass.
+Expected: All 537+ tests pass. The Python crate is excluded via workspace `exclude` so this doesn't require Python.
 
 - [ ] **Step 2: Run clippy on the full workspace**
 
 Run: `cargo clippy --workspace --all-targets`
-Expected: Zero warnings.
+Expected: Zero warnings. (The Python crate is excluded from workspace; check it separately with `cargo clippy -p rusty-modbus-python`.)
 
 - [ ] **Step 3: Run Python tests**
 
