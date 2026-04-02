@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "rusty-modbus-python"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Justin Scott <jscott3201@gmail.com>"]
+repository = "https://github.com/jscott3201/rusty-modbus"
+homepage = "https://github.com/jscott3201/rusty-modbus"
+description = "Python bindings for the rusty-modbus client"
+publish = false
+
+[lib]
+name = "rusty_modbus"
+crate-type = ["cdylib"]
+
+[dependencies]
+rusty-modbus-client = { path = "../rusty-modbus-client" }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
+rusty-modbus-tls = { path = "../rusty-modbus-tls" }
+rusty-modbus-types = { path = "../rusty-modbus-types" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame" }
+pyo3 = { version = "0.28", features = ["extension-module"] }
+pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
