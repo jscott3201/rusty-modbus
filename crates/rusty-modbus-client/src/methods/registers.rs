@@ -2,17 +2,18 @@
 
 use bytes::Bytes;
 use rusty_modbus_codec::request::{
-    Encode, MaskWriteRegisterRequest, ReadHoldingRegistersRequest,
-    ReadInputRegistersRequest, ReadWriteMultipleRegistersRequest,
-    WriteMultipleRegistersRequest, WriteSingleRegisterRequest,
+    Encode, MaskWriteRegisterRequest, ReadHoldingRegistersRequest, ReadInputRegistersRequest,
+    ReadWriteMultipleRegistersRequest, WriteMultipleRegistersRequest, WriteSingleRegisterRequest,
 };
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_types::{Address, FunctionCode, Quantity, UnitId};
 
+use rusty_modbus_tcp::transport::TransportSink;
+
 use crate::client::ModbusClient;
 use crate::error::ClientError;
 
-impl ModbusClient {
+impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read holding registers (FC 0x03).
     ///
     /// # Errors
@@ -33,18 +34,23 @@ impl ModbusClient {
             quantity: Quantity(quantity),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| ClientError::Codec(
-            rusty_modbus_codec::DecodeError::Truncated { expected: 5, actual: 0 },
-        ))?;
+        let len = req.encode_into(&mut buf).map_err(|_| {
+            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
+                expected: 5,
+                actual: 0,
+            })
+        })?;
 
-        let response = self.send_with_retry(unit_id, FunctionCode::ReadHoldingRegisters, &buf[..len]).await?;
+        let response = self
+            .send_with_retry(unit_id, FunctionCode::ReadHoldingRegisters, &buf[..len])
+            .await?;
 
         match response {
-            OwnedResponsePdu::ReadHoldingRegisters(rhr) => {
-                Ok(rhr.registers().collect())
-            }
+            OwnedResponsePdu::ReadHoldingRegisters(rhr) => Ok(rhr.registers().collect()),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
-            _ => Err(ClientError::Codec(rusty_modbus_codec::DecodeError::UnknownFunctionCode(0))),
+            _ => Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+            )),
         }
     }
 
@@ -68,18 +74,23 @@ impl ModbusClient {
             quantity: Quantity(quantity),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| ClientError::Codec(
-            rusty_modbus_codec::DecodeError::Truncated { expected: 5, actual: 0 },
-        ))?;
+        let len = req.encode_into(&mut buf).map_err(|_| {
+            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
+                expected: 5,
+                actual: 0,
+            })
+        })?;
 
-        let response = self.send_with_retry(unit_id, FunctionCode::ReadHoldingRegisters, &buf[..len]).await?;
+        let response = self
+            .send_with_retry(unit_id, FunctionCode::ReadHoldingRegisters, &buf[..len])
+            .await?;
 
         match response {
-            OwnedResponsePdu::ReadHoldingRegisters(rhr) => {
-                Ok(Bytes::copy_from_slice(rhr.raw()))
-            }
+            OwnedResponsePdu::ReadHoldingRegisters(rhr) => Ok(Bytes::copy_from_slice(rhr.raw())),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
-            _ => Err(ClientError::Codec(rusty_modbus_codec::DecodeError::UnknownFunctionCode(0))),
+            _ => Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+            )),
         }
     }
 
@@ -103,18 +114,23 @@ impl ModbusClient {
             quantity: Quantity(quantity),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| ClientError::Codec(
-            rusty_modbus_codec::DecodeError::Truncated { expected: 5, actual: 0 },
-        ))?;
+        let len = req.encode_into(&mut buf).map_err(|_| {
+            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
+                expected: 5,
+                actual: 0,
+            })
+        })?;
 
-        let response = self.send_with_retry(unit_id, FunctionCode::ReadInputRegisters, &buf[..len]).await?;
+        let response = self
+            .send_with_retry(unit_id, FunctionCode::ReadInputRegisters, &buf[..len])
+            .await?;
 
         match response {
-            OwnedResponsePdu::ReadInputRegisters(rir) => {
-                Ok(rir.registers().collect())
-            }
+            OwnedResponsePdu::ReadInputRegisters(rir) => Ok(rir.registers().collect()),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
-            _ => Err(ClientError::Codec(rusty_modbus_codec::DecodeError::UnknownFunctionCode(0))),
+            _ => Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+            )),
         }
     }
 
@@ -134,20 +150,27 @@ impl ModbusClient {
             value,
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| ClientError::Codec(
-            rusty_modbus_codec::DecodeError::Truncated { expected: 5, actual: 0 },
-        ))?;
+        let len = req.encode_into(&mut buf).map_err(|_| {
+            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
+                expected: 5,
+                actual: 0,
+            })
+        })?;
 
         if unit_id.is_broadcast() {
             return self.send_broadcast(&buf[..len]).await;
         }
 
-        let response = self.send_with_retry(unit_id, FunctionCode::WriteSingleRegister, &buf[..len]).await?;
+        let response = self
+            .send_with_retry(unit_id, FunctionCode::WriteSingleRegister, &buf[..len])
+            .await?;
 
         match response {
             OwnedResponsePdu::WriteSingleRegister(_) => Ok(()),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
-            _ => Err(ClientError::Codec(rusty_modbus_codec::DecodeError::UnknownFunctionCode(0))),
+            _ => Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+            )),
         }
     }
 
@@ -176,20 +199,27 @@ impl ModbusClient {
         };
 
         let mut buf = [0u8; 256];
-        let len = req.encode_into(&mut buf).map_err(|_| ClientError::Codec(
-            rusty_modbus_codec::DecodeError::Truncated { expected: 1, actual: 0 },
-        ))?;
+        let len = req.encode_into(&mut buf).map_err(|_| {
+            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
+                expected: 1,
+                actual: 0,
+            })
+        })?;
 
         if unit_id.is_broadcast() {
             return self.send_broadcast(&buf[..len]).await;
         }
 
-        let response = self.send_with_retry(unit_id, FunctionCode::WriteMultipleRegisters, &buf[..len]).await?;
+        let response = self
+            .send_with_retry(unit_id, FunctionCode::WriteMultipleRegisters, &buf[..len])
+            .await?;
 
         match response {
             OwnedResponsePdu::WriteMultipleRegisters(_) => Ok(()),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
-            _ => Err(ClientError::Codec(rusty_modbus_codec::DecodeError::UnknownFunctionCode(0))),
+            _ => Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+            )),
         }
     }
 
@@ -211,20 +241,27 @@ impl ModbusClient {
             or_mask,
         };
         let mut buf = [0u8; 7];
-        let len = req.encode_into(&mut buf).map_err(|_| ClientError::Codec(
-            rusty_modbus_codec::DecodeError::Truncated { expected: 7, actual: 0 },
-        ))?;
+        let len = req.encode_into(&mut buf).map_err(|_| {
+            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
+                expected: 7,
+                actual: 0,
+            })
+        })?;
 
         if unit_id.is_broadcast() {
             return self.send_broadcast(&buf[..len]).await;
         }
 
-        let response = self.send_with_retry(unit_id, FunctionCode::MaskWriteRegister, &buf[..len]).await?;
+        let response = self
+            .send_with_retry(unit_id, FunctionCode::MaskWriteRegister, &buf[..len])
+            .await?;
 
         match response {
             OwnedResponsePdu::MaskWriteRegister(_) => Ok(()),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
-            _ => Err(ClientError::Codec(rusty_modbus_codec::DecodeError::UnknownFunctionCode(0))),
+            _ => Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+            )),
         }
     }
 
@@ -263,18 +300,27 @@ impl ModbusClient {
         };
 
         let mut buf = [0u8; 256];
-        let len = req.encode_into(&mut buf).map_err(|_| ClientError::Codec(
-            rusty_modbus_codec::DecodeError::Truncated { expected: 1, actual: 0 },
-        ))?;
+        let len = req.encode_into(&mut buf).map_err(|_| {
+            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
+                expected: 1,
+                actual: 0,
+            })
+        })?;
 
-        let response = self.send_with_retry(
-            unit_id, FunctionCode::ReadWriteMultipleRegisters, &buf[..len],
-        ).await?;
+        let response = self
+            .send_with_retry(
+                unit_id,
+                FunctionCode::ReadWriteMultipleRegisters,
+                &buf[..len],
+            )
+            .await?;
 
         match response {
             OwnedResponsePdu::ReadWriteMultipleRegisters(rw) => Ok(rw.registers().collect()),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
-            _ => Err(ClientError::Codec(rusty_modbus_codec::DecodeError::UnknownFunctionCode(0))),
+            _ => Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+            )),
         }
     }
 }

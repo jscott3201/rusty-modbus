@@ -1,13 +1,13 @@
 //! `ModbusClient` — high-level async Modbus client.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
-use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_frame::OwnedResponsePdu;
-use rusty_modbus_tcp::transport::{TransportConnect, TransportSink};
+use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_tcp::transport::{TransportConnect, TransportSink, TransportStream};
 use rusty_modbus_tcp::{TcpConfig, TcpSink, TcpTransport};
 use rusty_modbus_types::{FunctionCode, MbapHeader, UnitId};
 use tokio::sync::{Semaphore, watch};
@@ -19,8 +19,8 @@ use crate::reader;
 use crate::transaction::TransactionManager;
 
 /// High-level async Modbus client with transaction pipelining.
-pub struct ModbusClient {
-    sink: tokio::sync::Mutex<TcpSink>,
+pub struct ModbusClient<S: TransportSink + Send + 'static = TcpSink> {
+    sink: tokio::sync::Mutex<S>,
     txn_mgr: Arc<TransactionManager>,
     config: ClientConfig,
     connected: AtomicBool,
@@ -49,6 +49,20 @@ impl ModbusClient {
 
         let (sink, stream) = TcpTransport::connect(tcp_config, addr).await?;
 
+        Ok(Self::from_transport(sink, stream, config))
+    }
+}
+
+impl<S: TransportSink + Send + 'static> ModbusClient<S> {
+    /// Create a client from pre-connected transport halves.
+    ///
+    /// This is the generic constructor used by [`connect()`](ModbusClient::connect)
+    /// and by TLS transports that establish their own connection.
+    pub fn from_transport<R: TransportStream + Send + 'static>(
+        sink: S,
+        stream: R,
+        config: ClientConfig,
+    ) -> Self {
         let txn_mgr = Arc::new(TransactionManager::new());
         let semaphore = Arc::new(Semaphore::new(config.max_in_flight));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -66,7 +80,7 @@ impl ModbusClient {
             }
         });
 
-        Ok(Self {
+        Self {
             sink: tokio::sync::Mutex::new(sink),
             txn_mgr,
             config,
@@ -75,7 +89,7 @@ impl ModbusClient {
             shutdown_tx,
             reader_handle: Some(reader_handle),
             sweep_handle: Some(sweep_handle),
-        })
+        }
     }
 
     /// Whether the client is currently connected.
@@ -154,10 +168,7 @@ impl ModbusClient {
     }
 
     /// Send a broadcast write (Unit ID 0x00) — no response expected.
-    pub(crate) async fn send_broadcast(
-        &self,
-        pdu_data: &[u8],
-    ) -> Result<(), ClientError> {
+    pub(crate) async fn send_broadcast(&self, pdu_data: &[u8]) -> Result<(), ClientError> {
         if !self.is_connected() {
             return Err(ClientError::NotConnected);
         }
@@ -220,7 +231,7 @@ impl ModbusClient {
     }
 }
 
-impl Drop for ModbusClient {
+impl<S: TransportSink + Send + 'static> Drop for ModbusClient<S> {
     fn drop(&mut self) {
         let _ = self.shutdown_tx.send(true);
         if let Some(h) = self.reader_handle.take() {
@@ -232,7 +243,7 @@ impl Drop for ModbusClient {
     }
 }
 
-impl std::fmt::Debug for ModbusClient {
+impl<S: TransportSink + Send + 'static> std::fmt::Debug for ModbusClient<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModbusClient")
             .field("unit_id", &self.config.unit_id)
