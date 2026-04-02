@@ -37,9 +37,9 @@ impl SyncModbusClient {
     // ── construction ────────────────────────────────────────────────
 
     /// Connect to a Modbus/TCP server (blocking).
-    #[new]
+    #[staticmethod]
     #[pyo3(signature = (address, config=None))]
-    fn new(address: &str, config: Option<ClientConfig>) -> PyResult<Self> {
+    fn connect(address: &str, config: Option<ClientConfig>) -> PyResult<Self> {
         let addr: SocketAddr = address
             .parse()
             .map_err(|e| errors::ConnectionError::new_err(format!("invalid address: {e}")))?;
