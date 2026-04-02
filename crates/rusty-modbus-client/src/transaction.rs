@@ -122,11 +122,9 @@ impl TransactionManager {
                 .as_ref()
                 .is_some_and(|p| now.duration_since(p.sent_at) > timeout);
 
-            if timed_out {
-                if let Some(pending) = slot.take() {
-                    let _ = pending.sender.send(Err(ClientError::Timeout));
-                    count += 1;
-                }
+            if timed_out && let Some(pending) = slot.take() {
+                let _ = pending.sender.send(Err(ClientError::Timeout));
+                count += 1;
             }
         }
         count

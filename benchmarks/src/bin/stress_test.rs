@@ -273,7 +273,7 @@ async fn spawn_client_task(
                                 .await
                         }
                         _ => {
-                            if op_index % 2 == 0 {
+                            if op_index.is_multiple_of(2) {
                                 client
                                     .read_holding_registers(UnitId(1), 0, registers)
                                     .await
@@ -320,7 +320,7 @@ async fn spawn_client_task(
                             0x1234,
                         ),
                         _ => {
-                            if op_index % 2 == 0 {
+                            if op_index.is_multiple_of(2) {
                                 frame_builders::read_holding_registers_mbap(txn_id, 1, 0, registers)
                             } else {
                                 frame_builders::write_single_register_mbap(
@@ -359,7 +359,7 @@ async fn spawn_client_task(
                             0x1234,
                         ),
                         _ => {
-                            if op_index % 2 == 0 {
+                            if op_index.is_multiple_of(2) {
                                 frame_builders::read_holding_registers_rtu(1, 0, registers)
                             } else {
                                 frame_builders::write_single_register_rtu(

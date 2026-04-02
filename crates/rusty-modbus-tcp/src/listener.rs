@@ -48,10 +48,10 @@ impl TcpServerListener {
             let (stream, addr) = self.listener.accept().await?;
 
             // Check access control.
-            if let Some(ref ac) = self.config.access_control {
-                if !ac.is_allowed(&addr.ip()) {
-                    continue;
-                }
+            if let Some(ref ac) = self.config.access_control
+                && !ac.is_allowed(&addr.ip())
+            {
+                continue;
             }
 
             // Check connection limit.

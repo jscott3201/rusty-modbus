@@ -158,7 +158,7 @@ cargo bench -p rusty-modbus-benchmarks --bench tcp_latency
 cargo run -p rusty-modbus-benchmarks --bin stress-test -- --help
 ```
 
-Minimum Rust version: 1.85
+Minimum Rust version: 1.94
 
 ## License
 
