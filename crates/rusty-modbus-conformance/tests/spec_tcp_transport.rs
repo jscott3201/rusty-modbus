@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_tcp::TcpTransport;
 use rusty_modbus_tcp::config::{AccessControl, AccessMode, TcpConfig, TcpServerConfig};
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportConnect, TransportSink, TransportStream};
-use rusty_modbus_tcp::TcpTransport;
 use rusty_modbus_types::MbapHeader;
 
 fn make_frame(txn_id: u16, unit_id: u8, pdu: &[u8]) -> Frame {
@@ -68,9 +68,7 @@ fn spec_4_2_3_access_control_deny_by_default() {
     // "on security mode, the IP addresses not configured by the user are forbidden"
     let ac = AccessControl {
         default_mode: AccessMode::Deny,
-        rules: vec![
-            ("192.168.1.10".parse::<IpAddr>().unwrap(), AccessMode::Allow),
-        ],
+        rules: vec![("192.168.1.10".parse::<IpAddr>().unwrap(), AccessMode::Allow)],
     };
     assert!(ac.is_allowed(&"192.168.1.10".parse().unwrap()));
     assert!(!ac.is_allowed(&"192.168.1.11".parse().unwrap()));
@@ -81,9 +79,7 @@ fn spec_4_2_3_access_control_deny_by_default() {
 fn spec_4_2_3_access_control_allow_by_default() {
     let ac = AccessControl {
         default_mode: AccessMode::Allow,
-        rules: vec![
-            ("10.0.0.1".parse::<IpAddr>().unwrap(), AccessMode::Deny),
-        ],
+        rules: vec![("10.0.0.1".parse::<IpAddr>().unwrap(), AccessMode::Deny)],
     };
     assert!(ac.is_allowed(&"192.168.1.10".parse().unwrap()));
     assert!(!ac.is_allowed(&"10.0.0.1".parse().unwrap()));

@@ -4,9 +4,9 @@
 //! Implementation Guide V1.0b §3.1.3 MBAP Header description.
 
 use bytes::{Bytes, BytesMut};
-use rusty_modbus_frame::mbap::MbapCodec;
 use rusty_modbus_frame::frame::FrameHeader;
-use rusty_modbus_types::{MbapHeader, MBAP_HEADER_LEN, MAX_PDU_SIZE};
+use rusty_modbus_frame::mbap::MbapCodec;
+use rusty_modbus_types::{MAX_PDU_SIZE, MBAP_HEADER_LEN, MbapHeader};
 use tokio_util::codec::{Decoder, Encoder};
 use zerocopy::IntoBytes;
 

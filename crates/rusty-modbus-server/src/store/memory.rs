@@ -1,7 +1,7 @@
 //! In-memory data store backed by flat arrays with `RwLock` protection.
 
-use rusty_modbus_types::ExceptionCode;
 use parking_lot::RwLock;
+use rusty_modbus_types::ExceptionCode;
 
 use super::DataStore;
 
@@ -100,7 +100,12 @@ fn check_range(address: u16, quantity: u16, max: usize) -> Result<(), ExceptionC
 }
 
 impl DataStore for InMemoryStore {
-    async fn read_coils(&self, address: u16, quantity: u16, buf: &mut [bool]) -> Result<usize, ExceptionCode> {
+    async fn read_coils(
+        &self,
+        address: u16,
+        quantity: u16,
+        buf: &mut [bool],
+    ) -> Result<usize, ExceptionCode> {
         let coils = self.coils.read();
         check_range(address, quantity, coils.len())?;
         let start = address as usize;
@@ -125,7 +130,12 @@ impl DataStore for InMemoryStore {
         Ok(())
     }
 
-    async fn read_discrete_inputs(&self, address: u16, quantity: u16, buf: &mut [bool]) -> Result<usize, ExceptionCode> {
+    async fn read_discrete_inputs(
+        &self,
+        address: u16,
+        quantity: u16,
+        buf: &mut [bool],
+    ) -> Result<usize, ExceptionCode> {
         let inputs = self.discrete_inputs.read();
         check_range(address, quantity, inputs.len())?;
         let start = address as usize;
@@ -134,7 +144,12 @@ impl DataStore for InMemoryStore {
         Ok(qty)
     }
 
-    async fn read_holding_registers(&self, address: u16, quantity: u16, buf: &mut [u16]) -> Result<usize, ExceptionCode> {
+    async fn read_holding_registers(
+        &self,
+        address: u16,
+        quantity: u16,
+        buf: &mut [u16],
+    ) -> Result<usize, ExceptionCode> {
         let regs = self.holding_registers.read();
         check_range(address, quantity, regs.len())?;
         let start = address as usize;
@@ -159,7 +174,12 @@ impl DataStore for InMemoryStore {
         Ok(())
     }
 
-    async fn read_input_registers(&self, address: u16, quantity: u16, buf: &mut [u16]) -> Result<usize, ExceptionCode> {
+    async fn read_input_registers(
+        &self,
+        address: u16,
+        quantity: u16,
+        buf: &mut [u16],
+    ) -> Result<usize, ExceptionCode> {
         let regs = self.input_registers.read();
         check_range(address, quantity, regs.len())?;
         let start = address as usize;

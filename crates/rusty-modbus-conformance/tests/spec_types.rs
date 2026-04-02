@@ -29,21 +29,32 @@ fn function_code_all_19_variants_round_trip() {
     ];
     for (fc, wire) in variants {
         assert_eq!(fc.code(), wire, "code() mismatch for {fc:?}");
-        assert_eq!(FunctionCode::from_raw(wire), Some(fc), "from_raw({wire:#04X}) mismatch");
+        assert_eq!(
+            FunctionCode::from_raw(wire),
+            Some(fc),
+            "from_raw({wire:#04X}) mismatch"
+        );
     }
 }
 
 #[test]
 fn function_code_zero_is_custom() {
     // §4.1: "Function code '0' is not valid" — represented as Custom, rejected by server
-    assert_eq!(FunctionCode::from_raw(0x00), Some(FunctionCode::Custom(0x00)));
+    assert_eq!(
+        FunctionCode::from_raw(0x00),
+        Some(FunctionCode::Custom(0x00))
+    );
 }
 
 #[test]
 fn function_code_from_raw_rejects_exception_flagged() {
     // Bytes 0x80+ are exception responses, not valid function codes
     for byte in 0x80..=0xFF {
-        assert_eq!(FunctionCode::from_raw(byte), None, "from_raw({byte:#04X}) should be None");
+        assert_eq!(
+            FunctionCode::from_raw(byte),
+            None,
+            "from_raw({byte:#04X}) should be None"
+        );
     }
 }
 
@@ -61,17 +72,32 @@ fn function_code_is_exception_response() {
 fn function_code_exception_code_sets_high_bit() {
     assert_eq!(FunctionCode::ReadCoils.exception_code(), 0x81);
     assert_eq!(FunctionCode::ReadHoldingRegisters.exception_code(), 0x83);
-    assert_eq!(FunctionCode::EncapsulatedInterfaceTransport.exception_code(), 0xAB);
+    assert_eq!(
+        FunctionCode::EncapsulatedInterfaceTransport.exception_code(),
+        0xAB
+    );
 }
 
 #[test]
 fn function_code_from_exception_raw_strips_flag() {
-    assert_eq!(FunctionCode::from_exception_raw(0x81), FunctionCode::ReadCoils);
-    assert_eq!(FunctionCode::from_exception_raw(0x83), FunctionCode::ReadHoldingRegisters);
+    assert_eq!(
+        FunctionCode::from_exception_raw(0x81),
+        FunctionCode::ReadCoils
+    );
+    assert_eq!(
+        FunctionCode::from_exception_raw(0x83),
+        FunctionCode::ReadHoldingRegisters
+    );
     // Also works without the flag
-    assert_eq!(FunctionCode::from_exception_raw(0x01), FunctionCode::ReadCoils);
+    assert_eq!(
+        FunctionCode::from_exception_raw(0x01),
+        FunctionCode::ReadCoils
+    );
     // Custom vendor codes
-    assert_eq!(FunctionCode::from_exception_raw(0xC1), FunctionCode::Custom(0x41));
+    assert_eq!(
+        FunctionCode::from_exception_raw(0xC1),
+        FunctionCode::Custom(0x41)
+    );
 }
 
 // ── ExceptionCode (§7) ─────────────────────────────────────────────
@@ -92,7 +118,11 @@ fn exception_code_all_10_variants_round_trip() {
     ];
     for (ec, wire) in variants {
         assert_eq!(ec.code(), wire, "code() mismatch for {ec:?}");
-        assert_eq!(ExceptionCode::from_raw(wire), ec, "from_raw({wire:#04X}) mismatch");
+        assert_eq!(
+            ExceptionCode::from_raw(wire),
+            ec,
+            "from_raw({wire:#04X}) mismatch"
+        );
     }
 }
 
@@ -116,13 +146,19 @@ fn diagnostic_sub_function_all_15_variants_round_trip() {
         (DiagnosticSubFunction::ForceListenOnlyMode, 0x0004),
         (DiagnosticSubFunction::ClearCountersAndDiagRegister, 0x000A),
         (DiagnosticSubFunction::ReturnBusMessageCount, 0x000B),
-        (DiagnosticSubFunction::ReturnBusCommunicationErrorCount, 0x000C),
+        (
+            DiagnosticSubFunction::ReturnBusCommunicationErrorCount,
+            0x000C,
+        ),
         (DiagnosticSubFunction::ReturnBusExceptionErrorCount, 0x000D),
         (DiagnosticSubFunction::ReturnServerMessageCount, 0x000E),
         (DiagnosticSubFunction::ReturnServerNoResponseCount, 0x000F),
         (DiagnosticSubFunction::ReturnServerNakCount, 0x0010),
         (DiagnosticSubFunction::ReturnServerBusyCount, 0x0011),
-        (DiagnosticSubFunction::ReturnBusCharacterOverrunCount, 0x0012),
+        (
+            DiagnosticSubFunction::ReturnBusCharacterOverrunCount,
+            0x0012,
+        ),
         (DiagnosticSubFunction::ClearOverrunCounterAndFlag, 0x0014),
     ];
     for (sf, wire) in variants {
@@ -147,8 +183,14 @@ fn coil_value_wire_encoding() {
 
 #[test]
 fn coil_value_round_trip() {
-    assert_eq!(CoilValue::from_wire(CoilValue::On.to_wire()), Some(CoilValue::On));
-    assert_eq!(CoilValue::from_wire(CoilValue::Off.to_wire()), Some(CoilValue::Off));
+    assert_eq!(
+        CoilValue::from_wire(CoilValue::On.to_wire()),
+        Some(CoilValue::On)
+    );
+    assert_eq!(
+        CoilValue::from_wire(CoilValue::Off.to_wire()),
+        Some(CoilValue::Off)
+    );
 }
 
 #[test]
@@ -177,7 +219,10 @@ fn unit_id_tcp_device() {
 fn unit_id_valid_slave_range() {
     assert!(!UnitId(0).is_valid_slave());
     for id in 1..=247u8 {
-        assert!(UnitId(id).is_valid_slave(), "UnitId({id}) should be valid slave");
+        assert!(
+            UnitId(id).is_valid_slave(),
+            "UnitId({id}) should be valid slave"
+        );
     }
     assert!(!UnitId(248).is_valid_slave());
     assert!(!UnitId(255).is_valid_slave());
@@ -187,8 +232,14 @@ fn unit_id_valid_slave_range() {
 
 #[test]
 fn mei_type_round_trip() {
-    assert_eq!(MeiType::from_raw(0x0D), Some(MeiType::CanOpenGeneralReference));
-    assert_eq!(MeiType::from_raw(0x0E), Some(MeiType::ReadDeviceIdentification));
+    assert_eq!(
+        MeiType::from_raw(0x0D),
+        Some(MeiType::CanOpenGeneralReference)
+    );
+    assert_eq!(
+        MeiType::from_raw(0x0E),
+        Some(MeiType::ReadDeviceIdentification)
+    );
     assert_eq!(MeiType::CanOpenGeneralReference.code(), 0x0D);
     assert_eq!(MeiType::ReadDeviceIdentification.code(), 0x0E);
 }

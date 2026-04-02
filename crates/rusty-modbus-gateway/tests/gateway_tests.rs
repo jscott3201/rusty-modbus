@@ -85,8 +85,13 @@ async fn gateway_routes_request_to_backend() {
     let gateway = ModbusGateway::start(gw_config).await.unwrap();
     let gw_addr = gateway.local_addr();
 
-    let client = ModbusClient::connect(gw_addr, client_config()).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 2).await.unwrap();
+    let client = ModbusClient::connect(gw_addr, client_config())
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 2)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0xAAAA, 0xBBBB]);
 }
 
@@ -105,7 +110,9 @@ async fn gateway_returns_path_unavailable_for_unrouted_unit_id() {
     };
 
     let gateway = ModbusGateway::start(gw_config).await.unwrap();
-    let client = ModbusClient::connect(gateway.local_addr(), client_config()).await.unwrap();
+    let client = ModbusClient::connect(gateway.local_addr(), client_config())
+        .await
+        .unwrap();
 
     // Unit ID 20 is not in any route.
     let result = client.read_holding_registers(UnitId(20), 0, 1).await;
@@ -145,10 +152,15 @@ async fn gateway_returns_timeout_for_unresponsive_device() {
     };
 
     let gateway = ModbusGateway::start(gw_config).await.unwrap();
-    let client = ModbusClient::connect(gateway.local_addr(), ClientConfig {
-        timeout: Duration::from_secs(5),
-        ..ClientConfig::default()
-    }).await.unwrap();
+    let client = ModbusClient::connect(
+        gateway.local_addr(),
+        ClientConfig {
+            timeout: Duration::from_secs(5),
+            ..ClientConfig::default()
+        },
+    )
+    .await
+    .unwrap();
 
     let result = client.read_holding_registers(UnitId(1), 0, 1).await;
     match result {
@@ -184,10 +196,18 @@ async fn gateway_multiple_routes() {
     };
 
     let gateway = ModbusGateway::start(gw_config).await.unwrap();
-    let client = ModbusClient::connect(gateway.local_addr(), client_config()).await.unwrap();
+    let client = ModbusClient::connect(gateway.local_addr(), client_config())
+        .await
+        .unwrap();
 
-    let r1 = client.read_holding_registers(UnitId(5), 0, 1).await.unwrap();
-    let r2 = client.read_holding_registers(UnitId(15), 0, 1).await.unwrap();
+    let r1 = client
+        .read_holding_registers(UnitId(5), 0, 1)
+        .await
+        .unwrap();
+    let r2 = client
+        .read_holding_registers(UnitId(15), 0, 1)
+        .await
+        .unwrap();
 
     assert_eq!(r1, vec![0x0001]);
     assert_eq!(r2, vec![0x0002]);

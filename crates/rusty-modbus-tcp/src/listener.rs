@@ -1,8 +1,8 @@
 //! TCP server listener — accepts incoming Modbus/TCP connections.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_util::StreamExt;
 use rusty_modbus_frame::mbap::MbapCodec;

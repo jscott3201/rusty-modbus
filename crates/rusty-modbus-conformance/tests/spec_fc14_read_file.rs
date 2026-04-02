@@ -7,8 +7,10 @@ use rusty_modbus_codec::{decode_request, decode_response};
 // Group 2: file 3, record 9, length 2
 const SPEC_REQUEST: &[u8] = &[
     0x14, 0x0E, // FC + byte_count=14
-    0x06, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, // sub-req 1: ref_type=6, file=4, record=1, len=2
-    0x06, 0x00, 0x03, 0x00, 0x09, 0x00, 0x02, // sub-req 2: ref_type=6, file=3, record=9, len=2
+    0x06, 0x00, 0x04, 0x00, 0x01, 0x00,
+    0x02, // sub-req 1: ref_type=6, file=4, record=1, len=2
+    0x06, 0x00, 0x03, 0x00, 0x09, 0x00,
+    0x02, // sub-req 2: ref_type=6, file=3, record=9, len=2
 ];
 
 #[test]
@@ -27,8 +29,10 @@ fn spec_6_14_response_decode() {
     // Spec response p.33
     let resp: &[u8] = &[
         0x14, 0x0C, // FC + resp_data_length=12
-        0x05, 0x06, 0x0D, 0xFE, 0x00, 0x20, // sub-resp 1: len=5, ref_type=6, data=[0x0DFE, 0x0020]
-        0x05, 0x06, 0x33, 0xCD, 0x00, 0x40, // sub-resp 2: len=5, ref_type=6, data=[0x33CD, 0x0040]
+        0x05, 0x06, 0x0D, 0xFE, 0x00,
+        0x20, // sub-resp 1: len=5, ref_type=6, data=[0x0DFE, 0x0020]
+        0x05, 0x06, 0x33, 0xCD, 0x00,
+        0x40, // sub-resp 2: len=5, ref_type=6, data=[0x33CD, 0x0040]
     ];
     match decode_response(resp).unwrap() {
         rusty_modbus_codec::ResponsePdu::ReadFileRecord(r) => {

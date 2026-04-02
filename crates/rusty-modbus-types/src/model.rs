@@ -1,6 +1,8 @@
 //! Newtypes and data model types for type-safe Modbus programming.
 
-use crate::constants::{UNIT_ID_BROADCAST, UNIT_ID_MAX_SLAVE, UNIT_ID_MIN_SLAVE, UNIT_ID_TCP_DEVICE};
+use crate::constants::{
+    UNIT_ID_BROADCAST, UNIT_ID_MAX_SLAVE, UNIT_ID_MIN_SLAVE, UNIT_ID_TCP_DEVICE,
+};
 
 /// Transaction identifier for MBAP pipelining (0..=65535).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

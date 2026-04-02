@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ModbusClient};
-use rusty_modbus_sim::{generic_io, ModbusSimulator};
+use rusty_modbus_sim::{ModbusSimulator, generic_io};
 use rusty_modbus_types::UnitId;
 
 async fn start_sim() -> (ModbusSimulator, std::net::SocketAddr) {
@@ -29,7 +29,10 @@ async fn read_holding_registers_human() {
     sim.set_holding_register(1, 200);
 
     let client = ModbusClient::connect(addr, config()).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 2).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 2)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![100, 200]);
 
     sim.stop().await;
@@ -40,9 +43,15 @@ async fn write_single_register_via_client() {
     let (mut sim, addr) = start_sim().await;
 
     let client = ModbusClient::connect(addr, config()).await.unwrap();
-    client.write_single_register(UnitId(1), 0, 42).await.unwrap();
+    client
+        .write_single_register(UnitId(1), 0, 42)
+        .await
+        .unwrap();
 
-    let regs = client.read_holding_registers(UnitId(1), 0, 1).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![42]);
 
     sim.stop().await;
@@ -53,9 +62,15 @@ async fn write_multiple_registers_via_client() {
     let (mut sim, addr) = start_sim().await;
 
     let client = ModbusClient::connect(addr, config()).await.unwrap();
-    client.write_multiple_registers(UnitId(1), 0, &[10, 20, 30]).await.unwrap();
+    client
+        .write_multiple_registers(UnitId(1), 0, &[10, 20, 30])
+        .await
+        .unwrap();
 
-    let regs = client.read_holding_registers(UnitId(1), 0, 3).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 3)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![10, 20, 30]);
 
     sim.stop().await;

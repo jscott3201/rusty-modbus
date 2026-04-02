@@ -5,9 +5,9 @@
 
 use std::sync::atomic::{AtomicU16, Ordering};
 
+use parking_lot::Mutex;
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_types::{FunctionCode, TransactionId};
-use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
@@ -52,8 +52,13 @@ impl TransactionManager {
     pub fn register(
         &self,
         function_code: FunctionCode,
-    ) -> Result<(TransactionId, oneshot::Receiver<Result<OwnedResponsePdu, ClientError>>), ClientError>
-    {
+    ) -> Result<
+        (
+            TransactionId,
+            oneshot::Receiver<Result<OwnedResponsePdu, ClientError>>,
+        ),
+        ClientError,
+    > {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let txn_id = TransactionId(id);
         let slot_idx = id as usize % MAX_SLOTS;
@@ -78,7 +83,11 @@ impl TransactionManager {
     /// Complete a transaction with a response.
     ///
     /// Returns `true` if the transaction was found and completed, `false` if not found.
-    pub fn complete(&self, txn_id: TransactionId, response: Result<OwnedResponsePdu, ClientError>) -> bool {
+    pub fn complete(
+        &self,
+        txn_id: TransactionId,
+        response: Result<OwnedResponsePdu, ClientError>,
+    ) -> bool {
         let slot_idx = txn_id.0 as usize % MAX_SLOTS;
         let mut slot = self.slots[slot_idx].lock();
 
@@ -126,9 +135,6 @@ impl TransactionManager {
     /// Number of currently pending transactions.
     #[must_use]
     pub fn pending_count(&self) -> usize {
-        self.slots
-            .iter()
-            .filter(|s| s.lock().is_some())
-            .count()
+        self.slots.iter().filter(|s| s.lock().is_some()).count()
     }
 }

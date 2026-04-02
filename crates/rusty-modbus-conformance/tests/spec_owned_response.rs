@@ -15,8 +15,8 @@ fn owned_fc01_read_coils() {
     match OwnedResponsePdu::from_pdu(pdu).unwrap() {
         OwnedResponsePdu::ReadCoils(r) => {
             assert_eq!(r.byte_count, 3);
-            assert!(r.coil(0));   // output 20 ON
-            assert!(!r.coil(1));  // output 21 OFF
+            assert!(r.coil(0)); // output 20 ON
+            assert!(!r.coil(1)); // output 21 OFF
         }
         other => panic!("expected ReadCoils, got {other:?}"),
     }
@@ -188,7 +188,10 @@ fn owned_fc2b_encapsulated_interface() {
     let pdu = Bytes::from_static(&[0x2B, 0x0E, 0x01, 0x00, 0x00]);
     match OwnedResponsePdu::from_pdu(pdu).unwrap() {
         OwnedResponsePdu::EncapsulatedInterface(r) => {
-            assert_eq!(r.mei_type, rusty_modbus_types::MeiType::ReadDeviceIdentification);
+            assert_eq!(
+                r.mei_type,
+                rusty_modbus_types::MeiType::ReadDeviceIdentification
+            );
         }
         other => panic!("expected EncapsulatedInterface, got {other:?}"),
     }

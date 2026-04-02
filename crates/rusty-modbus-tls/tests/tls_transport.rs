@@ -4,12 +4,12 @@ use std::io::Write;
 use std::time::Duration;
 
 use bytes::Bytes;
+use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_tls::config::{TlsClientConfig, TlsServerConfig};
 use rusty_modbus_tls::{TlsServerListener, TlsTransport};
 use rusty_modbus_types::MbapHeader;
-use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
 use tempfile::NamedTempFile;
 
 struct TestCerts {
@@ -225,9 +225,13 @@ async fn missing_client_cert_fails() {
     let rogue_cert = rogue_params.self_signed(&rogue_key).unwrap();
 
     let mut rogue_cert_file = NamedTempFile::new().unwrap();
-    rogue_cert_file.write_all(rogue_cert.pem().as_bytes()).unwrap();
+    rogue_cert_file
+        .write_all(rogue_cert.pem().as_bytes())
+        .unwrap();
     let mut rogue_key_file = NamedTempFile::new().unwrap();
-    rogue_key_file.write_all(rogue_key.serialize_pem().as_bytes()).unwrap();
+    rogue_key_file
+        .write_all(rogue_key.serialize_pem().as_bytes())
+        .unwrap();
 
     let client_config = TlsClientConfig {
         ca_cert: certs.ca_cert_path.path().to_path_buf(),

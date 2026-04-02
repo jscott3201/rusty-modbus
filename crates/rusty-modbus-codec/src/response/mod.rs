@@ -23,6 +23,6 @@ pub use file::{ReadFileRecordResponse, WriteFileRecordResponse};
 pub use mei::EncapsulatedInterfaceResponse;
 pub use reg_read::{ReadHoldingRegistersResponse, ReadInputRegistersResponse};
 pub use reg_write::{
-    MaskWriteRegisterResponse, ReadWriteMultipleRegistersResponse,
-    WriteMultipleRegistersResponse, WriteSingleRegisterResponse,
+    MaskWriteRegisterResponse, ReadWriteMultipleRegistersResponse, WriteMultipleRegistersResponse,
+    WriteSingleRegisterResponse,
 };

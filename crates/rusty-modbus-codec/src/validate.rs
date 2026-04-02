@@ -185,7 +185,10 @@ mod tests {
 
     #[test]
     fn read_coils_quantity_zero() {
-        assert_eq!(validate_read_coils(0, 0), Err(ExceptionCode::IllegalDataValue));
+        assert_eq!(
+            validate_read_coils(0, 0),
+            Err(ExceptionCode::IllegalDataValue)
+        );
     }
 
     #[test]

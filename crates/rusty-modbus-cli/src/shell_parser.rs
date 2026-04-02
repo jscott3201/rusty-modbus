@@ -77,9 +77,7 @@ fn parse_set(tokens: &[&str]) -> Result<ShellCommand, ParseError> {
 
 fn parse_read(tokens: &[&str]) -> Result<ShellCommand, ParseError> {
     if tokens.len() != 3 {
-        return Err(ParseError(
-            "usage: read <type> <address> <quantity>".into(),
-        ));
+        return Err(ParseError("usage: read <type> <address> <quantity>".into()));
     }
     let address = parse_u16(tokens[1])?;
     let quantity = parse_u16(tokens[2])?;
@@ -118,9 +116,7 @@ fn parse_write(tokens: &[&str]) -> Result<ShellCommand, ParseError> {
         }
         "register" => {
             if tokens.len() != 3 {
-                return Err(ParseError(
-                    "usage: write register <address> <value>".into(),
-                ));
+                return Err(ParseError("usage: write register <address> <value>".into()));
             }
             let value = parse_u16(tokens[2])?;
             Ok(ShellCommand::WriteRegister { address, value })

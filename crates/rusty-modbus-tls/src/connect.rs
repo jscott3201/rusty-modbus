@@ -5,10 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use rustls::pki_types::ServerName;
 use rusty_modbus_frame::error::FrameError;
 use rusty_modbus_frame::frame::Frame;
 use rusty_modbus_frame::mbap::MbapCodec;
-use rustls::pki_types::ServerName;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;

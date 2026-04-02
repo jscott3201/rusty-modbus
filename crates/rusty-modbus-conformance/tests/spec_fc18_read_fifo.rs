@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.18 — FC 18 (24) Read FIFO Queue conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response};
 use rusty_modbus_codec::request::Encode;
+use rusty_modbus_codec::{decode_request, decode_response};
 use rusty_modbus_types::Address;
 
 // Spec example p.40: read FIFO at pointer register 1246 (0x04DE)

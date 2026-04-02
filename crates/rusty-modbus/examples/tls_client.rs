@@ -18,7 +18,10 @@ use rusty_modbus::types::MbapHeader;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 5 {
-        eprintln!("Usage: {} <host:port> <ca.pem> <client.pem> <client-key.pem>", args[0]);
+        eprintln!(
+            "Usage: {} <host:port> <ca.pem> <client.pem> <client-key.pem>",
+            args[0]
+        );
         std::process::exit(1);
     }
 

@@ -82,13 +82,19 @@ mod tests {
         (DiagnosticSubFunction::ForceListenOnlyMode, 0x0004),
         (DiagnosticSubFunction::ClearCountersAndDiagRegister, 0x000A),
         (DiagnosticSubFunction::ReturnBusMessageCount, 0x000B),
-        (DiagnosticSubFunction::ReturnBusCommunicationErrorCount, 0x000C),
+        (
+            DiagnosticSubFunction::ReturnBusCommunicationErrorCount,
+            0x000C,
+        ),
         (DiagnosticSubFunction::ReturnBusExceptionErrorCount, 0x000D),
         (DiagnosticSubFunction::ReturnServerMessageCount, 0x000E),
         (DiagnosticSubFunction::ReturnServerNoResponseCount, 0x000F),
         (DiagnosticSubFunction::ReturnServerNakCount, 0x0010),
         (DiagnosticSubFunction::ReturnServerBusyCount, 0x0011),
-        (DiagnosticSubFunction::ReturnBusCharacterOverrunCount, 0x0012),
+        (
+            DiagnosticSubFunction::ReturnBusCharacterOverrunCount,
+            0x0012,
+        ),
         (DiagnosticSubFunction::ClearOverrunCounterAndFlag, 0x0014),
     ];
 

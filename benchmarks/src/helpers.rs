@@ -4,11 +4,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusty_modbus_client::config::{ClientConfig, RetryConfig};
 use rusty_modbus_client::ModbusClient;
+use rusty_modbus_client::config::{ClientConfig, RetryConfig};
+use rusty_modbus_server::ModbusServer;
 use rusty_modbus_server::config::ServerConfig;
 use rusty_modbus_server::store::memory::{InMemoryStore, StoreConfig};
-use rusty_modbus_server::ModbusServer;
 use rusty_modbus_types::UnitId;
 
 /// Create a pre-populated in-memory store for benchmarks.

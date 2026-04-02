@@ -6,7 +6,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
-use rusty_modbus_tcp::{TcpSink, TcpRecvStream, TcpTransport, TransportConnect};
+use rusty_modbus_tcp::{TcpRecvStream, TcpSink, TcpTransport, TransportConnect};
 
 use crate::config::PoolConfig;
 use crate::connection::PooledConnection;

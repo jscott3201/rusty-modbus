@@ -36,8 +36,8 @@ impl ReadDeviceIdentificationRequest {
         if data[0] != MeiType::ReadDeviceIdentification.code() {
             return Err(DecodeError::UnknownMeiType(data[0]));
         }
-        let device_id_code = DeviceIdCode::from_raw(data[1])
-            .ok_or(DecodeError::InvalidDeviceIdCode(data[1]))?;
+        let device_id_code =
+            DeviceIdCode::from_raw(data[1]).ok_or(DecodeError::InvalidDeviceIdCode(data[1]))?;
         let object_id = data[2];
         Ok(Self {
             device_id_code,

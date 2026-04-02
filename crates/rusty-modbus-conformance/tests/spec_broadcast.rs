@@ -4,12 +4,12 @@
 //! Broadcast writes execute on the server but produce no response.
 //! Broadcast reads are undefined and should be rejected.
 
-use std::sync::Arc;
+use rusty_modbus_server::DeviceIdentification;
 use rusty_modbus_server::handler;
 use rusty_modbus_server::store::DataStore;
 use rusty_modbus_server::store::memory::{InMemoryStore, StoreConfig};
-use rusty_modbus_server::DeviceIdentification;
 use rusty_modbus_types::UnitId;
+use std::sync::Arc;
 
 fn store() -> Arc<InMemoryStore> {
     Arc::new(InMemoryStore::new(StoreConfig::default()))
@@ -20,10 +20,19 @@ async fn broadcast_write_single_register_executes() {
     let s = store();
     // FC 06: write register 5 = 0x1234, unit_id=0 (broadcast)
     let pdu = [0x06, 0x00, 0x05, 0x12, 0x34];
-    let resp = handler::process_request(&pdu, UnitId(0), s.as_ref(), &DeviceIdentification::default()).await;
+    let resp = handler::process_request(
+        &pdu,
+        UnitId(0),
+        s.as_ref(),
+        &DeviceIdentification::default(),
+    )
+    .await;
 
     // No response for broadcast
-    assert!(resp.is_none(), "broadcast write should return None (no response)");
+    assert!(
+        resp.is_none(),
+        "broadcast write should return None (no response)"
+    );
 
     // But the write should have executed
     let mut buf = [0u16; 1];
@@ -37,7 +46,13 @@ async fn broadcast_write_single_coil_executes() {
     let s = store();
     // FC 05: write coil 10 = ON (0xFF00), unit_id=0
     let pdu = [0x05, 0x00, 0x0A, 0xFF, 0x00];
-    let resp = handler::process_request(&pdu, UnitId(0), s.as_ref(), &DeviceIdentification::default()).await;
+    let resp = handler::process_request(
+        &pdu,
+        UnitId(0),
+        s.as_ref(),
+        &DeviceIdentification::default(),
+    )
+    .await;
 
     assert!(resp.is_none());
 
@@ -52,7 +67,13 @@ async fn broadcast_write_multiple_registers_executes() {
     let s = store();
     // FC 10: write 2 registers at address 0 = [0xAAAA, 0xBBBB], unit_id=0
     let pdu = [0x10, 0x00, 0x00, 0x00, 0x02, 0x04, 0xAA, 0xAA, 0xBB, 0xBB];
-    let resp = handler::process_request(&pdu, UnitId(0), s.as_ref(), &DeviceIdentification::default()).await;
+    let resp = handler::process_request(
+        &pdu,
+        UnitId(0),
+        s.as_ref(),
+        &DeviceIdentification::default(),
+    )
+    .await;
 
     assert!(resp.is_none());
 
@@ -67,7 +88,13 @@ async fn broadcast_read_returns_none() {
     // FC 03: read holding registers, unit_id=0 (broadcast)
     // Per spec §4: reads to broadcast address produce no response
     let pdu = [0x03, 0x00, 0x00, 0x00, 0x01];
-    let resp = handler::process_request(&pdu, UnitId(0), s.as_ref(), &DeviceIdentification::default()).await;
+    let resp = handler::process_request(
+        &pdu,
+        UnitId(0),
+        s.as_ref(),
+        &DeviceIdentification::default(),
+    )
+    .await;
     assert!(resp.is_none(), "broadcast read should return None");
 }
 
@@ -76,6 +103,12 @@ async fn broadcast_unknown_fc_returns_none() {
     let s = store();
     // Unknown FC with broadcast — no response either
     let pdu = [0x50, 0x00, 0x00];
-    let resp = handler::process_request(&pdu, UnitId(0), s.as_ref(), &DeviceIdentification::default()).await;
+    let resp = handler::process_request(
+        &pdu,
+        UnitId(0),
+        s.as_ref(),
+        &DeviceIdentification::default(),
+    )
+    .await;
     assert!(resp.is_none(), "broadcast unknown FC should return None");
 }

@@ -49,8 +49,8 @@ impl<'buf> ReadDeviceIdentificationResponse<'buf> {
         if data[0] != MeiType::ReadDeviceIdentification.code() {
             return Err(DecodeError::UnknownMeiType(data[0]));
         }
-        let device_id_code = DeviceIdCode::from_raw(data[1])
-            .ok_or(DecodeError::InvalidDeviceIdCode(data[1]))?;
+        let device_id_code =
+            DeviceIdCode::from_raw(data[1]).ok_or(DecodeError::InvalidDeviceIdCode(data[1]))?;
         let conformity_level = data[2];
         let more_follows = data[3] == 0xFF;
         let next_object_id = data[4];
@@ -128,8 +128,7 @@ mod tests {
     #[test]
     fn decode_single_object_response() {
         let data = [
-            0x0E, 0x01, 0x01, 0x00, 0x00, 0x01,
-            0x00, 0x05, b'h', b'e', b'l', b'l', b'o',
+            0x0E, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x05, b'h', b'e', b'l', b'l', b'o',
         ];
         let resp = ReadDeviceIdentificationResponse::decode(&data).unwrap();
         assert_eq!(resp.device_id_code, DeviceIdCode::BasicStream);
@@ -143,10 +142,8 @@ mod tests {
     #[test]
     fn decode_multiple_objects() {
         let data = [
-            0x0E, 0x01, 0x01, 0x00, 0x00, 0x03,
-            0x00, 0x04, b't', b'e', b's', b't',
-            0x01, 0x03, b'X', b'Y', b'Z',
-            0x02, 0x05, b'1', b'.', b'0', b'.', b'0',
+            0x0E, 0x01, 0x01, 0x00, 0x00, 0x03, 0x00, 0x04, b't', b'e', b's', b't', 0x01, 0x03,
+            b'X', b'Y', b'Z', 0x02, 0x05, b'1', b'.', b'0', b'.', b'0',
         ];
         let resp = ReadDeviceIdentificationResponse::decode(&data).unwrap();
         let objs: Vec<_> = resp.objects().collect();
@@ -158,10 +155,7 @@ mod tests {
 
     #[test]
     fn decode_more_follows() {
-        let data = [
-            0x0E, 0x01, 0x01, 0xFF, 0x02, 0x01,
-            0x00, 0x02, b'O', b'K',
-        ];
+        let data = [0x0E, 0x01, 0x01, 0xFF, 0x02, 0x01, 0x00, 0x02, b'O', b'K'];
         let resp = ReadDeviceIdentificationResponse::decode(&data).unwrap();
         assert!(resp.more_follows);
         assert_eq!(resp.next_object_id, 0x02);
@@ -178,10 +172,7 @@ mod tests {
 
     #[test]
     fn decode_truncated_object() {
-        let data = [
-            0x0E, 0x01, 0x01, 0x00, 0x00, 0x01,
-            0x00, 0x05, b'h', b'i',
-        ];
+        let data = [0x0E, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x05, b'h', b'i'];
         assert!(matches!(
             ReadDeviceIdentificationResponse::decode(&data),
             Err(DecodeError::Truncated { .. })

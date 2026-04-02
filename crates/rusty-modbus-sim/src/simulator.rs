@@ -3,9 +3,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use rusty_modbus_server::ModbusServer;
 use rusty_modbus_server::config::{DeviceIdentification, ServerConfig};
 use rusty_modbus_server::store::memory::{InMemoryStore, StoreConfig};
-use rusty_modbus_server::ModbusServer;
 use rusty_modbus_types::UnitId;
 
 use crate::config::{RegisterConfig, SimConfig};

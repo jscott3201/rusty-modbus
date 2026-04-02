@@ -300,8 +300,7 @@ impl Encode for ReadWriteMultipleRegistersRequest<'_> {
         buf[5..7].copy_from_slice(&self.write_address.0.to_be_bytes());
         buf[7..9].copy_from_slice(&self.write_quantity.0.to_be_bytes());
         buf[9] = self.write_byte_count;
-        buf[10..10 + self.write_register_values.len()]
-            .copy_from_slice(self.write_register_values);
+        buf[10..10 + self.write_register_values.len()].copy_from_slice(self.write_register_values);
         Ok(len)
     }
 

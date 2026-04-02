@@ -6,7 +6,7 @@
 //! sliced directly from the read buffer.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use rusty_modbus_types::{MbapHeader, MAX_PDU_SIZE, MBAP_HEADER_LEN, MODBUS_PROTOCOL_ID};
+use rusty_modbus_types::{MAX_PDU_SIZE, MBAP_HEADER_LEN, MODBUS_PROTOCOL_ID, MbapHeader};
 use tokio_util::codec::{Decoder, Encoder};
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -36,8 +36,8 @@ impl Decoder for MbapCodec {
         }
 
         // Step 2: peek at the header fields via zero-copy overlay.
-        let header =
-            MbapHeader::ref_from_bytes(&src[..MBAP_HEADER_LEN]).map_err(|_| FrameError::Truncated)?;
+        let header = MbapHeader::ref_from_bytes(&src[..MBAP_HEADER_LEN])
+            .map_err(|_| FrameError::Truncated)?;
 
         // Step 3: validate protocol identifier.
         let proto = header.protocol_id.get();
@@ -141,7 +141,10 @@ mod tests {
         let mut buf = BytesMut::from(&raw[..]);
         let mut codec = MbapCodec;
 
-        let frame = codec.decode(&mut buf).unwrap().expect("should decode a frame");
+        let frame = codec
+            .decode(&mut buf)
+            .unwrap()
+            .expect("should decode a frame");
         assert_eq!(frame.unit_id(), 0xFF);
         assert_eq!(frame.pdu.as_ref(), &pdu);
         assert!(buf.is_empty(), "buffer should be fully consumed");

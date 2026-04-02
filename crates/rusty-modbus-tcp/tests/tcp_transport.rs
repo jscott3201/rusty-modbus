@@ -6,12 +6,12 @@ use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
-use rusty_modbus_codec::{decode_response, ResponsePdu};
+use rusty_modbus_codec::{ResponsePdu, decode_response};
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_tcp::TcpTransport;
 use rusty_modbus_tcp::config::{AccessControl, AccessMode, TcpConfig, TcpServerConfig};
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportConnect, TransportSink, TransportStream};
-use rusty_modbus_tcp::{TcpTransport};
 use rusty_modbus_types::MbapHeader;
 
 /// Helper: build a Frame with MBAP header for sending.

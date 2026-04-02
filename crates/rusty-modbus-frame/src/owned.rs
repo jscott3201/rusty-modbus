@@ -626,8 +626,7 @@ impl OwnedEncapsulatedInterfaceResponse {
                 actual: 0,
             });
         }
-        let mei_type =
-            MeiType::from_raw(data[0]).ok_or(DecodeError::UnknownMeiType(data[0]))?;
+        let mei_type = MeiType::from_raw(data[0]).ok_or(DecodeError::UnknownMeiType(data[0]))?;
         let owned_data = pdu.slice(2..);
         Ok(Self {
             mei_type,
@@ -735,21 +734,17 @@ impl OwnedResponsePdu {
 
         // Exception-flagged bytes handled above. from_raw returns Some for all
         // non-exception bytes (known → named, unknown → Custom).
-        let fc = FunctionCode::from_raw(fc_byte)
-            .unwrap_or(FunctionCode::Custom(fc_byte));
+        let fc = FunctionCode::from_raw(fc_byte).unwrap_or(FunctionCode::Custom(fc_byte));
 
         let data = &pdu[1..];
 
         match fc {
-            FunctionCode::ReadCoils => {
-                OwnedReadCoilsResponse::from_pdu(pdu).map(Self::ReadCoils)
-            }
+            FunctionCode::ReadCoils => OwnedReadCoilsResponse::from_pdu(pdu).map(Self::ReadCoils),
             FunctionCode::ReadDiscreteInputs => {
                 OwnedReadDiscreteInputsResponse::from_pdu(pdu).map(Self::ReadDiscreteInputs)
             }
             FunctionCode::ReadHoldingRegisters => {
-                OwnedReadHoldingRegistersResponse::from_pdu(pdu)
-                    .map(Self::ReadHoldingRegisters)
+                OwnedReadHoldingRegistersResponse::from_pdu(pdu).map(Self::ReadHoldingRegisters)
             }
             FunctionCode::ReadInputRegisters => {
                 OwnedReadInputRegistersResponse::from_pdu(pdu).map(Self::ReadInputRegisters)
@@ -798,8 +793,7 @@ impl OwnedResponsePdu {
                 OwnedReadFifoQueueResponse::from_pdu(pdu).map(Self::ReadFifoQueue)
             }
             FunctionCode::EncapsulatedInterfaceTransport => {
-                OwnedEncapsulatedInterfaceResponse::from_pdu(pdu)
-                    .map(Self::EncapsulatedInterface)
+                OwnedEncapsulatedInterfaceResponse::from_pdu(pdu).map(Self::EncapsulatedInterface)
             }
             FunctionCode::Custom(fc) => Ok(Self::Custom(fc, pdu.slice(1..))),
         }

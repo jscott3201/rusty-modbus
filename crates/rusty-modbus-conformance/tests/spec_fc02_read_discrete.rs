@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.2 — FC 02 (0x02) Read Discrete Inputs conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response, DecodeError};
 use rusty_modbus_codec::request::{Encode, ReadDiscreteInputsRequest};
+use rusty_modbus_codec::{DecodeError, decode_request, decode_response};
 use rusty_modbus_types::{Address, Quantity};
 
 // Spec example: read discrete inputs 197-218 (address 0x00C4, quantity 0x0016 = 22)
@@ -51,14 +51,14 @@ fn spec_6_2_input_bit_packing() {
     let resp = decode_response(SPEC_RESPONSE).unwrap();
     match resp {
         rusty_modbus_codec::ResponsePdu::ReadDiscreteInputs(r) => {
-            assert!(!r.coil(0));  // input 197 = OFF
-            assert!(!r.coil(1));  // input 198 = OFF
-            assert!(r.coil(2));   // input 199 = ON
-            assert!(r.coil(3));   // input 200 = ON
-            assert!(!r.coil(4));  // input 201 = OFF
-            assert!(r.coil(5));   // input 202 = ON
-            assert!(!r.coil(6));  // input 203 = OFF
-            assert!(r.coil(7));   // input 204 = ON
+            assert!(!r.coil(0)); // input 197 = OFF
+            assert!(!r.coil(1)); // input 198 = OFF
+            assert!(r.coil(2)); // input 199 = ON
+            assert!(r.coil(3)); // input 200 = ON
+            assert!(!r.coil(4)); // input 201 = OFF
+            assert!(r.coil(5)); // input 202 = ON
+            assert!(!r.coil(6)); // input 203 = OFF
+            assert!(r.coil(7)); // input 204 = ON
         }
         _ => panic!("expected ReadDiscreteInputs"),
     }
@@ -70,10 +70,16 @@ fn quantity_boundary() {
     let max_pdu = [0x02, 0x00, 0x00, 0x07, 0xD0];
     assert!(decode_request(&max_pdu).is_ok());
     let over_pdu = [0x02, 0x00, 0x00, 0x07, 0xD1];
-    assert!(matches!(decode_request(&over_pdu), Err(DecodeError::QuantityOutOfRange { .. })));
+    assert!(matches!(
+        decode_request(&over_pdu),
+        Err(DecodeError::QuantityOutOfRange { .. })
+    ));
 }
 
 #[test]
 fn truncated() {
-    assert!(matches!(decode_request(&[0x02, 0x00]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x02, 0x00]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }

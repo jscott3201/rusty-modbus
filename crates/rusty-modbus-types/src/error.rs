@@ -39,10 +39,7 @@ impl core::fmt::Display for TypeError {
                 write!(f, "unknown exception code: {byte:#04X}")
             }
             Self::QuantityOutOfRange { function, quantity } => {
-                write!(
-                    f,
-                    "quantity {quantity} out of range for {function}"
-                )
+                write!(f, "quantity {quantity} out of range for {function}")
             }
             Self::AddressOverflow { address, quantity } => {
                 write!(

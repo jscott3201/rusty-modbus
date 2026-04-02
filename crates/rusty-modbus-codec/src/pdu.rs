@@ -1,8 +1,8 @@
 //! Core PDU types: `PduRef`, `RequestPdu`, `ResponsePdu`.
 
 use crate::request::{
-    DiagnosticsRequest, EncapsulatedInterfaceRequest, MaskWriteRegisterRequest,
-    ReadCoilsRequest, ReadDiscreteInputsRequest, ReadFifoQueueRequest, ReadFileRecordRequest,
+    DiagnosticsRequest, EncapsulatedInterfaceRequest, MaskWriteRegisterRequest, ReadCoilsRequest,
+    ReadDiscreteInputsRequest, ReadFifoQueueRequest, ReadFileRecordRequest,
     ReadHoldingRegistersRequest, ReadInputRegistersRequest, ReadWriteMultipleRegistersRequest,
     WriteFileRecordRequest, WriteMultipleCoilsRequest, WriteMultipleRegistersRequest,
     WriteSingleCoilRequest, WriteSingleRegisterRequest,

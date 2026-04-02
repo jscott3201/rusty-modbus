@@ -33,10 +33,7 @@ impl<S: DataStore + 'static> ModbusServer<S> {
     /// # Errors
     ///
     /// Returns [`ServerError::Bind`] if the address cannot be bound.
-    pub async fn start(
-        config: ServerConfig,
-        store: Arc<S>,
-    ) -> Result<Self, ServerError> {
+    pub async fn start(config: ServerConfig, store: Arc<S>) -> Result<Self, ServerError> {
         let tcp_config = TcpServerConfig {
             max_connections: config.max_connections,
             ..config.tcp_config.clone()
@@ -61,7 +58,14 @@ impl<S: DataStore + 'static> ModbusServer<S> {
         let server_device_id = config.device_id.clone();
 
         let accept_handle = tokio::spawn(async move {
-            accept_loop(listener, server_unit_id, server_store, server_device_id, shutdown_rx).await;
+            accept_loop(
+                listener,
+                server_unit_id,
+                server_store,
+                server_device_id,
+                shutdown_rx,
+            )
+            .await;
         });
 
         Ok(Self {
@@ -164,7 +168,9 @@ async fn handle_connection<S: DataStore>(
         };
 
         // Process the request.
-        if let Some(response_pdu) = handler::process_request(&frame.pdu, request_unit_id, store.as_ref(), &device_id).await {
+        if let Some(response_pdu) =
+            handler::process_request(&frame.pdu, request_unit_id, store.as_ref(), &device_id).await
+        {
             let header = MbapHeader::new(
                 txn_id,
                 request_unit_id.0,

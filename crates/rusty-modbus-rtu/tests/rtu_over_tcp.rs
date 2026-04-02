@@ -3,7 +3,7 @@
 //! CI-friendly — no serial hardware required.
 
 use bytes::Bytes;
-use rusty_modbus_codec::{decode_response, ResponsePdu};
+use rusty_modbus_codec::{ResponsePdu, decode_response};
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_rtu::config::RtuConfig;
 use rusty_modbus_rtu::rtu_tcp::RtuOverTcpTransport;
@@ -14,8 +14,8 @@ use std::time::Duration;
 
 /// Start an RTU-over-TCP echo server on an ephemeral port.
 async fn start_rtu_tcp_echo_server() -> SocketAddr {
-    use rusty_modbus_frame::rtu_tcp::RtuOverTcpCodec;
     use futures_util::{SinkExt, StreamExt};
+    use rusty_modbus_frame::rtu_tcp::RtuOverTcpCodec;
     use tokio::net::TcpListener;
     use tokio_util::codec::Framed;
 
@@ -43,8 +43,8 @@ async fn start_rtu_tcp_echo_server() -> SocketAddr {
 
 /// Start an RTU-over-TCP server that responds with a proper Modbus response.
 async fn start_rtu_tcp_modbus_server() -> SocketAddr {
-    use rusty_modbus_frame::rtu_tcp::RtuOverTcpCodec;
     use futures_util::{SinkExt, StreamExt};
+    use rusty_modbus_frame::rtu_tcp::RtuOverTcpCodec;
     use tokio::net::TcpListener;
     use tokio_util::codec::Framed;
 

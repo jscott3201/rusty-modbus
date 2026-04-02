@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ModbusClient};
-use rusty_modbus_sim::{generic_io, hvac_controller, power_meter, vfd_drive, ModbusSimulator};
+use rusty_modbus_sim::{ModbusSimulator, generic_io, hvac_controller, power_meter, vfd_drive};
 use rusty_modbus_types::UnitId;
 
 fn client_config() -> ClientConfig {
@@ -20,7 +20,10 @@ async fn from_config_and_read_holding_registers() {
 
     // generic_io initializes holding registers 0..16 to 0.
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 4).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 4)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0, 0, 0, 0]);
 
     sim.stop().await;
@@ -33,8 +36,14 @@ async fn write_and_read_back() {
 
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
-    client.write_multiple_registers(UnitId(1), 0, &[0xAA, 0xBB, 0xCC]).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 3).await.unwrap();
+    client
+        .write_multiple_registers(UnitId(1), 0, &[0xAA, 0xBB, 0xCC])
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 3)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0xAA, 0xBB, 0xCC]);
 
     sim.stop().await;
@@ -49,7 +58,10 @@ async fn runtime_register_update() {
 
     // Update register programmatically.
     sim.set_holding_register(5, 0x1234);
-    let regs = client.read_holding_registers(UnitId(1), 5, 1).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 5, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0x1234]);
 
     sim.stop().await;
@@ -74,7 +86,10 @@ faults: []
     let addr = sim.start().await.unwrap();
 
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 4).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 4)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![100, 200, 300, 400]);
 
     sim.stop().await;
@@ -88,7 +103,10 @@ async fn hvac_profile_has_registers() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // HVAC holding register 0 = setpoint 720 (72.0°F ×10).
-    let regs = client.read_holding_registers(UnitId(1), 0, 1).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![720]);
 
     // Read coils — first coil should be true (fan on).
@@ -120,7 +138,10 @@ async fn vfd_profile_has_registers() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // VFD holding register 0 = speed setpoint 1500 RPM.
-    let regs = client.read_holding_registers(UnitId(3), 0, 1).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(3), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![1500]);
 
     sim.stop().await;

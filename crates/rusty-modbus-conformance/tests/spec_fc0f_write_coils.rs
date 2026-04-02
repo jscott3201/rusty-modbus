@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.11 — FC 0F (15) Write Multiple Coils conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response, DecodeError};
 use rusty_modbus_codec::request::Encode;
+use rusty_modbus_codec::{DecodeError, decode_request, decode_response};
 use rusty_modbus_types::{Address, Quantity};
 
 // Spec example p.29: write 10 coils starting at coil 20
@@ -54,10 +54,16 @@ fn quantity_boundaries() {
 
     // Zero quantity rejected
     let zero = [0x0F, 0x00, 0x00, 0x00, 0x00, 0x00];
-    assert!(matches!(decode_request(&zero), Err(DecodeError::QuantityOutOfRange { quantity: 0 })));
+    assert!(matches!(
+        decode_request(&zero),
+        Err(DecodeError::QuantityOutOfRange { quantity: 0 })
+    ));
 }
 
 #[test]
 fn truncated() {
-    assert!(matches!(decode_request(&[0x0F, 0x00, 0x13]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x0F, 0x00, 0x13]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }

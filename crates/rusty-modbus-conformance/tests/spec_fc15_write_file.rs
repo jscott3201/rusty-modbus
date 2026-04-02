@@ -5,13 +5,12 @@ use rusty_modbus_codec::{decode_request, decode_response};
 // Spec example p.35: write 3 registers to file 4, record 7
 const SPEC_REQUEST: &[u8] = &[
     0x15, 0x0D, // FC + request_data_length=13
-    0x06,                   // ref_type=6
-    0x00, 0x04,             // file=4
-    0x00, 0x07,             // record=7
-    0x00, 0x03,             // record_length=3
-    0x06, 0xAF,             // register data
-    0x04, 0xBE,
-    0x10, 0x0D,
+    0x06, // ref_type=6
+    0x00, 0x04, // file=4
+    0x00, 0x07, // record=7
+    0x00, 0x03, // record_length=3
+    0x06, 0xAF, // register data
+    0x04, 0xBE, 0x10, 0x0D,
 ];
 
 #[test]

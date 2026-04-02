@@ -1,9 +1,9 @@
 //! Spec V1.1b3 §7 — MODBUS Exception Responses conformance tests.
 
-use rusty_modbus_codec::decode_response;
-use rusty_modbus_codec::response::ExceptionResponse;
-use rusty_modbus_codec::request::Encode;
 use rusty_modbus_codec::DecodeError;
+use rusty_modbus_codec::decode_response;
+use rusty_modbus_codec::request::Encode;
+use rusty_modbus_codec::response::ExceptionResponse;
 use rusty_modbus_types::{ExceptionCode, FunctionCode};
 
 // Spec example p.47: client reads coil at address 1185 (0x04A1)
@@ -54,7 +54,11 @@ fn spec_7_every_fc_exception_byte() {
         (FunctionCode::EncapsulatedInterfaceTransport, 0xAB),
     ];
     for (fc, exc_byte) in fcs {
-        assert_eq!(fc.exception_code(), exc_byte, "exception byte mismatch for {fc:?}");
+        assert_eq!(
+            fc.exception_code(),
+            exc_byte,
+            "exception byte mismatch for {fc:?}"
+        );
         // Verify decode
         let exc = ExceptionResponse::decode(exc_byte, &[0x01]).unwrap();
         assert_eq!(exc.function_code, fc);

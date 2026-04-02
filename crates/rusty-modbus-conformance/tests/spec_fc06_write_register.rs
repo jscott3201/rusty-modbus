@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.6 — FC 06 (0x06) Write Single Register conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response};
 use rusty_modbus_codec::request::Encode;
+use rusty_modbus_codec::{decode_request, decode_response};
 use rusty_modbus_types::Address;
 
 // Spec example p.19: write register 2 = 3 (address 0x0001, value 0x0003)

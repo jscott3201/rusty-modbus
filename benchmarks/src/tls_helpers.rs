@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_server::handler;
 use rusty_modbus_server::store::DataStore;
@@ -13,7 +14,6 @@ use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_tls::config::{TlsClientConfig, TlsServerConfig};
 use rusty_modbus_tls::{TlsServerListener, TlsTransport};
 use rusty_modbus_types::{MbapHeader, UnitId};
-use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
 use tempfile::NamedTempFile;
 use tokio::task::JoinHandle;
 
@@ -40,15 +40,11 @@ pub fn generate_test_certs() -> TestCerts {
             std::net::Ipv4Addr::LOCALHOST,
         )));
     let server_key = KeyPair::generate().unwrap();
-    let server_cert = server_params
-        .signed_by(&server_key, &*ca)
-        .unwrap();
+    let server_cert = server_params.signed_by(&server_key, &*ca).unwrap();
 
     let client_params = CertificateParams::new(vec!["Test Client".to_string()]).unwrap();
     let client_key = KeyPair::generate().unwrap();
-    let client_cert = client_params
-        .signed_by(&client_key, &*ca)
-        .unwrap();
+    let client_cert = client_params.signed_by(&client_key, &*ca).unwrap();
 
     let mut ca_file = NamedTempFile::new().unwrap();
     ca_file.write_all(ca.pem().as_bytes()).unwrap();
@@ -110,12 +106,15 @@ pub async fn make_tls_server<S: DataStore + 'static>(
                         FrameHeader::Rtu { .. } => 0,
                     };
                     let unit_id = UnitId(frame.unit_id());
-                    if let Some(resp_pdu) =
-                        handler::process_request(&frame.pdu, unit_id, conn_store.as_ref(), &rusty_modbus_server::DeviceIdentification::default())
-                            .await
+                    if let Some(resp_pdu) = handler::process_request(
+                        &frame.pdu,
+                        unit_id,
+                        conn_store.as_ref(),
+                        &rusty_modbus_server::DeviceIdentification::default(),
+                    )
+                    .await
                     {
-                        let header =
-                            MbapHeader::new(txn_id, unit_id.0, resp_pdu.len() as u16);
+                        let header = MbapHeader::new(txn_id, unit_id.0, resp_pdu.len() as u16);
                         let resp = Frame {
                             header: FrameHeader::Mbap(header),
                             pdu: Bytes::from(resp_pdu),

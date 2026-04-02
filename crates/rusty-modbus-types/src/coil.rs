@@ -72,8 +72,14 @@ mod tests {
 
     #[test]
     fn to_wire_round_trip() {
-        assert_eq!(CoilValue::from_wire(CoilValue::On.to_wire()), Some(CoilValue::On));
-        assert_eq!(CoilValue::from_wire(CoilValue::Off.to_wire()), Some(CoilValue::Off));
+        assert_eq!(
+            CoilValue::from_wire(CoilValue::On.to_wire()),
+            Some(CoilValue::On)
+        );
+        assert_eq!(
+            CoilValue::from_wire(CoilValue::Off.to_wire()),
+            Some(CoilValue::Off)
+        );
     }
 
     #[test]

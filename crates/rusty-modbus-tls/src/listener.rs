@@ -22,10 +22,7 @@ pub struct TlsServerListener {
 
 impl TlsServerListener {
     /// Bind and prepare for TLS-secured Modbus connections.
-    pub async fn bind(
-        addr: SocketAddr,
-        config: &TlsServerConfig,
-    ) -> Result<Self, TlsError> {
+    pub async fn bind(addr: SocketAddr, config: &TlsServerConfig) -> Result<Self, TlsError> {
         let rustls_config = tls_config::build_server_config(config)?;
         let tls_acceptor = TlsAcceptor::from(Arc::new(rustls_config));
 

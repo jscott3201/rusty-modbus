@@ -5,7 +5,7 @@
 
 use bytes::Bytes;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
-use rusty_modbus_gateway::routing::{RouteTable};
+use rusty_modbus_gateway::routing::RouteTable;
 use rusty_modbus_gateway::translator::{make_exception_frame, mbap_to_rtu, rtu_to_mbap};
 use rusty_modbus_types::{ExceptionCode, MbapHeader, TransactionId};
 
@@ -22,7 +22,11 @@ fn spec_3_1_2_mbap_to_rtu_preserves_pdu() {
 
     let rtu = mbap_to_rtu(&mbap_frame);
     assert_eq!(rtu.unit_id(), 0x01);
-    assert_eq!(&rtu.pdu[..], &pdu[..], "PDU must be preserved during translation");
+    assert_eq!(
+        &rtu.pdu[..],
+        &pdu[..],
+        "PDU must be preserved during translation"
+    );
 }
 
 #[test]
@@ -37,7 +41,11 @@ fn spec_3_1_2_rtu_to_mbap_restores_transaction_id() {
     let mbap = rtu_to_mbap(&rtu_frame, TransactionId(0x1234), 0x01);
     match mbap.header {
         FrameHeader::Mbap(h) => {
-            assert_eq!(h.transaction_id.get(), 0x1234, "must use original transaction ID");
+            assert_eq!(
+                h.transaction_id.get(),
+                0x1234,
+                "must use original transaction ID"
+            );
             assert_eq!(h.unit_id, 0x01);
             assert_eq!(h.protocol_id.get(), 0x0000);
         }
@@ -124,11 +132,21 @@ fn routing_all_backends_deduplicates() {
     use rusty_modbus_gateway::config::RouteEntry;
     let addr = "127.0.0.1:5001".parse().unwrap();
     let table = RouteTable::new(vec![
-        RouteEntry { unit_id_range: 1..=10, backend_addr: addr },
-        RouteEntry { unit_id_range: 11..=20, backend_addr: addr },
+        RouteEntry {
+            unit_id_range: 1..=10,
+            backend_addr: addr,
+        },
+        RouteEntry {
+            unit_id_range: 11..=20,
+            backend_addr: addr,
+        },
     ]);
     let backends: Vec<_> = table.all_backends().collect();
-    assert_eq!(backends.len(), 1, "duplicate backends should be deduplicated");
+    assert_eq!(
+        backends.len(),
+        1,
+        "duplicate backends should be deduplicated"
+    );
 }
 
 #[test]

@@ -169,17 +169,11 @@ async fn probe_host(
                 .ok()?;
 
             // Probe: try reading 1 holding register.
-            let probe = time::timeout(
-                timeout,
-                client.read_holding_registers(UnitId(uid), 0, 1),
-            )
-            .await;
+            let probe =
+                time::timeout(timeout, client.read_holding_registers(UnitId(uid), 0, 1)).await;
 
             // Any response (success or Modbus exception) means device is present.
-            let alive = matches!(
-                probe,
-                Ok(Ok(_)) | Ok(Err(ClientError::Exception(_)))
-            );
+            let alive = matches!(probe, Ok(Ok(_)) | Ok(Err(ClientError::Exception(_))));
 
             if !alive {
                 return None;
@@ -195,9 +189,7 @@ async fn probe_host(
                 unit_id: uid,
                 vendor_name: dev_id.as_ref().and_then(|d| d.vendor_name.clone()),
                 product_code: dev_id.as_ref().and_then(|d| d.product_code.clone()),
-                revision: dev_id
-                    .as_ref()
-                    .and_then(|d| d.major_minor_revision.clone()),
+                revision: dev_id.as_ref().and_then(|d| d.major_minor_revision.clone()),
             })
         }));
     }

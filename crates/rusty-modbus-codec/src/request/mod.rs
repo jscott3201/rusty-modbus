@@ -2,20 +2,20 @@
 
 mod bit_read;
 mod bit_write;
+pub mod device_id;
 mod diagnostic;
 mod fifo;
 mod file;
-pub mod device_id;
 mod mei;
 mod reg_read;
 mod reg_write;
 
 pub use bit_read::{ReadCoilsRequest, ReadDiscreteInputsRequest};
 pub use bit_write::{WriteMultipleCoilsRequest, WriteSingleCoilRequest};
+pub use device_id::ReadDeviceIdentificationRequest;
 pub use diagnostic::DiagnosticsRequest;
 pub use fifo::ReadFifoQueueRequest;
 pub use file::{FileSubRequest, ReadFileRecordRequest, WriteFileRecordRequest};
-pub use device_id::ReadDeviceIdentificationRequest;
 pub use mei::EncapsulatedInterfaceRequest;
 pub use reg_read::{ReadHoldingRegistersRequest, ReadInputRegistersRequest};
 pub use reg_write::{

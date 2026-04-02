@@ -1,6 +1,6 @@
 //! TCP transport latency benchmarks — single request round-trip.
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use rusty_modbus_benchmarks::helpers::{current_rss_bytes, make_tcp_client, make_tcp_server};
 use rusty_modbus_types::UnitId;
 use tokio::runtime::Runtime;

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use rusty_modbus::server::{ModbusServer, ServerConfig, InMemoryStore, StoreConfig};
+use rusty_modbus::server::{InMemoryStore, ModbusServer, ServerConfig, StoreConfig};
 use rusty_modbus::types::UnitId;
 
 #[tokio::main]

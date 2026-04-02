@@ -7,7 +7,9 @@ use rusty_modbus_client::{ClientConfig, ModbusClient};
 use rusty_modbus_server::{InMemoryStore, ModbusServer, ServerConfig, StoreConfig};
 use rusty_modbus_types::UnitId;
 
-async fn start_server_with_store(store: Arc<InMemoryStore>) -> (ModbusServer<InMemoryStore>, std::net::SocketAddr) {
+async fn start_server_with_store(
+    store: Arc<InMemoryStore>,
+) -> (ModbusServer<InMemoryStore>, std::net::SocketAddr) {
     let config = ServerConfig {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         unit_id: UnitId(1),
@@ -34,7 +36,10 @@ async fn read_holding_registers() {
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
-    let regs = client.read_holding_registers(UnitId(1), 0, 2).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 2)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0x1234, 0x5678]);
 }
 
@@ -56,8 +61,14 @@ async fn write_and_read_back_register() {
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
-    client.write_single_register(UnitId(1), 5, 0xBEEF).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 5, 1).await.unwrap();
+    client
+        .write_single_register(UnitId(1), 5, 0xBEEF)
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 5, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0xBEEF]);
 }
 
@@ -67,8 +78,14 @@ async fn write_multiple_and_read_back() {
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
-    client.write_multiple_registers(UnitId(1), 0, &[0x0001, 0x0002, 0x0003]).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 3).await.unwrap();
+    client
+        .write_multiple_registers(UnitId(1), 0, &[0x0001, 0x0002, 0x0003])
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 3)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0x0001, 0x0002, 0x0003]);
 }
 
@@ -108,10 +125,15 @@ async fn concurrent_clients() {
     for _ in 0..3 {
         let a = addr;
         handles.push(tokio::spawn(async move {
-            let client = ModbusClient::connect(a, ClientConfig {
-                timeout: Duration::from_secs(2),
-                ..ClientConfig::default()
-            }).await.unwrap();
+            let client = ModbusClient::connect(
+                a,
+                ClientConfig {
+                    timeout: Duration::from_secs(2),
+                    ..ClientConfig::default()
+                },
+            )
+            .await
+            .unwrap();
             client.read_holding_registers(UnitId(1), 0, 1).await
         }));
     }
@@ -133,8 +155,14 @@ async fn mask_write_register() {
     // (0x00FF AND 0x00F2) OR (0x0025 AND NOT(0x00F2)) = 0x00F2 | 0x0005 = 0x00F7
     // Wait: (0x00FF & 0x00F2) | (0x0025 & !0x00F2)
     // = 0x00F2 | (0x0025 & 0xFF0D) = 0x00F2 | 0x0005 = 0x00F7
-    client.mask_write_register(UnitId(1), 4, 0x00F2, 0x0025).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 4, 1).await.unwrap();
+    client
+        .mask_write_register(UnitId(1), 4, 0x00F2, 0x0025)
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 4, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0x00F7]);
 }
 
@@ -145,7 +173,10 @@ async fn server_stop_rejects_new_connections() {
 
     // Verify it works.
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
-    client.read_holding_registers(UnitId(1), 0, 1).await.unwrap();
+    client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
     drop(client);
 
     // Stop server.
@@ -153,14 +184,20 @@ async fn server_stop_rejects_new_connections() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // New connection should fail.
-    let result = ModbusClient::connect(addr, ClientConfig {
-        timeout: Duration::from_millis(500),
-        ..ClientConfig::default()
-    }).await;
+    let result = ModbusClient::connect(
+        addr,
+        ClientConfig {
+            timeout: Duration::from_millis(500),
+            ..ClientConfig::default()
+        },
+    )
+    .await;
     // Server either refuses the connection or the client times out.
-    assert!(result.is_err() || {
-        // If connect succeeded, a request should fail.
-        let c = result.unwrap();
-        c.read_holding_registers(UnitId(1), 0, 1).await.is_err()
-    });
+    assert!(
+        result.is_err() || {
+            // If connect succeeded, a request should fail.
+            let c = result.unwrap();
+            c.read_holding_registers(UnitId(1), 0, 1).await.is_err()
+        }
+    );
 }

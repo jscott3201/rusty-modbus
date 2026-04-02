@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.5 — FC 05 (0x05) Write Single Coil conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response, DecodeError};
 use rusty_modbus_codec::request::Encode;
+use rusty_modbus_codec::{DecodeError, decode_request, decode_response};
 use rusty_modbus_types::{Address, CoilValue};
 
 // Spec example p.18: write coil 173 ON (address 0x00AC, value 0xFF00)
@@ -52,13 +52,19 @@ fn write_coil_off() {
 fn spec_6_5_invalid_coil_value_rejected() {
     // §6.5: "All other values are illegal and will not affect the output"
     let bad = [0x05, 0x00, 0x00, 0x00, 0x01]; // 0x0001 is invalid
-    assert!(matches!(decode_request(&bad), Err(DecodeError::InvalidCoilValue(0x0001))));
+    assert!(matches!(
+        decode_request(&bad),
+        Err(DecodeError::InvalidCoilValue(0x0001))
+    ));
 }
 
 #[test]
 fn invalid_coil_value_ff01() {
     let bad = [0x05, 0x00, 0x00, 0xFF, 0x01]; // 0xFF01 is invalid
-    assert!(matches!(decode_request(&bad), Err(DecodeError::InvalidCoilValue(0xFF01))));
+    assert!(matches!(
+        decode_request(&bad),
+        Err(DecodeError::InvalidCoilValue(0xFF01))
+    ));
 }
 
 #[test]
@@ -74,5 +80,8 @@ fn encode_round_trip() {
 
 #[test]
 fn truncated() {
-    assert!(matches!(decode_request(&[0x05, 0x00, 0xAC]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x05, 0x00, 0xAC]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }

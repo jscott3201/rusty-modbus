@@ -118,8 +118,14 @@ mod tests {
 
     #[test]
     fn mei_type_round_trip() {
-        assert_eq!(MeiType::from_raw(0x0D), Some(MeiType::CanOpenGeneralReference));
-        assert_eq!(MeiType::from_raw(0x0E), Some(MeiType::ReadDeviceIdentification));
+        assert_eq!(
+            MeiType::from_raw(0x0D),
+            Some(MeiType::CanOpenGeneralReference)
+        );
+        assert_eq!(
+            MeiType::from_raw(0x0E),
+            Some(MeiType::ReadDeviceIdentification)
+        );
         assert_eq!(MeiType::CanOpenGeneralReference.code(), 0x0D);
         assert_eq!(MeiType::ReadDeviceIdentification.code(), 0x0E);
     }

@@ -3,8 +3,7 @@
 use bytes::BytesMut;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rusty_modbus_codec::request::{
-    Encode, ReadHoldingRegistersRequest, WriteMultipleCoilsRequest,
-    WriteMultipleRegistersRequest,
+    Encode, ReadHoldingRegistersRequest, WriteMultipleCoilsRequest, WriteMultipleRegistersRequest,
 };
 use rusty_modbus_codec::response::{ReadCoilsResponse, ReadHoldingRegistersResponse};
 use rusty_modbus_frame::crc::crc16;

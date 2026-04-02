@@ -74,14 +74,8 @@ mod tests {
     #[test]
     fn resolve_finds_matching_route() {
         let table = RouteTable::new(vec![entry(1..=10, 5001), entry(11..=20, 5002)]);
-        assert_eq!(
-            table.resolve(5),
-            Some("127.0.0.1:5001".parse().unwrap())
-        );
-        assert_eq!(
-            table.resolve(15),
-            Some("127.0.0.1:5002".parse().unwrap())
-        );
+        assert_eq!(table.resolve(5), Some("127.0.0.1:5001".parse().unwrap()));
+        assert_eq!(table.resolve(15), Some("127.0.0.1:5002".parse().unwrap()));
     }
 
     #[test]

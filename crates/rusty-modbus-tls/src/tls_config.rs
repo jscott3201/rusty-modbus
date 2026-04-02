@@ -90,12 +90,15 @@ pub fn build_server_config(config: &TlsServerConfig) -> Result<ServerConfig, Tls
 
 /// Load PEM-encoded certificates from a file.
 fn load_certs(path: &std::path::Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
-    let file = fs::File::open(path)
-        .map_err(|e| TlsError::Certificate(format!("cannot open cert file {}: {e}", path.display())))?;
+    let file = fs::File::open(path).map_err(|e| {
+        TlsError::Certificate(format!("cannot open cert file {}: {e}", path.display()))
+    })?;
     let mut reader = BufReader::new(file);
     let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| TlsError::Certificate(format!("cannot parse cert file {}: {e}", path.display())))?;
+        .map_err(|e| {
+            TlsError::Certificate(format!("cannot parse cert file {}: {e}", path.display()))
+        })?;
     if certs.is_empty() {
         return Err(TlsError::Certificate(format!(
             "no certificates found in {}",
@@ -107,14 +110,19 @@ fn load_certs(path: &std::path::Path) -> Result<Vec<CertificateDer<'static>>, Tl
 
 /// Load a PEM-encoded private key from a file.
 fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, TlsError> {
-    let file = fs::File::open(path)
-        .map_err(|e| TlsError::Certificate(format!("cannot open key file {}: {e}", path.display())))?;
+    let file = fs::File::open(path).map_err(|e| {
+        TlsError::Certificate(format!("cannot open key file {}: {e}", path.display()))
+    })?;
     let mut reader = BufReader::new(file);
 
     // Try PKCS8 first, then RSA, then EC.
     let key = rustls_pemfile::private_key(&mut reader)
-        .map_err(|e| TlsError::Certificate(format!("cannot parse key file {}: {e}", path.display())))?
-        .ok_or_else(|| TlsError::Certificate(format!("no private key found in {}", path.display())))?;
+        .map_err(|e| {
+            TlsError::Certificate(format!("cannot parse key file {}: {e}", path.display()))
+        })?
+        .ok_or_else(|| {
+            TlsError::Certificate(format!("no private key found in {}", path.display()))
+        })?;
 
     Ok(key)
 }

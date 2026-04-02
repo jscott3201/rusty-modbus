@@ -53,9 +53,7 @@ pub async fn handle_read(
             output::print_registers(args.address, &regs, fmt);
         }
         "co" | "coils" => {
-            let coils = client
-                .read_coils(unit, args.address, args.quantity)
-                .await?;
+            let coils = client.read_coils(unit, args.address, args.quantity).await?;
             output::print_coils(args.address, &coils, "Coil", fmt);
         }
         "di" | "discrete" => {

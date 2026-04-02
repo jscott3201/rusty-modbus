@@ -3,7 +3,7 @@
 //! Proves the three-layer pipeline (modbus-types → modbus-codec → modbus-frame) composes.
 
 use bytes::BytesMut;
-use rusty_modbus_codec::{decode_response, ResponsePdu};
+use rusty_modbus_codec::{ResponsePdu, decode_response};
 use rusty_modbus_frame::{MbapCodec, OwnedResponsePdu};
 use rusty_modbus_types::MbapHeader;
 use tokio_util::codec::Decoder;
@@ -28,7 +28,10 @@ fn end_to_end_tcp_read_holding_registers_response() {
     // Step 2: Feed into MbapCodec decoder.
     let mut codec = MbapCodec;
     let mut src = BytesMut::from(&adu[..]);
-    let frame = codec.decode(&mut src).unwrap().expect("should decode a frame");
+    let frame = codec
+        .decode(&mut src)
+        .unwrap()
+        .expect("should decode a frame");
 
     // Verify frame header.
     assert_eq!(frame.unit_id(), 0xFF);
@@ -84,8 +87,14 @@ fn end_to_end_exception_response() {
     let response = decode_response(&frame.pdu).unwrap();
     match response {
         ResponsePdu::Exception(exc) => {
-            assert_eq!(exc.function_code, rusty_modbus_types::FunctionCode::ReadHoldingRegisters);
-            assert_eq!(exc.exception_code, rusty_modbus_types::ExceptionCode::IllegalDataAddress);
+            assert_eq!(
+                exc.function_code,
+                rusty_modbus_types::FunctionCode::ReadHoldingRegisters
+            );
+            assert_eq!(
+                exc.exception_code,
+                rusty_modbus_types::ExceptionCode::IllegalDataAddress
+            );
         }
         other => panic!("unexpected: {other:?}"),
     }

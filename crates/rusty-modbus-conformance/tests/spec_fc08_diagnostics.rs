@@ -35,5 +35,8 @@ fn spec_6_8_response_is_echo() {
 #[test]
 fn truncated() {
     // FC08 needs at least sub-function (2 bytes)
-    assert!(matches!(decode_request(&[0x08, 0x00]), Err(rusty_modbus_codec::DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x08, 0x00]),
+        Err(rusty_modbus_codec::DecodeError::Truncated { .. })
+    ));
 }

@@ -33,14 +33,16 @@ pub async fn make_rtu_tcp_server<S: DataStore + 'static>(
 
                 while let Some(Ok(frame)) = stream.next().await {
                     let unit_id = UnitId(frame.unit_id());
-                    if let Some(resp_pdu) =
-                        handler::process_request(&frame.pdu, unit_id, conn_store.as_ref(), &rusty_modbus_server::DeviceIdentification::default())
-                            .await
+                    if let Some(resp_pdu) = handler::process_request(
+                        &frame.pdu,
+                        unit_id,
+                        conn_store.as_ref(),
+                        &rusty_modbus_server::DeviceIdentification::default(),
+                    )
+                    .await
                     {
                         let resp = Frame {
-                            header: FrameHeader::Rtu {
-                                unit_id: unit_id.0,
-                            },
+                            header: FrameHeader::Rtu { unit_id: unit_id.0 },
                             pdu: Bytes::from(resp_pdu),
                         };
                         if sink.send(resp).await.is_err() {

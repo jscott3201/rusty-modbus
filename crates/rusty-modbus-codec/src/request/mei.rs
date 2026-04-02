@@ -31,8 +31,7 @@ impl<'buf> EncapsulatedInterfaceRequest<'buf> {
                 actual: 0,
             });
         }
-        let mei_type =
-            MeiType::from_raw(data[0]).ok_or(DecodeError::UnknownMeiType(data[0]))?;
+        let mei_type = MeiType::from_raw(data[0]).ok_or(DecodeError::UnknownMeiType(data[0]))?;
         let payload = &data[1..];
         Ok(Self {
             mei_type,

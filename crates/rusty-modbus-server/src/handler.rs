@@ -7,10 +7,10 @@ use rusty_modbus_codec::response::{
     WriteMultipleCoilsResponse, WriteMultipleRegistersResponse, WriteSingleCoilResponse,
     WriteSingleRegisterResponse,
 };
-use rusty_modbus_codec::{decode_request, DecodeError, RequestPdu};
+use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request};
 use rusty_modbus_types::{
-    Address, ExceptionCode, FunctionCode, MeiType, Quantity, UnitId, MAX_READ_COILS,
-    MAX_READ_REGISTERS,
+    Address, ExceptionCode, FunctionCode, MAX_READ_COILS, MAX_READ_REGISTERS, MeiType, Quantity,
+    UnitId,
 };
 
 use crate::config::DeviceIdentification;
@@ -64,24 +64,70 @@ async fn dispatch_request<S: DataStore>(
 ) -> Option<Vec<u8>> {
     match request {
         RequestPdu::ReadHoldingRegisters(req) => {
-            if is_broadcast { return None; }
-            Some(handle_read_registers(FunctionCode::ReadHoldingRegisters, req.address, req.quantity, store, true).await)
+            if is_broadcast {
+                return None;
+            }
+            Some(
+                handle_read_registers(
+                    FunctionCode::ReadHoldingRegisters,
+                    req.address,
+                    req.quantity,
+                    store,
+                    true,
+                )
+                .await,
+            )
         }
         RequestPdu::ReadInputRegisters(req) => {
-            if is_broadcast { return None; }
-            Some(handle_read_registers(FunctionCode::ReadInputRegisters, req.address, req.quantity, store, false).await)
+            if is_broadcast {
+                return None;
+            }
+            Some(
+                handle_read_registers(
+                    FunctionCode::ReadInputRegisters,
+                    req.address,
+                    req.quantity,
+                    store,
+                    false,
+                )
+                .await,
+            )
         }
         RequestPdu::ReadCoils(req) => {
-            if is_broadcast { return None; }
-            Some(handle_read_bits(FunctionCode::ReadCoils, req.address, req.quantity, store, true).await)
+            if is_broadcast {
+                return None;
+            }
+            Some(
+                handle_read_bits(
+                    FunctionCode::ReadCoils,
+                    req.address,
+                    req.quantity,
+                    store,
+                    true,
+                )
+                .await,
+            )
         }
         RequestPdu::ReadDiscreteInputs(req) => {
-            if is_broadcast { return None; }
-            Some(handle_read_bits(FunctionCode::ReadDiscreteInputs, req.address, req.quantity, store, false).await)
+            if is_broadcast {
+                return None;
+            }
+            Some(
+                handle_read_bits(
+                    FunctionCode::ReadDiscreteInputs,
+                    req.address,
+                    req.quantity,
+                    store,
+                    false,
+                )
+                .await,
+            )
         }
         RequestPdu::WriteSingleRegister(req) => {
             let result = store.write_register(req.address.0, req.value).await;
-            if is_broadcast { return None; }
+            if is_broadcast {
+                return None;
+            }
             Some(match result {
                 Ok(()) => encode_response(&WriteSingleRegisterResponse {
                     address: req.address,
@@ -97,18 +143,24 @@ async fn dispatch_request<S: DataStore>(
                 .map(|c| u16::from_be_bytes([c[0], c[1]]))
                 .collect();
             let result = store.write_registers(req.address.0, &values).await;
-            if is_broadcast { return None; }
+            if is_broadcast {
+                return None;
+            }
             Some(match result {
                 Ok(()) => encode_response(&WriteMultipleRegistersResponse {
                     address: req.address,
                     quantity: req.quantity,
                 }),
-                Err(ec) => encode_exception(FunctionCode::WriteMultipleRegisters.exception_code(), ec),
+                Err(ec) => {
+                    encode_exception(FunctionCode::WriteMultipleRegisters.exception_code(), ec)
+                }
             })
         }
         RequestPdu::WriteSingleCoil(req) => {
             let result = store.write_coil(req.address.0, req.value.as_bool()).await;
-            if is_broadcast { return None; }
+            if is_broadcast {
+                return None;
+            }
             Some(match result {
                 Ok(()) => encode_response(&WriteSingleCoilResponse {
                     address: req.address,
@@ -123,7 +175,9 @@ async fn dispatch_request<S: DataStore>(
                 values.push((req.coil_values[i / 8] >> (i % 8)) & 1 == 1);
             }
             let result = store.write_coils(req.address.0, &values).await;
-            if is_broadcast { return None; }
+            if is_broadcast {
+                return None;
+            }
             Some(match result {
                 Ok(()) => encode_response(&WriteMultipleCoilsResponse {
                     address: req.address,
@@ -134,7 +188,9 @@ async fn dispatch_request<S: DataStore>(
         }
         RequestPdu::MaskWriteRegister(req) => {
             let result = handle_mask_write(req.address, req.and_mask, req.or_mask, store).await;
-            if is_broadcast { return None; }
+            if is_broadcast {
+                return None;
+            }
             Some(match result {
                 Ok(()) => encode_response(&MaskWriteRegisterResponse {
                     address: req.address,
@@ -145,11 +201,15 @@ async fn dispatch_request<S: DataStore>(
             })
         }
         RequestPdu::ReadWriteMultipleRegisters(req) => {
-            if is_broadcast { return None; }
+            if is_broadcast {
+                return None;
+            }
             Some(handle_read_write_multiple(req, store).await)
         }
         RequestPdu::EncapsulatedInterface(req) => {
-            if is_broadcast { return None; }
+            if is_broadcast {
+                return None;
+            }
             if req.mei_type == MeiType::ReadDeviceIdentification {
                 Some(build_device_id_response(req.data, device_id))
             } else {
@@ -158,7 +218,9 @@ async fn dispatch_request<S: DataStore>(
             }
         }
         _ => {
-            if is_broadcast { return None; }
+            if is_broadcast {
+                return None;
+            }
             let fc = pdu.first().copied().unwrap_or(0);
             Some(encode_exception(fc | 0x80, ExceptionCode::IllegalFunction))
         }
@@ -174,9 +236,13 @@ async fn handle_read_registers<S: DataStore>(
 ) -> Vec<u8> {
     let mut buf = [0u16; MAX_READ_REGISTERS as usize];
     let result = if is_holding {
-        store.read_holding_registers(address.0, quantity.0, &mut buf).await
+        store
+            .read_holding_registers(address.0, quantity.0, &mut buf)
+            .await
     } else {
-        store.read_input_registers(address.0, quantity.0, &mut buf).await
+        store
+            .read_input_registers(address.0, quantity.0, &mut buf)
+            .await
     };
 
     match result {
@@ -213,7 +279,9 @@ async fn handle_read_bits<S: DataStore>(
     let result = if is_coils {
         store.read_coils(address.0, quantity.0, &mut buf).await
     } else {
-        store.read_discrete_inputs(address.0, quantity.0, &mut buf).await
+        store
+            .read_discrete_inputs(address.0, quantity.0, &mut buf)
+            .await
     };
 
     match result {
@@ -264,7 +332,10 @@ async fn handle_read_write_multiple<S: DataStore>(
         .map(|c| u16::from_be_bytes([c[0], c[1]]))
         .collect();
 
-    if let Err(ec) = store.write_registers(req.write_address.0, &write_values).await {
+    if let Err(ec) = store
+        .write_registers(req.write_address.0, &write_values)
+        .await
+    {
         return encode_exception(
             FunctionCode::ReadWriteMultipleRegisters.exception_code(),
             ec,
@@ -272,7 +343,10 @@ async fn handle_read_write_multiple<S: DataStore>(
     }
 
     let mut buf = [0u16; MAX_READ_REGISTERS as usize];
-    match store.read_holding_registers(req.read_address.0, req.read_quantity.0, &mut buf).await {
+    match store
+        .read_holding_registers(req.read_address.0, req.read_quantity.0, &mut buf)
+        .await
+    {
         Ok(count) => {
             let byte_count = u8::try_from(count * 2).unwrap_or(u8::MAX);
             let mut data = vec![0u8; count * 2];

@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.3 — FC 03 (0x03) Read Holding Registers conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response, DecodeError};
 use rusty_modbus_codec::request::{Encode, ReadHoldingRegistersRequest};
+use rusty_modbus_codec::{DecodeError, decode_request, decode_response};
 use rusty_modbus_types::{Address, Quantity};
 
 // Spec example p.15: read registers 108-110 → values 555, 0, 100
@@ -53,21 +53,33 @@ fn quantity_boundaries() {
     let max = [0x03, 0x00, 0x00, 0x00, 0x7D]; // quantity = 125
     assert!(decode_request(&max).is_ok());
     let over = [0x03, 0x00, 0x00, 0x00, 0x7E]; // quantity = 126
-    assert!(matches!(decode_request(&over), Err(DecodeError::QuantityOutOfRange { quantity: 126 })));
+    assert!(matches!(
+        decode_request(&over),
+        Err(DecodeError::QuantityOutOfRange { quantity: 126 })
+    ));
     let zero = [0x03, 0x00, 0x00, 0x00, 0x00]; // quantity = 0
-    assert!(matches!(decode_request(&zero), Err(DecodeError::QuantityOutOfRange { quantity: 0 })));
+    assert!(matches!(
+        decode_request(&zero),
+        Err(DecodeError::QuantityOutOfRange { quantity: 0 })
+    ));
 }
 
 #[test]
 fn truncated_request() {
-    assert!(matches!(decode_request(&[0x03, 0x00, 0x6B]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x03, 0x00, 0x6B]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }
 
 #[test]
 fn response_byte_count_mismatch() {
     // byte_count says 6 but only 4 data bytes follow
     let bad = [0x03, 0x06, 0x02, 0x2B, 0x00, 0x00];
-    assert!(matches!(decode_response(&bad), Err(DecodeError::ByteCountMismatch { .. })));
+    assert!(matches!(
+        decode_response(&bad),
+        Err(DecodeError::ByteCountMismatch { .. })
+    ));
 }
 
 #[test]

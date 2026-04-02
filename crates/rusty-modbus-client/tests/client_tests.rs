@@ -13,9 +13,10 @@ use rusty_modbus_types::{MbapHeader, UnitId};
 
 /// Start a test server that responds to ReadHoldingRegisters with [0x1234, 0x5678].
 async fn start_register_server() -> SocketAddr {
-    let listener = TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
-        .await
-        .unwrap();
+    let listener =
+        TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
+            .await
+            .unwrap();
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
@@ -66,12 +67,13 @@ async fn start_register_server() -> SocketAddr {
 
 /// Start a server that returns exception on first request, then succeeds.
 async fn start_busy_then_ok_server() -> SocketAddr {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    let listener = TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
-        .await
-        .unwrap();
+    let listener =
+        TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
+            .await
+            .unwrap();
     let addr = listener.local_addr().unwrap();
     let call_count = Arc::new(AtomicU32::new(0));
 
@@ -94,7 +96,8 @@ async fn start_busy_then_ok_server() -> SocketAddr {
                         vec![0x03, 0x02, 0x00, 0x42]
                     };
 
-                    let header = MbapHeader::new(txn_id, req_frame.unit_id(), resp_pdu.len() as u16);
+                    let header =
+                        MbapHeader::new(txn_id, req_frame.unit_id(), resp_pdu.len() as u16);
                     let resp = Frame {
                         header: FrameHeader::Mbap(header),
                         pdu: Bytes::from(resp_pdu),
@@ -188,9 +191,7 @@ async fn broadcast_read_rejected() {
 #[tokio::test]
 async fn pipelining_concurrent_requests() {
     let addr = start_register_server().await;
-    let client = std::sync::Arc::new(
-        ModbusClient::connect(addr, default_config()).await.unwrap(),
-    );
+    let client = std::sync::Arc::new(ModbusClient::connect(addr, default_config()).await.unwrap());
 
     let mut handles = Vec::new();
     for _ in 0..4 {
@@ -231,9 +232,7 @@ async fn retry_on_server_device_busy() {
 #[tokio::test]
 async fn shutdown_cancels_pending() {
     let addr = start_register_server().await;
-    let client = std::sync::Arc::new(
-        ModbusClient::connect(addr, default_config()).await.unwrap(),
-    );
+    let client = std::sync::Arc::new(ModbusClient::connect(addr, default_config()).await.unwrap());
 
     client.shutdown().await;
 

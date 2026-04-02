@@ -1,14 +1,16 @@
 //! Sustained load stress test for Modbus transports.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use hdrhistogram::Histogram;
 use rusty_modbus_benchmarks::frame_builders;
-use rusty_modbus_benchmarks::helpers::{current_rss_bytes, make_store, make_tcp_client, make_tcp_server_with_store};
+use rusty_modbus_benchmarks::helpers::{
+    current_rss_bytes, make_store, make_tcp_client, make_tcp_server_with_store,
+};
 use rusty_modbus_benchmarks::rtu_helpers::{make_rtu_tcp_client, make_rtu_tcp_server};
 use rusty_modbus_benchmarks::tls_helpers::{generate_test_certs, make_tls_client, make_tls_server};
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
@@ -267,11 +269,7 @@ async fn spawn_client_task(
                             .map(|_| ()),
                         "write" => {
                             client
-                                .write_single_register(
-                                    UnitId(1),
-                                    (op_index % 100) as u16,
-                                    0x1234,
-                                )
+                                .write_single_register(UnitId(1), (op_index % 100) as u16, 0x1234)
                                 .await
                         }
                         _ => {
@@ -323,9 +321,7 @@ async fn spawn_client_task(
                         ),
                         _ => {
                             if op_index % 2 == 0 {
-                                frame_builders::read_holding_registers_mbap(
-                                    txn_id, 1, 0, registers,
-                                )
+                                frame_builders::read_holding_registers_mbap(txn_id, 1, 0, registers)
                             } else {
                                 frame_builders::write_single_register_mbap(
                                     txn_id,
@@ -356,9 +352,7 @@ async fn spawn_client_task(
                 while running.load(Ordering::Relaxed) {
                     let start = Instant::now();
                     let frame = match operation.as_str() {
-                        "read" => {
-                            frame_builders::read_holding_registers_rtu(1, 0, registers)
-                        }
+                        "read" => frame_builders::read_holding_registers_rtu(1, 0, registers),
                         "write" => frame_builders::write_single_register_rtu(
                             1,
                             (op_index % 100) as u16,

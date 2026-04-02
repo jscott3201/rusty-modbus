@@ -1,6 +1,6 @@
 //! TCP Guide §3.1.3 — MBAP header wire format verification.
 
-use rusty_modbus_types::{MbapHeader, MBAP_HEADER_LEN};
+use rusty_modbus_types::{MBAP_HEADER_LEN, MbapHeader};
 use zerocopy::IntoBytes;
 
 #[test]

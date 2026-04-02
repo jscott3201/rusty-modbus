@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use rusty_modbus_frame::frame::FrameHeader;
 use rusty_modbus_rtu::rtu_tcp::RtuOverTcpTransport;
+use rusty_modbus_tcp::TcpConfig;
 use rusty_modbus_tcp::config::TcpServerConfig;
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
-use rusty_modbus_tcp::TcpConfig;
 use rusty_modbus_types::{ExceptionCode, TransactionId, UnitId};
 use tokio::sync::watch;
 use tokio::time;
@@ -172,8 +172,16 @@ async fn handle_tcp_connection(
         let rtu_frame = translator::mbap_to_rtu(&frame);
         let fc = frame.pdu.first().copied().unwrap_or(0);
 
-        let resp_frame =
-            forward_to_backend(backend_addr, tcp_config, rtu_frame, serial_timeout, txn_id, unit_id, fc).await;
+        let resp_frame = forward_to_backend(
+            backend_addr,
+            tcp_config,
+            rtu_frame,
+            serial_timeout,
+            txn_id,
+            unit_id,
+            fc,
+        )
+        .await;
         if tcp_sink.send(resp_frame).await.is_err() {
             break;
         }

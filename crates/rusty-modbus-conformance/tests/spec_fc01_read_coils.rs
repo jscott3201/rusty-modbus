@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.1 — FC 01 (0x01) Read Coils conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response, DecodeError};
 use rusty_modbus_codec::request::{Encode, ReadCoilsRequest};
+use rusty_modbus_codec::{DecodeError, decode_request, decode_response};
 use rusty_modbus_types::{Address, Quantity};
 
 // Spec example: read discrete outputs 20-38 (address 0x0013, quantity 0x0013 = 19)
@@ -93,17 +93,26 @@ fn quantity_above_max_rejected() {
 
 #[test]
 fn truncated_empty() {
-    assert!(matches!(decode_request(&[]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }
 
 #[test]
 fn truncated_fc_only() {
-    assert!(matches!(decode_request(&[0x01]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x01]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }
 
 #[test]
 fn truncated_partial_address() {
-    assert!(matches!(decode_request(&[0x01, 0x00, 0x13]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x01, 0x00, 0x13]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }
 
 // ── E. Coil bit verification ───────────────────────────────────────
@@ -123,25 +132,25 @@ fn spec_6_1_coil_bit_packing() {
     let resp = decode_response(SPEC_RESPONSE).unwrap();
     match resp {
         rusty_modbus_codec::ResponsePdu::ReadCoils(r) => {
-            assert!(r.coil(0));   // output 20 = ON
-            assert!(!r.coil(1));  // output 21 = OFF
-            assert!(r.coil(2));   // output 22 = ON
-            assert!(r.coil(3));   // output 23 = ON
-            assert!(!r.coil(4));  // output 24 = OFF
-            assert!(!r.coil(5));  // output 25 = OFF
-            assert!(r.coil(6));   // output 26 = ON
-            assert!(r.coil(7));   // output 27 = ON
+            assert!(r.coil(0)); // output 20 = ON
+            assert!(!r.coil(1)); // output 21 = OFF
+            assert!(r.coil(2)); // output 22 = ON
+            assert!(r.coil(3)); // output 23 = ON
+            assert!(!r.coil(4)); // output 24 = OFF
+            assert!(!r.coil(5)); // output 25 = OFF
+            assert!(r.coil(6)); // output 26 = ON
+            assert!(r.coil(7)); // output 27 = ON
 
             // 0x6B = 0110 1011 → outputs 28-35
-            assert!(r.coil(8));   // output 28 = ON
-            assert!(r.coil(9));   // output 29 = ON
+            assert!(r.coil(8)); // output 28 = ON
+            assert!(r.coil(9)); // output 29 = ON
             assert!(!r.coil(10)); // output 30 = OFF
-            assert!(r.coil(11));  // output 31 = ON
+            assert!(r.coil(11)); // output 31 = ON
 
             // 0x05 = 0000 0101 → outputs 36-38 (only 3 bits used)
-            assert!(r.coil(16));  // output 36 = ON
+            assert!(r.coil(16)); // output 36 = ON
             assert!(!r.coil(17)); // output 37 = OFF
-            assert!(r.coil(18));  // output 38 = ON
+            assert!(r.coil(18)); // output 38 = ON
         }
         _ => panic!("expected ReadCoils"),
     }

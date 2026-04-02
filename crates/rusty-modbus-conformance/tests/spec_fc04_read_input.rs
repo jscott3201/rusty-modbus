@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.4 — FC 04 (0x04) Read Input Registers conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response, DecodeError};
 use rusty_modbus_codec::request::{Encode, ReadInputRegistersRequest};
+use rusty_modbus_codec::{DecodeError, decode_request, decode_response};
 use rusty_modbus_types::{Address, Quantity};
 
 // Spec example p.16: read input register 9 → value 10 (0x000A)
@@ -47,10 +47,16 @@ fn quantity_boundaries() {
     let max = [0x04, 0x00, 0x00, 0x00, 0x7D]; // 125
     assert!(decode_request(&max).is_ok());
     let over = [0x04, 0x00, 0x00, 0x00, 0x7E]; // 126
-    assert!(matches!(decode_request(&over), Err(DecodeError::QuantityOutOfRange { .. })));
+    assert!(matches!(
+        decode_request(&over),
+        Err(DecodeError::QuantityOutOfRange { .. })
+    ));
 }
 
 #[test]
 fn truncated() {
-    assert!(matches!(decode_request(&[0x04, 0x00]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x04, 0x00]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }

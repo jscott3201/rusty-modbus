@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient};
 use rusty_modbus_types::UnitId;
-use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
 use crate::output::{self, OutputFormat};
 use crate::shell_parser::{self, ShellCommand};
@@ -83,27 +83,25 @@ pub async fn run(config: ShellConfig) -> Result<(), Box<dyn std::error::Error>> 
                 unit_id = UnitId(id);
                 println!("Unit ID set to {id}");
             }
-            _ => {
-                match execute_command(&client, unit_id, &cmd, config.format).await {
-                    Ok(()) => {}
-                    Err(ClientError::Transport(_)) | Err(ClientError::NotConnected) => {
-                        eprintln!("Connection lost. Reconnecting...");
-                        match connect(&config, unit_id).await {
-                            Ok(new_client) => {
-                                client = new_client;
-                                println!("Reconnected.");
-                                if let Err(e) =
-                                    execute_command(&client, unit_id, &cmd, config.format).await
-                                {
-                                    eprintln!("Error: {e}");
-                                }
+            _ => match execute_command(&client, unit_id, &cmd, config.format).await {
+                Ok(()) => {}
+                Err(ClientError::Transport(_)) | Err(ClientError::NotConnected) => {
+                    eprintln!("Connection lost. Reconnecting...");
+                    match connect(&config, unit_id).await {
+                        Ok(new_client) => {
+                            client = new_client;
+                            println!("Reconnected.");
+                            if let Err(e) =
+                                execute_command(&client, unit_id, &cmd, config.format).await
+                            {
+                                eprintln!("Error: {e}");
                             }
-                            Err(e) => eprintln!("Reconnect failed: {e}"),
                         }
+                        Err(e) => eprintln!("Reconnect failed: {e}"),
                     }
-                    Err(e) => eprintln!("Error: {e}"),
                 }
-            }
+                Err(e) => eprintln!("Error: {e}"),
+            },
         }
     }
 
@@ -177,7 +175,11 @@ async fn execute_command(
                 .await?;
             output::print_write_ok(fmt);
         }
-        ShellCommand::Help | ShellCommand::Status | ShellCommand::Exit | ShellCommand::Empty | ShellCommand::SetUnitId(_) => {
+        ShellCommand::Help
+        | ShellCommand::Status
+        | ShellCommand::Exit
+        | ShellCommand::Empty
+        | ShellCommand::SetUnitId(_) => {
             // Handled in run() directly.
         }
     }

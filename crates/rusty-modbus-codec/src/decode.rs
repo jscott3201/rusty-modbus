@@ -5,8 +5,8 @@ use rusty_modbus_types::FunctionCode;
 use crate::error::DecodeError;
 use crate::pdu::{PduRef, RequestPdu, ResponsePdu};
 use crate::request::{
-    DiagnosticsRequest, EncapsulatedInterfaceRequest, MaskWriteRegisterRequest,
-    ReadCoilsRequest, ReadDiscreteInputsRequest, ReadFifoQueueRequest, ReadFileRecordRequest,
+    DiagnosticsRequest, EncapsulatedInterfaceRequest, MaskWriteRegisterRequest, ReadCoilsRequest,
+    ReadDiscreteInputsRequest, ReadFifoQueueRequest, ReadFileRecordRequest,
     ReadHoldingRegistersRequest, ReadInputRegistersRequest, ReadWriteMultipleRegistersRequest,
     WriteFileRecordRequest, WriteMultipleCoilsRequest, WriteMultipleRegistersRequest,
     WriteSingleCoilRequest, WriteSingleRegisterRequest,
@@ -73,9 +73,7 @@ pub fn decode_request(pdu: &[u8]) -> Result<RequestPdu<'_>, DecodeError> {
             WriteSingleRegisterRequest::decode(data).map(RequestPdu::WriteSingleRegister)
         }
         FunctionCode::ReadExceptionStatus => Ok(RequestPdu::ReadExceptionStatus),
-        FunctionCode::Diagnostics => {
-            DiagnosticsRequest::decode(data).map(RequestPdu::Diagnostics)
-        }
+        FunctionCode::Diagnostics => DiagnosticsRequest::decode(data).map(RequestPdu::Diagnostics),
         FunctionCode::GetCommEventCounter => Ok(RequestPdu::GetCommEventCounter),
         FunctionCode::GetCommEventLog => Ok(RequestPdu::GetCommEventLog),
         FunctionCode::WriteMultipleCoils => {
@@ -94,10 +92,8 @@ pub fn decode_request(pdu: &[u8]) -> Result<RequestPdu<'_>, DecodeError> {
         FunctionCode::MaskWriteRegister => {
             MaskWriteRegisterRequest::decode(data).map(RequestPdu::MaskWriteRegister)
         }
-        FunctionCode::ReadWriteMultipleRegisters => {
-            ReadWriteMultipleRegistersRequest::decode(data)
-                .map(RequestPdu::ReadWriteMultipleRegisters)
-        }
+        FunctionCode::ReadWriteMultipleRegisters => ReadWriteMultipleRegistersRequest::decode(data)
+            .map(RequestPdu::ReadWriteMultipleRegisters),
         FunctionCode::ReadFifoQueue => {
             ReadFifoQueueRequest::decode(data).map(RequestPdu::ReadFifoQueue)
         }
@@ -128,8 +124,7 @@ pub fn decode_response(pdu: &[u8]) -> Result<ResponsePdu<'_>, DecodeError> {
     // Exception-flagged bytes handled above. from_raw returns Some for all
     // non-exception bytes (known → named, unknown → Custom). The unwrap_or_else
     // is a safety net for the impossible case where fc has the high bit set.
-    let fc_enum = FunctionCode::from_raw(fc)
-        .unwrap_or(FunctionCode::Custom(fc));
+    let fc_enum = FunctionCode::from_raw(fc).unwrap_or(FunctionCode::Custom(fc));
 
     match fc_enum {
         FunctionCode::ReadCoils => ReadCoilsResponse::decode(data).map(ResponsePdu::ReadCoils),

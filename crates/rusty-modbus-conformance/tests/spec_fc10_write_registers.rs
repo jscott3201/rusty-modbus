@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.12 — FC 10 (16) Write Multiple Registers conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response, DecodeError};
 use rusty_modbus_codec::request::Encode;
+use rusty_modbus_codec::{DecodeError, decode_request, decode_response};
 use rusty_modbus_types::{Address, Quantity};
 
 // Spec example p.30: write 2 registers starting at register 2
@@ -55,10 +55,16 @@ fn quantity_boundaries() {
 
     // Zero rejected
     let zero = [0x10, 0x00, 0x00, 0x00, 0x00, 0x00];
-    assert!(matches!(decode_request(&zero), Err(DecodeError::QuantityOutOfRange { quantity: 0 })));
+    assert!(matches!(
+        decode_request(&zero),
+        Err(DecodeError::QuantityOutOfRange { quantity: 0 })
+    ));
 }
 
 #[test]
 fn truncated() {
-    assert!(matches!(decode_request(&[0x10, 0x00, 0x01]), Err(DecodeError::Truncated { .. })));
+    assert!(matches!(
+        decode_request(&[0x10, 0x00, 0x01]),
+        Err(DecodeError::Truncated { .. })
+    ));
 }

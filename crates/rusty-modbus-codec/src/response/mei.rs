@@ -28,8 +28,7 @@ impl<'buf> EncapsulatedInterfaceResponse<'buf> {
                 actual: 0,
             });
         }
-        let mei_type =
-            MeiType::from_raw(data[0]).ok_or(DecodeError::UnknownMeiType(data[0]))?;
+        let mei_type = MeiType::from_raw(data[0]).ok_or(DecodeError::UnknownMeiType(data[0]))?;
         Ok(Self {
             mei_type,
             data: &data[1..],

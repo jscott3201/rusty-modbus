@@ -20,9 +20,9 @@
 #![warn(missing_docs, clippy::all, clippy::pedantic)]
 
 // Always available — foundation crates.
-pub use rusty_modbus_types as types;
 pub use rusty_modbus_codec as codec;
 pub use rusty_modbus_frame as frame;
+pub use rusty_modbus_types as types;
 
 // TCP transport + client (default feature).
 #[cfg(feature = "tcp")]

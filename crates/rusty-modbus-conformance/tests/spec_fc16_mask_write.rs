@@ -1,7 +1,7 @@
 //! Spec V1.1b3 §6.16 — FC 16 (22) Mask Write Register conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response};
 use rusty_modbus_codec::request::Encode;
+use rusty_modbus_codec::{decode_request, decode_response};
 use rusty_modbus_types::Address;
 
 // Spec example p.37: mask write register 5 with AND=0x00F2, OR=0x0025

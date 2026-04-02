@@ -4,9 +4,9 @@
 //! framing specification: unit_id(1) + PDU + CRC-16/LE(2).
 
 use bytes::{Bytes, BytesMut};
+use rusty_modbus_frame::Frame;
 use rusty_modbus_frame::crc::crc16;
 use rusty_modbus_frame::frame::FrameHeader;
-use rusty_modbus_frame::Frame;
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Build a valid RTU frame.
@@ -39,7 +39,7 @@ fn rtu_crc_little_endian_on_wire() {
     // On wire: [0xC5, 0xCD] (little-endian)
     let raw = make_rtu_frame(0x01, &[0x03, 0x00, 0x00, 0x00, 0x0A]);
     let crc_offset = raw.len() - 2;
-    assert_eq!(raw[crc_offset], 0xC5);     // low byte
+    assert_eq!(raw[crc_offset], 0xC5); // low byte
     assert_eq!(raw[crc_offset + 1], 0xCD); // high byte
 }
 

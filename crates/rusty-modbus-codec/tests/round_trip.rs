@@ -1,15 +1,17 @@
 //! Integration tests: round-trip encode/decode, wire-format, and error conditions.
 
 use rusty_modbus_codec::request::{
-    MaskWriteRegisterRequest, ReadCoilsRequest, ReadFifoQueueRequest,
-    ReadHoldingRegistersRequest, ReadWriteMultipleRegistersRequest, WriteMultipleCoilsRequest,
-    WriteMultipleRegistersRequest, WriteSingleCoilRequest, WriteSingleRegisterRequest,
+    MaskWriteRegisterRequest, ReadCoilsRequest, ReadFifoQueueRequest, ReadHoldingRegistersRequest,
+    ReadWriteMultipleRegistersRequest, WriteMultipleCoilsRequest, WriteMultipleRegistersRequest,
+    WriteSingleCoilRequest, WriteSingleRegisterRequest,
 };
 use rusty_modbus_codec::response::{
     ExceptionResponse, ReadHoldingRegistersResponse, WriteMultipleCoilsResponse,
     WriteMultipleRegistersResponse, WriteSingleCoilResponse,
 };
-use rusty_modbus_codec::{decode_request, decode_response, DecodeError, Encode, RequestPdu, ResponsePdu};
+use rusty_modbus_codec::{
+    DecodeError, Encode, RequestPdu, ResponsePdu, decode_request, decode_response,
+};
 use rusty_modbus_types::{Address, CoilValue, ExceptionCode, FunctionCode, Quantity};
 
 // ---------------------------------------------------------------------------
@@ -18,7 +20,10 @@ use rusty_modbus_types::{Address, CoilValue, ExceptionCode, FunctionCode, Quanti
 fn encode_to_buf(encodable: &impl Encode, buf: &mut [u8]) -> usize {
     let len = encodable.encoded_len();
     let written = encodable.encode_into(buf).expect("encode failed");
-    assert_eq!(written, len, "encode_into return value must match encoded_len");
+    assert_eq!(
+        written, len,
+        "encode_into return value must match encoded_len"
+    );
     written
 }
 
@@ -193,7 +198,10 @@ fn round_trip_fc17_read_write_multiple_registers() {
             assert_eq!(r.write_address, Address(0x000E));
             assert_eq!(r.write_quantity, Quantity(3));
             assert_eq!(r.write_byte_count, 6);
-            assert_eq!(r.write_register_values, &[0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF]);
+            assert_eq!(
+                r.write_register_values,
+                &[0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF]
+            );
         }
         other => panic!("expected ReadWriteMultipleRegisters, got {other:?}"),
     }
@@ -428,7 +436,10 @@ fn error_unknown_function_code_becomes_custom() {
     // FC 0x00 is now decoded as Custom(0x00) with empty data
     let wire: &[u8] = &[0x00];
     let result = decode_request(wire).unwrap();
-    assert!(matches!(result, rusty_modbus_codec::RequestPdu::Custom(0x00, &[])));
+    assert!(matches!(
+        result,
+        rusty_modbus_codec::RequestPdu::Custom(0x00, &[])
+    ));
 }
 
 #[test]

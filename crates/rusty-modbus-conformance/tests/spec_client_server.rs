@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient};
+use rusty_modbus_server::ModbusServer;
 use rusty_modbus_server::config::ServerConfig;
 use rusty_modbus_server::store::memory::{InMemoryStore, StoreConfig};
-use rusty_modbus_server::ModbusServer;
 use rusty_modbus_types::{ExceptionCode, UnitId};
 
 async fn start_server_with_store(
@@ -52,17 +52,32 @@ async fn spec_4_3_holding_registers_read_write() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // Read
-    let regs = client.read_holding_registers(UnitId(1), 0, 2).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 2)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0xAAAA, 0xBBBB]);
 
     // Write single
-    client.write_single_register(UnitId(1), 0, 0x1234).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 1).await.unwrap();
+    client
+        .write_single_register(UnitId(1), 0, 0x1234)
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0x1234]);
 
     // Write multiple
-    client.write_multiple_registers(UnitId(1), 10, &[0x0001, 0x0002, 0x0003]).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 10, 3).await.unwrap();
+    client
+        .write_multiple_registers(UnitId(1), 10, &[0x0001, 0x0002, 0x0003])
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 10, 3)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0x0001, 0x0002, 0x0003]);
 }
 
@@ -96,7 +111,10 @@ async fn spec_4_3_coils_read_write() {
     assert_eq!(coils, vec![true]);
 
     // Write multiple
-    client.write_multiple_coils(UnitId(1), 0, &[false, true, false, true]).await.unwrap();
+    client
+        .write_multiple_coils(UnitId(1), 0, &[false, true, false, true])
+        .await
+        .unwrap();
     let coils = client.read_coils(UnitId(1), 0, 4).await.unwrap();
     assert_eq!(coils, vec![false, true, false, true]);
 }
@@ -124,8 +142,14 @@ async fn spec_6_16_mask_write_algorithm() {
 
     // Spec §6.16 example: AND=0x00F2, OR=0x0025
     // Result = (0x0012 & 0x00F2) | (0x0025 & !0x00F2) = 0x0012 | 0x0005 = 0x0017
-    client.mask_write_register(UnitId(1), 4, 0x00F2, 0x0025).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 4, 1).await.unwrap();
+    client
+        .mask_write_register(UnitId(1), 4, 0x00F2, 0x0025)
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 4, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0x0017]);
 }
 
@@ -137,8 +161,14 @@ async fn spec_6_16_mask_write_and_only() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // OR_Mask = 0 → result is simply Current AND And_Mask
-    client.mask_write_register(UnitId(1), 0, 0x0F0F, 0x0000).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 1).await.unwrap();
+    client
+        .mask_write_register(UnitId(1), 0, 0x0F0F, 0x0000)
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0x0F00]);
 }
 
@@ -150,8 +180,14 @@ async fn spec_6_16_mask_write_or_only() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // AND_Mask = 0 → result equals OR_Mask
-    client.mask_write_register(UnitId(1), 0, 0x0000, 0xABCD).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 1).await.unwrap();
+    client
+        .mask_write_register(UnitId(1), 0, 0x0000, 0xABCD)
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0xABCD]);
 }
 
@@ -166,8 +202,14 @@ async fn spec_6_17_write_before_read_same_address() {
 
     // Write 0xBEEF to reg 0, then read reg 0 — should see the write
     // §6.17: "The write operation is performed before the read."
-    client.write_single_register(UnitId(1), 0, 0xBEEF).await.unwrap();
-    let regs = client.read_holding_registers(UnitId(1), 0, 1).await.unwrap();
+    client
+        .write_single_register(UnitId(1), 0, 0xBEEF)
+        .await
+        .unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![0xBEEF]);
 }
 
@@ -207,7 +249,10 @@ async fn unit_id_mismatch_silently_discarded() {
     let client = ModbusClient::connect(addr, config).await.unwrap();
     let result = client.read_holding_registers(UnitId(99), 0, 1).await;
     // Server discards mismatched unit ID → client times out or retries exhaust
-    assert!(result.is_err(), "expected error for mismatched unit ID, got {result:?}");
+    assert!(
+        result.is_err(),
+        "expected error for mismatched unit ID, got {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -218,7 +263,10 @@ async fn unit_id_0xff_accepted_as_tcp_device() {
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
-    let regs = client.read_holding_registers(UnitId(0xFF), 0, 1).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(0xFF), 0, 1)
+        .await
+        .unwrap();
     assert_eq!(regs, vec![42]);
 }
 
@@ -266,5 +314,5 @@ async fn spec_tcp_guide_4_4_pipelining() {
 fn client_config_defaults() {
     let config = ClientConfig::default();
     assert_eq!(config.unit_id, UnitId(0xFF)); // TCP direct device
-    assert_eq!(config.max_in_flight, 16);     // spec max
+    assert_eq!(config.max_in_flight, 16); // spec max
 }

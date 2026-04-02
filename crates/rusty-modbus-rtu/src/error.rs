@@ -34,9 +34,7 @@ impl From<RtuError> for TransportError {
             RtuError::Frame(e) => TransportError::Frame(e),
             RtuError::Timeout => TransportError::Timeout,
             RtuError::Disconnected => TransportError::Disconnected,
-            RtuError::SerialPort(msg) => {
-                TransportError::Io(std::io::Error::other(msg))
-            }
+            RtuError::SerialPort(msg) => TransportError::Io(std::io::Error::other(msg)),
         }
     }
 }

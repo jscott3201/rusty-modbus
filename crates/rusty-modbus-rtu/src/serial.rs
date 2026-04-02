@@ -9,8 +9,8 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rusty_modbus_frame::frame::Frame;
 use rusty_modbus_frame::rtu::RtuCodec;
-use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_tcp::TransportError;
+use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use tokio::time::timeout;
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::codec::Framed;
@@ -31,7 +31,10 @@ impl SerialTransport {
     ///
     /// Returns [`RtuError::SerialPort`] if the port cannot be opened or
     /// configured with the given parameters.
-    pub fn open(path: &str, config: &RtuConfig) -> Result<(SerialSink, SerialRecvStream), RtuError> {
+    pub fn open(
+        path: &str,
+        config: &RtuConfig,
+    ) -> Result<(SerialSink, SerialRecvStream), RtuError> {
         let port = tokio_serial::new(path, config.baud_rate)
             .data_bits(convert_data_bits(config.data_bits))
             .parity(convert_parity(config.parity))

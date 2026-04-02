@@ -35,11 +35,21 @@ pub struct DeviceConfig {
     pub listen_addr: String,
 }
 
-fn default_unit_id() -> u8 { 1 }
-fn default_vendor() -> String { String::from("rusty-modbus-sim") }
-fn default_product() -> String { String::from("SIM") }
-fn default_revision() -> String { String::from("0.1.0") }
-fn default_listen() -> String { String::from("127.0.0.1:0") }
+fn default_unit_id() -> u8 {
+    1
+}
+fn default_vendor() -> String {
+    String::from("rusty-modbus-sim")
+}
+fn default_product() -> String {
+    String::from("SIM")
+}
+fn default_revision() -> String {
+    String::from("0.1.0")
+}
+fn default_listen() -> String {
+    String::from("127.0.0.1:0")
+}
 
 /// Register definitions for all four data tables.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -79,7 +89,9 @@ pub struct RegisterBlock {
     pub max: u16,
 }
 
-fn default_max_u16() -> u16 { 1000 }
+fn default_max_u16() -> u16 {
+    1000
+}
 
 /// A contiguous block of coils/discrete inputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]

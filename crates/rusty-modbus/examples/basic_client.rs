@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use rusty_modbus::client::ModbusClient;
 use rusty_modbus::client::ClientConfig;
+use rusty_modbus::client::ModbusClient;
 use rusty_modbus::types::UnitId;
 
 #[tokio::main]

@@ -28,7 +28,10 @@ fn spec_6_3_fc03_response_encode() {
     };
     let mut buf = [0u8; 16];
     let len = resp.encode_into(&mut buf).unwrap();
-    assert_eq!(&buf[..len], &[0x03, 0x06, 0x02, 0x2B, 0x00, 0x00, 0x00, 0x64]);
+    assert_eq!(
+        &buf[..len],
+        &[0x03, 0x06, 0x02, 0x2B, 0x00, 0x00, 0x00, 0x64]
+    );
 }
 
 #[test]
@@ -113,11 +116,17 @@ fn spec_7_exception_response_encode() {
 #[test]
 fn spec_encoded_len_matches_actual() {
     // Verify encoded_len() returns the correct value for every response type
-    let coil_resp = ReadCoilsResponse { byte_count: 3, coil_status: &[0xCD, 0x6B, 0x05] };
+    let coil_resp = ReadCoilsResponse {
+        byte_count: 3,
+        coil_status: &[0xCD, 0x6B, 0x05],
+    };
     assert_eq!(coil_resp.encoded_len(), 5); // FC + byte_count + 3 data
 
     let reg_data = [0x02, 0x2B, 0x00, 0x00, 0x00, 0x64];
-    let reg_resp = ReadHoldingRegistersResponse { byte_count: 6, register_data: &reg_data };
+    let reg_resp = ReadHoldingRegistersResponse {
+        byte_count: 6,
+        register_data: &reg_data,
+    };
     assert_eq!(reg_resp.encoded_len(), 8); // FC + byte_count + 6 data
 
     let exc = ExceptionResponse {
