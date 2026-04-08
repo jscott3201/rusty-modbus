@@ -99,10 +99,11 @@ async fn accept_loop(
     loop {
         tokio::select! {
             result = listener.accept() => {
-                if let Ok((sink, stream, _)) = result {
+                if let Ok((sink, stream, _, guard)) = result {
                     let rt = Arc::clone(&route_table);
                     tokio::spawn(async move {
                         handle_tcp_connection(sink, stream, rt, serial_timeout).await;
+                        drop(guard);
                     });
                 }
             }

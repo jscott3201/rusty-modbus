@@ -95,7 +95,7 @@ async fn spec_4_4_1_2_mbap_adu_example() {
     let (listener, addr) = start_server().await;
 
     let server = tokio::spawn(async move {
-        let (mut sink, mut stream, _) = listener.accept().await.unwrap();
+        let (mut sink, mut stream, _, _guard) = listener.accept().await.unwrap();
         let frame = stream.recv().await.unwrap();
         // Verify the received frame matches the spec example
         match frame.header {
@@ -133,7 +133,7 @@ async fn spec_4_4_1_3_transaction_id_preserved() {
     let (listener, addr) = start_server().await;
 
     let server = tokio::spawn(async move {
-        let (mut sink, mut stream, _) = listener.accept().await.unwrap();
+        let (mut sink, mut stream, _, _guard) = listener.accept().await.unwrap();
         let req = stream.recv().await.unwrap();
         // Echo with same transaction ID
         let txn_id = match req.header {
@@ -207,7 +207,7 @@ async fn transport_disconnect_detected() {
     let (listener, addr) = start_server().await;
 
     let server = tokio::spawn(async move {
-        let _ = listener.accept().await.unwrap();
+        let (_, _, _, _guard) = listener.accept().await.unwrap();
         // Drop — closes connection
     });
 

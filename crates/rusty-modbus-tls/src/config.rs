@@ -46,6 +46,12 @@ pub struct TlsServerConfig {
     /// CA certificate for client certificate verification.
     pub ca_cert: PathBuf,
     /// Require client certificate. Default: `true` (R-06: mutual auth MUST).
+    ///
+    /// # Security Warning
+    ///
+    /// Setting this to `false` disables mutual TLS authentication, violating
+    /// Modbus/TCP Security spec R-06. Only use for testing or legacy
+    /// interoperability where the network is already physically secured.
     pub require_client_cert: bool,
     /// Per-request authorization callback.
     pub authz_callback: Option<AuthzCallback>,

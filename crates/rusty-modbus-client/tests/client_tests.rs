@@ -20,7 +20,7 @@ async fn start_register_server() -> SocketAddr {
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
-        while let Ok((mut sink, mut stream, _)) = listener.accept().await {
+        while let Ok((mut sink, mut stream, _, _guard)) = listener.accept().await {
             tokio::spawn(async move {
                 while let Ok(req_frame) = stream.recv().await {
                     let txn_id = match req_frame.header {
@@ -78,7 +78,7 @@ async fn start_busy_then_ok_server() -> SocketAddr {
     let call_count = Arc::new(AtomicU32::new(0));
 
     tokio::spawn(async move {
-        while let Ok((mut sink, mut stream, _)) = listener.accept().await {
+        while let Ok((mut sink, mut stream, _, _guard)) = listener.accept().await {
             let count = Arc::clone(&call_count);
             tokio::spawn(async move {
                 while let Ok(req_frame) = stream.recv().await {

@@ -23,8 +23,9 @@ fn mbap_header_pdu_length() {
 #[test]
 fn mbap_header_adu_length() {
     let h = MbapHeader::new(0, 0xFF, 6);
-    // adu_length = MBAP_HEADER_LEN(7) + length_field(7) = 14
-    assert_eq!(h.adu_length(), MBAP_HEADER_LEN + 7);
+    // adu_length = txn(2) + proto(2) + len(2) + unit(1) + pdu(6) = 13
+    // (MBAP_HEADER_LEN - 1) + length_field(7) = 13
+    assert_eq!(h.adu_length(), (MBAP_HEADER_LEN - 1) + 7);
 }
 
 #[test]

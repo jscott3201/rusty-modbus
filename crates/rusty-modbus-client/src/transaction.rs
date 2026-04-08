@@ -14,10 +14,12 @@ use tokio::time::Instant;
 use crate::error::ClientError;
 
 /// Maximum number of concurrent in-flight transactions.
-const MAX_SLOTS: usize = 16;
+pub(crate) const MAX_SLOTS: usize = 16;
 
 /// A pending transaction waiting for a response.
 pub(crate) struct PendingTransaction {
+    /// The transaction ID this slot was registered for.
+    pub txn_id: TransactionId,
     /// Channel to send the response (or error) to the caller.
     pub sender: oneshot::Sender<Result<OwnedResponsePdu, ClientError>>,
     /// When the request was sent.
@@ -44,11 +46,15 @@ impl TransactionManager {
 
     /// Allocate a new transaction ID and register a pending transaction.
     ///
+    /// Tries sequential IDs until a free slot is found, avoiding
+    /// `TransactionConflict` when slow responses occupy a slot whose
+    /// modular index would collide with the next sequential ID.
+    ///
     /// Returns the transaction ID and a receiver that will yield the response.
     ///
     /// # Errors
     ///
-    /// Returns `ClientError::TransactionConflict` if the slot is already occupied.
+    /// Returns `ClientError::TransactionConflict` if all slots are occupied.
     pub fn register(
         &self,
         function_code: FunctionCode,
@@ -59,30 +65,37 @@ impl TransactionManager {
         ),
         ClientError,
     > {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let txn_id = TransactionId(id);
-        let slot_idx = id as usize % MAX_SLOTS;
+        for _ in 0..MAX_SLOTS {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let slot_idx = id as usize % MAX_SLOTS;
 
-        let (tx, rx) = oneshot::channel();
+            let mut slot = self.slots[slot_idx].lock();
+            if slot.is_none() {
+                let txn_id = TransactionId(id);
+                let (tx, rx) = oneshot::channel();
 
-        let pending = PendingTransaction {
-            sender: tx,
-            sent_at: Instant::now(),
-            function_code,
-        };
+                *slot = Some(PendingTransaction {
+                    txn_id,
+                    sender: tx,
+                    sent_at: Instant::now(),
+                    function_code,
+                });
 
-        let mut slot = self.slots[slot_idx].lock();
-        if slot.is_some() {
-            return Err(ClientError::TransactionConflict(txn_id));
+                return Ok((txn_id, rx));
+            }
         }
-        *slot = Some(pending);
 
-        Ok((txn_id, rx))
+        let last_id = self.next_id.load(Ordering::Relaxed).wrapping_sub(1);
+        Err(ClientError::TransactionConflict(TransactionId(last_id)))
     }
 
     /// Complete a transaction with a response.
     ///
-    /// Returns `true` if the transaction was found and completed, `false` if not found.
+    /// Verifies that the stored transaction ID matches the response's ID
+    /// to prevent stale responses from being delivered to the wrong caller.
+    ///
+    /// Returns `true` if the transaction was found and completed, `false`
+    /// if the slot was empty or the ID did not match (stale response).
     pub fn complete(
         &self,
         txn_id: TransactionId,
@@ -91,7 +104,9 @@ impl TransactionManager {
         let slot_idx = txn_id.0 as usize % MAX_SLOTS;
         let mut slot = self.slots[slot_idx].lock();
 
-        if let Some(pending) = slot.take() {
+        let id_matches = slot.as_ref().is_some_and(|p| p.txn_id == txn_id);
+        if id_matches {
+            let pending = slot.take().expect("checked above");
             let _ = pending.sender.send(response);
             true
         } else {

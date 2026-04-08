@@ -49,10 +49,15 @@ impl MbapHeader {
         self.length.get().saturating_sub(1)
     }
 
-    /// Total ADU length including this header.
+    /// Total ADU wire size in bytes.
+    ///
+    /// The ADU is `txn_id(2) + proto_id(2) + length_field(2) + [length bytes]`.
+    /// The first 6 bytes precede the length-field payload, so total = 6 + length.
+    /// We express this as `MBAP_HEADER_LEN - 1` because the header constant (7)
+    /// includes the `unit_id` byte, which the length field also counts.
     #[must_use]
     pub fn adu_length(&self) -> usize {
-        MBAP_HEADER_LEN + self.length.get() as usize
+        (MBAP_HEADER_LEN - 1) + self.length.get() as usize
     }
 }
 
@@ -91,8 +96,9 @@ mod tests {
     #[test]
     fn adu_length_includes_header() {
         let h = MbapHeader::new(0, 0, 5);
-        // MBAP_HEADER_LEN(7) + length field(6) = 13
-        assert_eq!(h.adu_length(), 13);
+        // txn(2) + proto(2) + len(2) + unit(1) + pdu(5) = 12
+        // Or equivalently: (MBAP_HEADER_LEN - 1) + length_field(6) = 12
+        assert_eq!(h.adu_length(), 12);
     }
 
     #[test]

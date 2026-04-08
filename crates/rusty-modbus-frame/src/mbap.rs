@@ -45,10 +45,15 @@ impl Decoder for MbapCodec {
             return Err(FrameError::InvalidProtocolId(proto));
         }
 
-        // Step 4: validate length field does not exceed maximum.
+        // Step 4: validate length field bounds.
         // The length field includes the unit ID byte, so the PDU portion is length - 1.
+        // Minimum: 1 (unit ID only, zero-length PDU). A value of 0 would underflow
+        // the ADU size calculation and panic on the subsequent header slice.
         // Maximum allowed: MAX_PDU_SIZE (253) bytes of PDU + 1 byte unit ID = 254.
         let length = header.length.get();
+        if length < 1 {
+            return Err(FrameError::Truncated);
+        }
         if length > MAX_MBAP_LENGTH {
             return Err(FrameError::LengthOverflow(length));
         }
@@ -287,5 +292,22 @@ mod tests {
 
         let frame = codec.decode(&mut buf).unwrap().expect("should decode");
         assert!(frame.pdu.is_empty());
+    }
+
+    #[test]
+    fn decode_length_zero_returns_error() {
+        // length = 0 is invalid: even the unit_id byte wouldn't fit.
+        // Must not panic (prior to fix, this caused an index-out-of-bounds).
+        let header = MbapHeader {
+            transaction_id: U16::new(0),
+            protocol_id: U16::new(0),
+            length: U16::new(0),
+            unit_id: 1,
+        };
+        let mut buf = BytesMut::from(header.as_bytes());
+        let mut codec = MbapCodec;
+
+        let err = codec.decode(&mut buf).unwrap_err();
+        assert!(matches!(err, FrameError::Truncated));
     }
 }

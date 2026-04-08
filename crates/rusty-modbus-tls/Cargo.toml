@@ -18,7 +18,7 @@ rusty-modbus-frame = { path = "../rusty-modbus-frame" }
 rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
 tokio = { version = "1", features = ["net", "rt", "time"] }
 tokio-rustls = "0.26"
-rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 rustls-pemfile = "2"
 x509-parser = "0.18"
 bytes = "1"

@@ -4,6 +4,7 @@
 //! to pending transactions by matching the MBAP Transaction ID.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_frame::frame::FrameHeader;
@@ -17,11 +18,13 @@ use rusty_modbus_types::TransactionId;
 /// Spawn the background reader task.
 ///
 /// Reads frames from the transport stream, looks up the transaction ID,
-/// and completes the pending transaction. Runs until the transport closes
-/// or the shutdown signal is received.
+/// and completes the pending transaction. Sets `connected` to `false`
+/// when the transport closes or an error occurs. Runs until the transport
+/// closes or the shutdown signal is received.
 pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
     mut stream: R,
     txn_mgr: Arc<TransactionManager>,
+    connected: Arc<AtomicBool>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -49,18 +52,23 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                             }
                         }
                         Err(rusty_modbus_tcp::TransportError::Disconnected) => {
-                            // Connection closed — cancel all pending.
+                            connected.store(false, Ordering::Relaxed);
                             txn_mgr.cancel_all(|| ClientError::Transport(
                                 rusty_modbus_tcp::TransportError::Disconnected,
                             ));
                             break;
                         }
                         Err(e) => {
-                            // Transport error — cancel all pending.
+                            connected.store(false, Ordering::Relaxed);
+                            // Preserve the actual error description for all
+                            // pending callers instead of fabricating a generic Timeout.
+                            let msg = e.to_string();
                             txn_mgr.cancel_all(|| ClientError::Transport(
-                                rusty_modbus_tcp::TransportError::Timeout, // generic
+                                rusty_modbus_tcp::TransportError::Io(std::io::Error::new(
+                                    std::io::ErrorKind::ConnectionAborted,
+                                    msg.clone(),
+                                ))
                             ));
-                            let _ = e;
                             break;
                         }
                     }

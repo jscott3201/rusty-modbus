@@ -74,6 +74,12 @@ pub fn build_server_config(config: &TlsServerConfig) -> Result<ServerConfig, Tls
             .build()
             .map_err(|e| TlsError::Certificate(format!("client verifier failed: {e}")))?
     } else {
+        // R-06 mandates mutual authentication. Warn loudly when disabled.
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "WARNING: TLS server running WITHOUT client certificate verification. \
+             This violates Modbus/TCP Security spec R-06 (mutual authentication)."
+        );
         WebPkiClientVerifier::builder(Arc::new(client_root_store))
             .allow_unauthenticated()
             .build()

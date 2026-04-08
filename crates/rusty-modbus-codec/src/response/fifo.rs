@@ -33,11 +33,32 @@ impl<'buf> ReadFifoQueueResponse<'buf> {
         let byte_count = u16::from_be_bytes([data[0], data[1]]);
         let fifo_count = u16::from_be_bytes([data[2], data[3]]);
         let fifo_values = &data[4..];
-        // byte_count includes the 2 bytes for fifo_count + the fifo data
-        let expected_remaining = usize::from(byte_count).saturating_sub(2);
+        // byte_count includes the 2 bytes for fifo_count + the fifo data.
+        // Must be at least 2 to cover the fifo_count field.
+        if byte_count < 2 {
+            return Err(DecodeError::ByteCountMismatch {
+                declared: usize::from(byte_count),
+                actual: 2 + fifo_values.len(),
+            });
+        }
+        let expected_remaining = usize::from(byte_count) - 2;
         if fifo_values.len() != expected_remaining {
             return Err(DecodeError::ByteCountMismatch {
                 declared: expected_remaining,
+                actual: fifo_values.len(),
+            });
+        }
+        // Spec §6.18: fifo_count must be 0..=31.
+        if fifo_count > 31 {
+            return Err(DecodeError::QuantityOutOfRange {
+                quantity: fifo_count,
+            });
+        }
+        // Cross-check: fifo_values must hold exactly fifo_count × 2 bytes.
+        let expected_data_len = usize::from(fifo_count) * 2;
+        if fifo_values.len() != expected_data_len {
+            return Err(DecodeError::ByteCountMismatch {
+                declared: expected_data_len,
                 actual: fifo_values.len(),
             });
         }

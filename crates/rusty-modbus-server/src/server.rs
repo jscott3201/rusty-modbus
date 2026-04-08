@@ -125,11 +125,12 @@ async fn accept_loop<S: DataStore + 'static>(
     loop {
         tokio::select! {
             result = listener.accept() => {
-                if let Ok((sink, stream, _addr)) = result {
+                if let Ok((sink, stream, _addr, guard)) = result {
                     let conn_store = Arc::clone(&store);
                     let conn_device_id = device_id.clone();
                     tokio::spawn(async move {
                         handle_connection(sink, stream, unit_id, conn_store, conn_device_id).await;
+                        drop(guard);
                     });
                 }
                 // Accept error — could be transient; continue.

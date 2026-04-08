@@ -16,14 +16,14 @@ use tokio::time::{self, Duration};
 use crate::config::ClientConfig;
 use crate::error::ClientError;
 use crate::reader;
-use crate::transaction::TransactionManager;
+use crate::transaction::{self, TransactionManager};
 
 /// High-level async Modbus client with transaction pipelining.
 pub struct ModbusClient<S: TransportSink + Send + 'static = TcpSink> {
     sink: tokio::sync::Mutex<S>,
     txn_mgr: Arc<TransactionManager>,
     config: ClientConfig,
-    connected: AtomicBool,
+    connected: Arc<AtomicBool>,
     semaphore: Arc<Semaphore>,
     shutdown_tx: watch::Sender<bool>,
     reader_handle: Option<tokio::task::JoinHandle<()>>,
@@ -58,16 +58,26 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     ///
     /// This is the generic constructor used by [`connect()`](ModbusClient::connect)
     /// and by TLS transports that establish their own connection.
+    ///
+    /// `max_in_flight` is clamped to `1..=16` to match the fixed-size
+    /// transaction ring.
     pub fn from_transport<R: TransportStream + Send + 'static>(
         sink: S,
         stream: R,
         config: ClientConfig,
     ) -> Self {
         let txn_mgr = Arc::new(TransactionManager::new());
-        let semaphore = Arc::new(Semaphore::new(config.max_in_flight));
+        let max_in_flight = config.max_in_flight.clamp(1, transaction::MAX_SLOTS);
+        let semaphore = Arc::new(Semaphore::new(max_in_flight));
+        let connected = Arc::new(AtomicBool::new(true));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let reader_handle = reader::spawn_reader(stream, Arc::clone(&txn_mgr), shutdown_rx);
+        let reader_handle = reader::spawn_reader(
+            stream,
+            Arc::clone(&txn_mgr),
+            Arc::clone(&connected),
+            shutdown_rx,
+        );
 
         // Spawn timeout sweep task.
         let sweep_txn_mgr = Arc::clone(&txn_mgr);
@@ -84,7 +94,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             sink: tokio::sync::Mutex::new(sink),
             txn_mgr,
             config,
-            connected: AtomicBool::new(true),
+            connected,
             semaphore,
             shutdown_tx,
             reader_handle: Some(reader_handle),
@@ -154,10 +164,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             pdu: Bytes::copy_from_slice(pdu_data),
         };
 
-        // Send frame.
+        // Send frame. If send fails, cancel the registered transaction to
+        // prevent the slot from being leaked until the sweep timeout.
         {
             let mut sink = self.sink.lock().await;
-            sink.send(frame).await.map_err(ClientError::Transport)?;
+            if let Err(e) = sink.send(frame).await {
+                self.txn_mgr.complete(txn_id, Err(ClientError::Transport(e)));
+                return match rx.await {
+                    Ok(result) => result,
+                    Err(_) => Err(ClientError::ShuttingDown),
+                };
+            }
         }
 
         // Await response via oneshot channel.

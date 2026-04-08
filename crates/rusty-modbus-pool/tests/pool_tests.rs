@@ -20,7 +20,7 @@ async fn echo_server() -> SocketAddr {
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
-        while let Ok((mut sink, mut stream, _)) = listener.accept().await {
+        while let Ok((mut sink, mut stream, _, _guard)) = listener.accept().await {
             tokio::spawn(async move {
                 while let Ok(frame) = stream.recv().await {
                     if sink.send(frame).await.is_err() {

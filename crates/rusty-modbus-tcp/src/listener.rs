@@ -13,6 +13,22 @@ use crate::config::TcpServerConfig;
 use crate::connect::{TcpRecvStream, TcpSink};
 use crate::error::TransportError;
 
+/// RAII guard that decrements the active connection counter on drop.
+///
+/// Returned alongside connection halves from [`TcpServerListener::accept`].
+/// Callers must hold this guard for the lifetime of the connection to ensure
+/// the counter stays accurate.
+#[derive(Debug)]
+pub struct ConnectionGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// TCP server listener with access control and connection limits.
 pub struct TcpServerListener {
     listener: TcpListener,
@@ -40,10 +56,16 @@ impl TcpServerListener {
     /// Applies access control and connection limits before returning.
     /// Silently drops denied or over-limit connections and retries.
     ///
+    /// The returned [`ConnectionGuard`] automatically decrements the active
+    /// connection counter when dropped. Callers must hold it for the lifetime
+    /// of the connection.
+    ///
     /// # Errors
     ///
     /// - `TransportError::Io` on accept failure.
-    pub async fn accept(&self) -> Result<(TcpSink, TcpRecvStream, SocketAddr), TransportError> {
+    pub async fn accept(
+        &self,
+    ) -> Result<(TcpSink, TcpRecvStream, SocketAddr, ConnectionGuard), TransportError> {
         loop {
             let (stream, addr) = self.listener.accept().await?;
 
@@ -70,7 +92,11 @@ impl TcpServerListener {
             let sink = TcpSink::new(sink, self.config.tcp.write_timeout);
             let recv = TcpRecvStream::new(recv_stream, self.config.tcp.read_timeout);
 
-            return Ok((sink, recv, addr));
+            let guard = ConnectionGuard {
+                counter: Arc::clone(&self.active_connections),
+            };
+
+            return Ok((sink, recv, addr, guard));
         }
     }
 

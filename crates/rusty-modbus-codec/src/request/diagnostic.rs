@@ -41,9 +41,8 @@ impl<'buf> DiagnosticsRequest<'buf> {
             });
         }
         let raw_sub = u16::from_be_bytes([data[0], data[1]]);
-        #[allow(clippy::cast_possible_truncation)]
         let sub_function = DiagnosticSubFunction::from_raw(raw_sub)
-            .ok_or(DecodeError::UnknownFunctionCode(raw_sub as u8))?;
+            .ok_or(DecodeError::UnknownDiagnosticSubFunction(raw_sub))?;
         let payload = &data[2..];
         Ok(Self {
             sub_function,

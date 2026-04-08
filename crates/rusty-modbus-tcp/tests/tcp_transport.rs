@@ -39,7 +39,7 @@ async fn connect_send_recv_roundtrip() {
 
     // Server task: accept one connection, receive a frame, echo it back.
     let server = tokio::spawn(async move {
-        let (mut sink, mut stream, _addr) = listener.accept().await.unwrap();
+        let (mut sink, mut stream, _addr, _guard) = listener.accept().await.unwrap();
         let frame = stream.recv().await.unwrap();
         sink.send(frame).await.unwrap();
     });
@@ -70,7 +70,7 @@ async fn full_modbus_roundtrip_through_codec() {
 
     // Server: accept, receive request, send a proper ReadHoldingRegisters response.
     let server = tokio::spawn(async move {
-        let (mut sink, mut stream, _addr) = listener.accept().await.unwrap();
+        let (mut sink, mut stream, _addr, _guard) = listener.accept().await.unwrap();
         let req_frame = stream.recv().await.unwrap();
 
         // Build response PDU: FC 0x03, byte_count=2, register=0x1234
@@ -121,7 +121,7 @@ async fn concurrent_read_write() {
 
     // Server: accept, echo 3 frames.
     let server = tokio::spawn(async move {
-        let (mut sink, mut stream, _) = listener.accept().await.unwrap();
+        let (mut sink, mut stream, _, _guard) = listener.accept().await.unwrap();
         for _ in 0..3 {
             let frame = stream.recv().await.unwrap();
             sink.send(frame).await.unwrap();
@@ -158,7 +158,7 @@ async fn disconnect_detection() {
 
     // Server: accept then immediately drop.
     let server = tokio::spawn(async move {
-        let (_sink, _stream, _) = listener.accept().await.unwrap();
+        let (_sink, _stream, _, _guard) = listener.accept().await.unwrap();
         // Drop — closes connection.
     });
 
@@ -186,7 +186,7 @@ async fn connection_counter_tracks_active() {
     assert_eq!(counter.load(Ordering::Relaxed), 0);
 
     let server = tokio::spawn(async move {
-        let (_sink, _stream, _) = listener.accept().await.unwrap();
+        let (_sink, _stream, _, _guard) = listener.accept().await.unwrap();
         // Hold connection open.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     });
@@ -199,6 +199,9 @@ async fn connection_counter_tracks_active() {
     assert_eq!(counter.load(Ordering::Relaxed), 1);
 
     server.await.unwrap();
+
+    // Guard dropped when server task completed — counter should be back to 0.
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]

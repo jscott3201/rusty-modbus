@@ -32,6 +32,8 @@ pub enum DecodeError {
     UnknownMeiType(u8),
     /// Exception code byte is not recognized.
     UnknownExceptionCode(u8),
+    /// Diagnostic sub-function code is not recognized.
+    UnknownDiagnosticSubFunction(u16),
     /// Device ID code byte is not recognized (FC 0x2B / MEI 0x0E).
     InvalidDeviceIdCode(u8),
 }
@@ -56,6 +58,9 @@ impl core::fmt::Display for DecodeError {
             Self::InvalidReferenceType(rt) => write!(f, "invalid reference type: {rt}"),
             Self::UnknownMeiType(mt) => write!(f, "unknown MEI type: {mt:#04X}"),
             Self::UnknownExceptionCode(ec) => write!(f, "unknown exception code: {ec:#04X}"),
+            Self::UnknownDiagnosticSubFunction(sf) => {
+                write!(f, "unknown diagnostic sub-function: {sf:#06X}")
+            }
             Self::InvalidDeviceIdCode(code) => write!(f, "invalid device ID code: {code:#04X}"),
         }
     }

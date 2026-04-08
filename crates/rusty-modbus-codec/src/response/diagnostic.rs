@@ -73,7 +73,7 @@ impl<'buf> DiagnosticsResponse<'buf> {
         }
         let raw_sub = u16::from_be_bytes([data[0], data[1]]);
         let sub_function = DiagnosticSubFunction::from_raw(raw_sub)
-            .ok_or(DecodeError::UnknownFunctionCode(data[0]))?;
+            .ok_or(DecodeError::UnknownDiagnosticSubFunction(raw_sub))?;
         Ok(Self {
             sub_function,
             data: &data[2..],
@@ -193,8 +193,15 @@ impl<'buf> GetCommEventLogResponse<'buf> {
         let event_count = u16::from_be_bytes([data[3], data[4]]);
         let message_count = u16::from_be_bytes([data[5], data[6]]);
         let events = &data[7..];
-        // byte_count covers status(2) + event_count(2) + message_count(2) + events
-        let declared_events_len = usize::from(byte_count).saturating_sub(6);
+        // byte_count covers status(2) + event_count(2) + message_count(2) + events.
+        // Must be at least 6 to account for the three fixed 16-bit fields.
+        if byte_count < 6 {
+            return Err(DecodeError::ByteCountMismatch {
+                declared: usize::from(byte_count),
+                actual: 6 + events.len(),
+            });
+        }
+        let declared_events_len = usize::from(byte_count) - 6;
         if events.len() != declared_events_len {
             return Err(DecodeError::ByteCountMismatch {
                 declared: usize::from(byte_count),
