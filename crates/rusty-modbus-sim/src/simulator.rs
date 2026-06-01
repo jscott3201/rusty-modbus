@@ -25,7 +25,7 @@ impl ModbusSimulator {
     ///
     /// Returns [`SimError::ConfigParse`] if the YAML is invalid.
     pub fn from_yaml(yaml: &str) -> Result<Self, SimError> {
-        let config: SimConfig = serde_yaml::from_str(yaml).map_err(SimError::ConfigParse)?;
+        let config: SimConfig = serde_yaml_ng::from_str(yaml).map_err(SimError::ConfigParse)?;
         Ok(Self::from_config(config))
     }
 

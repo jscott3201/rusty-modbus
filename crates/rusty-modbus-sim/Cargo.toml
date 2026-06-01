@@ -16,7 +16,7 @@ rusty-modbus-types = { path = "../rusty-modbus-types", features = ["serde"] }
 rusty-modbus-server = { path = "../rusty-modbus-server" }
 tokio = { version = "1", features = ["rt", "time", "macros"] }
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 thiserror = "2"
 rand = "0.10"
 

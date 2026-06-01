@@ -20,7 +20,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
 thiserror = "2"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

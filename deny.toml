@@ -1,3 +1,11 @@
+# cargo-deny baseline for rusty-modbus.
+#
+# CI splits the checks (see .github/workflows/*.yml):
+#   - cargo-deny runs `check bans licenses sources`  (policy/supply-chain)
+#   - cargo-audit runs the advisory check             (vulnerabilities + drift)
+# The [advisories] section below is still honored by a full local
+# `cargo deny check`, so keep it consistent with the cargo-audit --ignore set.
+
 [graph]
 targets = []
 all-features = false
@@ -5,11 +13,14 @@ no-default-features = false
 exclude = ["rusty-modbus-benchmarks"]
 
 [advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
 ignore = [
-    # rustls-pemfile unmaintained — waiting for upstream migration
-    "RUSTSEC-2025-0134",
-    # time crate DoS via stack exhaustion — transitive dep, low risk for our use
-    "RUSTSEC-2026-0009",
+    # rustls-pemfile unmaintained — awaiting migration to the rustls-pki-types
+    # PEM reader. Tracked; no known exploit path for our cert/key loading.
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; migration to rustls-pki-types PEM reader pending" },
 ]
 
 [licenses]
@@ -36,9 +47,20 @@ exceptions = [
 [bans]
 multiple-versions = "warn"
 wildcards = "allow"
+highlight = "all"
+# rustls-only TLS posture: reject native-tls / OpenSSL / platform TLS shims so
+# we never accidentally pull a second TLS stack alongside rustls + ring.
+deny = [
+    { name = "native-tls" },
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "openssl-src" },
+    { name = "schannel" },
+    { name = "security-framework" },
+]
 
 [sources]
-unknown-registry = "warn"
-unknown-git = "warn"
+unknown-registry = "deny"
+unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
