@@ -12,11 +12,11 @@ categories.workspace = true
 description = "Modbus TCP-to-RTU gateway bridge"
 
 [dependencies]
-rusty-modbus-types = { path = "../rusty-modbus-types" }
-rusty-modbus-codec = { path = "../rusty-modbus-codec" }
-rusty-modbus-frame = { path = "../rusty-modbus-frame", features = ["rtu"] }
-rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
-rusty-modbus-rtu = { path = "../rusty-modbus-rtu", default-features = false }
+rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec", version = "0.1.0" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame", version = "0.1.0", features = ["rtu"] }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp", version = "0.1.0" }
+rusty-modbus-rtu = { path = "../rusty-modbus-rtu", version = "0.1.0", default-features = false }
 tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net"] }
 bytes = "1"
 thiserror = "2"

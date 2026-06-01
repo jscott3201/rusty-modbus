@@ -32,12 +32,9 @@ jobs:
   validate:
     name: validate release
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: extract and validate version
-        id: version
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
           CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
@@ -45,7 +42,6 @@ jobs:
             echo "Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
             exit 1
           fi
-          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
 
   publish-crates:
     name: publish to crates.io
@@ -58,6 +54,10 @@ jobs:
         with:
           toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@v2
+      - name: verify inter-crate version requirements
+        # Final guard before the publish loop: a single path-only dep would
+        # abort mid-loop and leave a half-published registry.
+        run: python3 scripts/check-publish-versions.py
       - name: publish crates in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -77,9 +77,20 @@ jobs:
             rusty-modbus-sim \
             rusty-modbus; do
             echo "::group::publish $crate"
-            cargo publish -p "$crate" --no-verify
+            # Idempotent: treat an already-published version as success so a
+            # re-run after a partial failure resumes instead of aborting.
+            cargo publish -p "$crate" --no-verify 2>&1 | tee /tmp/publish.log
+            status="${PIPESTATUS[0]}"
+            if [ "$status" -eq 0 ]; then
+              echo "published $crate; waiting for the index to update"
+              sleep 30
+            elif grep -qiE 'already (exists|uploaded)' /tmp/publish.log; then
+              echo "$crate is already on crates.io — skipping"
+            else
+              echo "publish failed for $crate" >&2
+              exit "$status"
+            fi
             echo "::endgroup::"
-            sleep 30
           done
 
   build-cli-binaries:

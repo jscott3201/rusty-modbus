@@ -107,6 +107,10 @@ jobs:
         run: |
           cargo check -p rusty-modbus-types --no-default-features --locked
           cargo check -p rusty-modbus-codec --no-default-features --locked
+      - name: publishable crates pin inter-crate versions
+        # Catches the path-only-dependency publish failure before a release is
+        # ever tagged (publish.yml re-checks it right before the publish loop).
+        run: python3 scripts/check-publish-versions.py
 
   deny:
     name: cargo-deny

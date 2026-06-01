@@ -12,10 +12,10 @@ categories.workspace = true
 description = "Async Modbus server with pluggable DataStore backend"
 
 [dependencies]
-rusty-modbus-types = { path = "../rusty-modbus-types" }
-rusty-modbus-codec = { path = "../rusty-modbus-codec" }
-rusty-modbus-frame = { path = "../rusty-modbus-frame" }
-rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
+rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec", version = "0.1.0" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame", version = "0.1.0" }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp", version = "0.1.0" }
 tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net"] }
 bytes = "1"
 parking_lot = "0.12"

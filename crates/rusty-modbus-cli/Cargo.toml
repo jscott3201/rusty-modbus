@@ -3,6 +3,8 @@ name = "rusty-modbus-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+# Distributed as a prebuilt binary via the GitHub release (publish.yml), not crates.io.
+publish = false
 license.workspace = true
 authors.workspace = true
 repository.workspace = true

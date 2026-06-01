@@ -12,8 +12,8 @@ categories.workspace = true
 description = "Modbus connection pooling with health checks and backoff"
 
 [dependencies]
-rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
-rusty-modbus-frame = { path = "../rusty-modbus-frame" }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp", version = "0.1.0" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame", version = "0.1.0" }
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 parking_lot = "0.12"
 thiserror = "2"

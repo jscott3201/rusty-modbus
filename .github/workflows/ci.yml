@@ -101,10 +101,12 @@ jobs:
   deny:
     name: cargo-deny
     needs: changes
-    # Skip when no dependency manifests changed (the common case for source-only PRs).
+    # Skip when no dependency manifests changed (the common case for source-only
+    # PRs). On a manual dispatch paths-filter has no base to diff, so run it
+    # unconditionally there to give maintainers on-demand full deny coverage.
     if: |
       (github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch')
-      && needs.changes.outputs.deps == 'true'
+      && (needs.changes.outputs.deps == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
