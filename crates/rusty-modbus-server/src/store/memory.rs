@@ -7,7 +7,7 @@ use rusty_modbus_types::ExceptionCode;
 
 use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT};
 
-use super::DataStore;
+use super::{DataStore, packed_coil_value, validate_packed_coils, validate_register_values_be};
 
 /// Maximum number of entries in any Modbus data table.
 pub const MAX_TABLE_SIZE: usize = 65_536;
@@ -321,6 +321,22 @@ impl DataStore for InMemoryStore {
         Ok(())
     }
 
+    async fn write_coils_packed(
+        &self,
+        address: u16,
+        quantity: u16,
+        packed_values: &[u8],
+    ) -> Result<(), ExceptionCode> {
+        let quantity = validate_packed_coils(quantity, packed_values)?;
+        let mut coils = self.coils.write();
+        check_range(address, quantity, coils.len())?;
+        let start = address as usize;
+        for (index, slot) in coils[start..start + quantity].iter_mut().enumerate() {
+            *slot = packed_coil_value(packed_values, index);
+        }
+        Ok(())
+    }
+
     async fn read_discrete_inputs(
         &self,
         address: u16,
@@ -361,6 +377,25 @@ impl DataStore for InMemoryStore {
         check_range(address, values.len(), regs.len())?;
         let start = address as usize;
         regs[start..start + values.len()].copy_from_slice(values);
+        Ok(())
+    }
+
+    async fn write_registers_be(
+        &self,
+        address: u16,
+        quantity: u16,
+        value_bytes: &[u8],
+    ) -> Result<(), ExceptionCode> {
+        let quantity = validate_register_values_be(quantity, value_bytes)?;
+        let mut regs = self.holding_registers.write();
+        check_range(address, quantity, regs.len())?;
+        let start = address as usize;
+        for (slot, chunk) in regs[start..start + quantity]
+            .iter_mut()
+            .zip(value_bytes.chunks_exact(2))
+        {
+            *slot = u16::from_be_bytes([chunk[0], chunk[1]]);
+        }
         Ok(())
     }
 

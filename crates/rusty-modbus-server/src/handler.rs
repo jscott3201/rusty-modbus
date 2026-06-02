@@ -177,12 +177,9 @@ async fn dispatch_request<S: DataStore>(
                     ec,
                 ));
             }
-            let values: Vec<u16> = req
-                .register_values
-                .chunks_exact(2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            let result = store.write_registers(req.address.0, &values).await;
+            let result = store
+                .write_registers_be(req.address.0, req.quantity.0, req.register_values)
+                .await;
             if is_broadcast {
                 return None;
             }
@@ -221,11 +218,9 @@ async fn dispatch_request<S: DataStore>(
                     ec,
                 ));
             }
-            let mut values = Vec::with_capacity(req.quantity.0 as usize);
-            for i in 0..req.quantity.0 as usize {
-                values.push((req.coil_values[i / 8] >> (i % 8)) & 1 == 1);
-            }
-            let result = store.write_coils(req.address.0, &values).await;
+            let result = store
+                .write_coils_packed(req.address.0, req.quantity.0, req.coil_values)
+                .await;
             if is_broadcast {
                 return None;
             }
@@ -531,14 +526,12 @@ async fn handle_read_write_multiple<S: DataStore>(
     }
 
     // Write executes before read per spec §6.17.
-    let write_values: Vec<u16> = req
-        .write_register_values
-        .chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
-        .collect();
-
     if let Err(ec) = store
-        .write_registers(req.write_address.0, &write_values)
+        .write_registers_be(
+            req.write_address.0,
+            req.write_quantity.0,
+            req.write_register_values,
+        )
         .await
     {
         return encode_exception(

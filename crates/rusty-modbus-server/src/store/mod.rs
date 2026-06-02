@@ -5,7 +5,9 @@ pub mod memory;
 
 use std::future::Future;
 
-use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode};
+use rusty_modbus_types::{
+    DiagnosticSubFunction, ExceptionCode, MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
+};
 
 /// Snapshot of the communications event log returned by Get Comm Event Log
 /// (FC 0x0C, Spec V1.1b3 §6.10).
@@ -23,6 +25,72 @@ pub struct CommEventLog {
     pub message_count: u16,
     /// Event bytes (0..=64).
     pub events: Vec<u8>,
+}
+
+pub(crate) fn unpack_packed_coils(
+    quantity: u16,
+    packed_values: &[u8],
+    out: &mut [bool],
+) -> Result<usize, ExceptionCode> {
+    let quantity = validate_packed_coils(quantity, packed_values)?;
+    if out.len() < quantity {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    for (index, slot) in out.iter_mut().take(quantity).enumerate() {
+        *slot = packed_coil_value(packed_values, index);
+    }
+    Ok(quantity)
+}
+
+pub(crate) fn unpack_register_values_be(
+    quantity: u16,
+    value_bytes: &[u8],
+    out: &mut [u16],
+) -> Result<usize, ExceptionCode> {
+    let quantity = validate_register_values_be(quantity, value_bytes)?;
+    if out.len() < quantity {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    for (slot, chunk) in out
+        .iter_mut()
+        .zip(value_bytes.chunks_exact(2))
+        .take(quantity)
+    {
+        *slot = u16::from_be_bytes([chunk[0], chunk[1]]);
+    }
+    Ok(quantity)
+}
+
+pub(crate) fn validate_packed_coils(
+    quantity: u16,
+    packed_values: &[u8],
+) -> Result<usize, ExceptionCode> {
+    if quantity == 0 || quantity > MAX_WRITE_COILS {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    let expected = usize::from(quantity).div_ceil(8);
+    if packed_values.len() != expected {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    Ok(usize::from(quantity))
+}
+
+pub(crate) fn validate_register_values_be(
+    quantity: u16,
+    value_bytes: &[u8],
+) -> Result<usize, ExceptionCode> {
+    if quantity == 0 || quantity > MAX_WRITE_REGISTERS {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    let expected = usize::from(quantity) * 2;
+    if value_bytes.len() != expected {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    Ok(usize::from(quantity))
+}
+
+pub(crate) fn packed_coil_value(packed_values: &[u8], index: usize) -> bool {
+    (packed_values[index / 8] >> (index % 8)) & 1 == 1
 }
 
 /// Async trait abstracting the four Modbus data tables (Spec V1.1b3 §4.3).
@@ -68,6 +136,24 @@ pub trait DataStore: Send + Sync {
         values: &[bool],
     ) -> impl Future<Output = Result<(), ExceptionCode>> + Send;
 
+    /// Write multiple coils from the Modbus packed-bit wire representation.
+    ///
+    /// The default implementation unpacks into a bounded stack buffer and then
+    /// delegates to [`Self::write_coils`]. Stores with direct table access can
+    /// override this method to avoid the intermediate bool slice entirely.
+    fn write_coils_packed(
+        &self,
+        address: u16,
+        quantity: u16,
+        packed_values: &[u8],
+    ) -> impl Future<Output = Result<(), ExceptionCode>> + Send {
+        async move {
+            let mut values = [false; MAX_WRITE_COILS as usize];
+            let quantity = unpack_packed_coils(quantity, packed_values, &mut values)?;
+            self.write_coils(address, &values[..quantity]).await
+        }
+    }
+
     // ── Discrete Inputs (read-only bits) ───────────────────────────
 
     /// Read discrete input statuses into `buf`.
@@ -101,6 +187,24 @@ pub trait DataStore: Send + Sync {
         address: u16,
         values: &[u16],
     ) -> impl Future<Output = Result<(), ExceptionCode>> + Send;
+
+    /// Write multiple holding registers from big-endian Modbus wire bytes.
+    ///
+    /// The default implementation unpacks into a bounded stack buffer and then
+    /// delegates to [`Self::write_registers`]. Stores with direct table access
+    /// can override this method to avoid the intermediate register slice.
+    fn write_registers_be(
+        &self,
+        address: u16,
+        quantity: u16,
+        value_bytes: &[u8],
+    ) -> impl Future<Output = Result<(), ExceptionCode>> + Send {
+        async move {
+            let mut values = [0u16; MAX_WRITE_REGISTERS as usize];
+            let quantity = unpack_register_values_be(quantity, value_bytes, &mut values)?;
+            self.write_registers(address, &values[..quantity]).await
+        }
+    }
 
     // ── Input Registers (read-only words) ──────────────────────────
 

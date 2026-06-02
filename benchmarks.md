@@ -56,6 +56,7 @@ Codec/framing microbenchmarks are run with:
 
 ```bash
 scripts/bench-local.sh codec --quick --noplot
+scripts/bench-local.sh store --quick --noplot
 ```
 
 ## Results
@@ -173,15 +174,27 @@ Treat these as hotspot-shape indicators, not release-grade Criterion baselines:
 | Max register write unpack to `Vec<u16>` | 63.1 ns | Server write materialization is larger than decode. |
 | Max coil write unpack to `Vec<bool>` | 377.5 ns | Packed-bit expansion is the strongest current allocation/copy candidate. |
 
+The packed store-write quick smoke was run with
+`scripts/bench-local.sh store --quick --noplot` after adding direct wire-byte
+write paths to the in-memory store:
+
+| Path | Quick-mode timing | Signal |
+|---|---:|---|
+| Max register write from `&[u16]` | 6.60 ns | Slice baseline for existing store API. |
+| Max register write from wire bytes | 6.49 ns | Direct packed path avoids the previous temporary `Vec<u16>`. |
+| Max register wire bytes via `Vec<u16>` | 67.9 ns | Approximate old handler shape. |
+| Max coil write from `&[bool]` | 23.4 ns | Slice baseline for existing store API. |
+| Max coil write from packed wire bytes | 691 ns | Direct packed path avoids the previous temporary `Vec<bool>`. |
+| Max coil packed bytes via `Vec<bool>` | 746 ns | Approximate old handler shape; packed-bit expansion dominates. |
+
 The most likely next performance wins are adjacent to, not inside, raw PDU
 parsing:
 
 - Keep Criterion baselines around maximum-size request decode, response
-  dispatch, owned `Bytes` dispatch, register iteration, and write-payload
-  unpacking before changing parser internals.
-- Evaluate write-path datastore APIs that can consume packed register/coil
-  payloads without first materializing temporary `Vec<u16>` or `Vec<bool>`
-  values in the server handler.
+  dispatch, owned `Bytes` dispatch, register iteration, and packed write paths
+  before changing parser internals.
+- Continue evaluating write-heavy server paths where packed-bit expansion,
+  response encoding, or store locking dominates more than borrowed decode.
 - Add multi-client stress matrices to separate protocol overhead from Tokio task
   scheduling and connection scaling.
 - Add allocation profiling for server handlers and Python bindings so zero-copy

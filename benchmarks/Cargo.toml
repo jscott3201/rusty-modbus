@@ -38,6 +38,10 @@ name = "codec"
 harness = false
 
 [[bench]]
+name = "server_store"
+harness = false
+
+[[bench]]
 name = "tcp_latency"
 harness = false
 
