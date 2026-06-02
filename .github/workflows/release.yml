@@ -1,0 +1,142 @@
+# Release gate for rusty-modbus — runs on PRs into `main` (i.e. `dev` -> `main`).
+#
+# Everyday work merges into `dev` behind the cheap ci.yml gate + local hooks.
+# A release batches `dev` into a single PR against `main`; THIS workflow is the
+# comprehensive pre-merge gate: full cross-platform build + lint + tests +
+# doctests, feature-combination checks, dependency policy (cargo-deny), and the
+# advisory audit (cargo-audit). The actual crates.io publish + CLI binaries fire
+# on the `v*` tag afterwards (publish.yml).
+#
+# Security: no `${{ github.event.* }}` in any `run:` (confined to if:/with:).
+
+name: release
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  fmt:
+    name: fmt
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (${{ matrix.os }})
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: cargo nextest + doctests
+        run: |
+          cargo nextest run --workspace --locked
+          cargo test --workspace --locked --doc
+
+  features:
+    name: feature-flag check
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: facade feature combinations
+        run: |
+          cargo check -p rusty-modbus --no-default-features --locked
+          cargo check -p rusty-modbus --features full --locked
+          cargo check -p rusty-modbus --all-features --locked
+      - name: no_std foundation builds without std
+        run: |
+          cargo check -p rusty-modbus-types --no-default-features --locked
+          cargo check -p rusty-modbus-codec --no-default-features --locked
+      - name: publishable crates pin inter-crate versions
+        # Catches the path-only-dependency publish failure before a release is
+        # ever tagged (publish.yml re-checks it right before the publish loop).
+        run: python3 scripts/check-publish-versions.py
+
+  deny:
+    name: cargo-deny
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+
+  audit:
+    name: cargo-audit
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/advisory-db
+          key: advisory-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: advisory-db-${{ runner.os }}-
+      # RUSTSEC-2025-0134: rustls-pemfile unmaintained — awaiting migration to
+      # the rustls-pki-types PEM reader. Tracked; no known exploit path for our
+      # cert/key loading. Remove this ignore once the migration lands.
+      - run: cargo audit --color always --ignore RUSTSEC-2025-0134

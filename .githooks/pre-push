@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# rusty-modbus pre-push gate — fast lint guard.
+#
+# The full cross-platform test matrix intentionally does NOT run here: it lives
+# in .github/workflows/release.yml (the dev -> main release PR) and nightly.yml.
+# Keeping pre-push to a fast clippy lets per-feature pushes to `dev` stay quick.
+# Skip once:    git push --no-verify
+# Skip session: export RUSTY_MODBUS_SKIP_HOOKS=1
+set -euo pipefail
+[ -n "${RUSTY_MODBUS_SKIP_HOOKS:-}" ] && { echo "[pre-push] skipped (RUSTY_MODBUS_SKIP_HOOKS)"; exit 0; }
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-push] cargo clippy --workspace --all-targets --locked -- -D warnings"
+cargo clippy --workspace --all-targets --locked -- -D warnings
+
+echo "[pre-push] ok"

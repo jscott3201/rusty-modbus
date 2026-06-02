@@ -169,7 +169,8 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         {
             let mut sink = self.sink.lock().await;
             if let Err(e) = sink.send(frame).await {
-                self.txn_mgr.complete(txn_id, Err(ClientError::Transport(e)));
+                self.txn_mgr
+                    .complete(txn_id, Err(ClientError::Transport(e)));
                 return match rx.await {
                     Ok(result) => result,
                     Err(_) => Err(ClientError::ShuttingDown),
