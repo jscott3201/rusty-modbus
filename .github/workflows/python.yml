@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   develop-test:
-    name: maturin develop + pytest (${{ matrix.python-version }})
+    name: wheel install + pytest (${{ matrix.python-version }})
     if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
@@ -61,9 +61,12 @@ jobs:
       - name: cargo clippy
         working-directory: crates/rusty-modbus-python
         run: cargo clippy --all-targets --locked -- -D warnings
-      - name: maturin develop
+      - name: build wheel
         working-directory: crates/rusty-modbus-python
-        run: maturin develop --release --locked
+        run: maturin build --release --locked -o dist -i "$(command -v python)"
+      - name: install wheel
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install --force-reinstall dist/*.whl
       - name: pytest
         if: matrix.python-version != '3.14t'
         working-directory: crates/rusty-modbus-python
@@ -103,7 +106,7 @@ jobs:
         run: python -m pip install "maturin>=1.12,<2" pytest pytest-asyncio
       - name: build wheel
         working-directory: crates/rusty-modbus-python
-        run: maturin build --release --locked -o dist -i python
+        run: maturin build --release --locked -o dist -i "$(command -v python)"
       - name: assert wheel tag
         working-directory: crates/rusty-modbus-python
         env:
@@ -150,9 +153,12 @@ jobs:
       - name: install typing tools
         working-directory: crates/rusty-modbus-python
         run: python -m pip install "maturin>=1.12,<2" mypy pyright
-      - name: maturin develop
+      - name: build wheel
         working-directory: crates/rusty-modbus-python
-        run: maturin develop --release --locked
+        run: maturin build --release --locked -o dist -i "$(command -v python)"
+      - name: install wheel
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install --force-reinstall dist/*.whl
       - name: stubtest
         working-directory: crates/rusty-modbus-python
         run: python -m mypy.stubtest rusty_modbus --allowlist stubtest-allowlist.txt --ignore-unused-allowlist
