@@ -2,7 +2,36 @@
 
 from __future__ import annotations
 
-from typing import Coroutine, Sequence
+from collections.abc import Awaitable, Sequence
+from typing import Protocol
+
+__all__ = [
+    "ModbusError",
+    "TimeoutError",
+    "ConnectionError",
+    "ModbusExceptionError",
+    "RetryError",
+    "IllegalFunctionError",
+    "IllegalDataAddressError",
+    "IllegalDataValueError",
+    "ServerDeviceFailureError",
+    "AcknowledgeError",
+    "ServerDeviceBusyError",
+    "NegativeAcknowledgeError",
+    "MemoryParityError",
+    "GatewayPathUnavailableError",
+    "GatewayTargetDeviceFailedToRespondError",
+    "ClientConfig",
+    "TlsConfig",
+    "RetryConfig",
+    "DeviceIdentification",
+    "ModbusClient",
+    "SyncModbusClient",
+    "ServerConfig",
+    "StoreConfig",
+    "InMemoryStore",
+    "ModbusServer",
+]
 
 # -- Exceptions ---------------------------------------------------------------
 
@@ -24,6 +53,46 @@ class ModbusExceptionError(ModbusError):
 
 class RetryError(ModbusError):
     """All retry attempts exhausted."""
+    ...
+
+class IllegalFunctionError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x01."""
+    ...
+
+class IllegalDataAddressError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x02."""
+    ...
+
+class IllegalDataValueError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x03."""
+    ...
+
+class ServerDeviceFailureError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x04."""
+    ...
+
+class AcknowledgeError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x05."""
+    ...
+
+class ServerDeviceBusyError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x06."""
+    ...
+
+class NegativeAcknowledgeError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x07."""
+    ...
+
+class MemoryParityError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x08."""
+    ...
+
+class GatewayPathUnavailableError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x0A."""
+    ...
+
+class GatewayTargetDeviceFailedToRespondError(ModbusError):
+    """Server callback error mapped to Modbus exception 0x0B."""
     ...
 
 # -- Configuration ------------------------------------------------------------
@@ -75,6 +144,42 @@ class TlsConfig:
     ) -> None: ...
     def __repr__(self) -> str: ...
 
+class ServerConfig:
+    """Modbus/TCP server configuration."""
+
+    listen_addr: str
+    unit_id: int
+    max_connections: int
+    max_transactions: int
+    shutdown_timeout_secs: float
+
+    def __init__(
+        self,
+        listen_addr: str = "127.0.0.1:0",
+        unit_id: int = 1,
+        max_connections: int = 64,
+        max_transactions: int = 16,
+        shutdown_timeout_secs: float = 10.0,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+
+class StoreConfig:
+    """In-memory data-store sizing configuration."""
+
+    coil_count: int
+    discrete_input_count: int
+    holding_register_count: int
+    input_register_count: int
+
+    def __init__(
+        self,
+        coil_count: int = 65536,
+        discrete_input_count: int = 65536,
+        holding_register_count: int = 65536,
+        input_register_count: int = 65536,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+
 # -- Types --------------------------------------------------------------------
 
 class DeviceIdentification:
@@ -84,6 +189,61 @@ class DeviceIdentification:
     product_code: str | None
     major_minor_revision: str | None
 
+    def __repr__(self) -> str: ...
+
+# -- Server -------------------------------------------------------------------
+
+class DataStore(Protocol):
+    """Protocol for Python-backed synchronous Modbus server data stores."""
+
+    def read_coils(self, address: int, quantity: int) -> Sequence[bool]: ...
+    def write_coil(self, address: int, value: bool) -> None: ...
+    def write_coils(self, address: int, values: Sequence[bool]) -> None: ...
+    def read_discrete_inputs(self, address: int, quantity: int) -> Sequence[bool]: ...
+    def read_holding_registers(self, address: int, quantity: int) -> Sequence[int]: ...
+    def write_register(self, address: int, value: int) -> None: ...
+    def write_registers(self, address: int, values: Sequence[int]) -> None: ...
+    def read_input_registers(self, address: int, quantity: int) -> Sequence[int]: ...
+
+class InMemoryStore:
+    """Thread-safe in-memory Modbus data store."""
+
+    def __init__(self, config: StoreConfig | None = None) -> None: ...
+    def set_coil(self, address: int, value: bool) -> None: ...
+    def set_discrete_input(self, address: int, value: bool) -> None: ...
+    def set_holding_register(self, address: int, value: int) -> None: ...
+    def set_input_register(self, address: int, value: int) -> None: ...
+    def set_file_record(self, file_number: int, record_number: int, value: int) -> None: ...
+    def set_fifo_queue(self, address: int, values: Sequence[int]) -> None: ...
+    def set_exception_status(self, status: int) -> None: ...
+    def set_server_id(self, data: bytes) -> None: ...
+    def __repr__(self) -> str: ...
+
+class ModbusServer:
+    """Running Modbus/TCP server."""
+
+    @staticmethod
+    def start(
+        config: ServerConfig | None = None,
+        store: InMemoryStore | DataStore | None = None,
+    ) -> ModbusServer: ...
+
+    @property
+    def local_addr(self) -> str:
+        """Local address the server is bound to."""
+        ...
+
+    def stop(self) -> None:
+        """Stop accepting new connections."""
+        ...
+
+    def __enter__(self) -> ModbusServer: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> bool: ...
     def __repr__(self) -> str: ...
 
 # -- Async Client -------------------------------------------------------------
@@ -99,7 +259,7 @@ class ModbusClient:
     def connect(
         address: str,
         config: ClientConfig | None = None,
-    ) -> Coroutine[None, None, ModbusClient]:
+    ) -> Awaitable[ModbusClient]:
         """Connect to a Modbus/TCP server."""
         ...
 
@@ -108,7 +268,7 @@ class ModbusClient:
         address: str,
         tls: TlsConfig,
         config: ClientConfig | None = None,
-    ) -> Coroutine[None, None, ModbusClient]:
+    ) -> Awaitable[ModbusClient]:
         """Connect to a Modbus/TCP Security (TLS) server."""
         ...
 
@@ -117,7 +277,7 @@ class ModbusClient:
         """Whether the client is currently connected."""
         ...
 
-    def shutdown(self) -> Coroutine[None, None, None]:
+    def shutdown(self) -> Awaitable[None]:
         """Gracefully shut down the client."""
         ...
 
@@ -133,31 +293,31 @@ class ModbusClient:
 
     def read_holding_registers(
         self, unit_id: int, address: int, quantity: int
-    ) -> Coroutine[None, None, list[int]]:
+    ) -> Awaitable[list[int]]:
         """Read holding registers (FC 0x03)."""
         ...
 
     def read_input_registers(
         self, unit_id: int, address: int, quantity: int
-    ) -> Coroutine[None, None, list[int]]:
+    ) -> Awaitable[list[int]]:
         """Read input registers (FC 0x04)."""
         ...
 
     def write_single_register(
         self, unit_id: int, address: int, value: int
-    ) -> Coroutine[None, None, None]:
+    ) -> Awaitable[None]:
         """Write a single register (FC 0x06)."""
         ...
 
     def write_multiple_registers(
         self, unit_id: int, address: int, values: Sequence[int]
-    ) -> Coroutine[None, None, None]:
+    ) -> Awaitable[None]:
         """Write multiple registers (FC 0x10)."""
         ...
 
     def mask_write_register(
         self, unit_id: int, address: int, and_mask: int, or_mask: int
-    ) -> Coroutine[None, None, None]:
+    ) -> Awaitable[None]:
         """Mask write register (FC 0x16)."""
         ...
 
@@ -168,7 +328,7 @@ class ModbusClient:
         read_quantity: int,
         write_address: int,
         write_values: Sequence[int],
-    ) -> Coroutine[None, None, list[int]]:
+    ) -> Awaitable[list[int]]:
         """Read and write multiple registers (FC 0x17)."""
         ...
 
@@ -176,25 +336,25 @@ class ModbusClient:
 
     def read_coils(
         self, unit_id: int, address: int, quantity: int
-    ) -> Coroutine[None, None, list[bool]]:
+    ) -> Awaitable[list[bool]]:
         """Read coils (FC 0x01)."""
         ...
 
     def read_discrete_inputs(
         self, unit_id: int, address: int, quantity: int
-    ) -> Coroutine[None, None, list[bool]]:
+    ) -> Awaitable[list[bool]]:
         """Read discrete inputs (FC 0x02)."""
         ...
 
     def write_single_coil(
         self, unit_id: int, address: int, value: bool
-    ) -> Coroutine[None, None, None]:
+    ) -> Awaitable[None]:
         """Write a single coil (FC 0x05)."""
         ...
 
     def write_multiple_coils(
         self, unit_id: int, address: int, values: Sequence[bool]
-    ) -> Coroutine[None, None, None]:
+    ) -> Awaitable[None]:
         """Write multiple coils (FC 0x0F)."""
         ...
 
@@ -202,7 +362,7 @@ class ModbusClient:
 
     def read_fifo_queue(
         self, unit_id: int, pointer_address: int
-    ) -> Coroutine[None, None, list[int]]:
+    ) -> Awaitable[list[int]]:
         """Read FIFO queue (FC 0x18)."""
         ...
 
@@ -210,13 +370,13 @@ class ModbusClient:
 
     def read_file_record(
         self, unit_id: int, sub_request_data: bytes
-    ) -> Coroutine[None, None, bytes]:
+    ) -> Awaitable[bytes]:
         """Read file record (FC 0x14)."""
         ...
 
     def write_file_record(
         self, unit_id: int, sub_request_data: bytes
-    ) -> Coroutine[None, None, bytes]:
+    ) -> Awaitable[bytes]:
         """Write file record (FC 0x15)."""
         ...
 
@@ -224,7 +384,7 @@ class ModbusClient:
 
     def read_device_identification(
         self, unit_id: int
-    ) -> Coroutine[None, None, DeviceIdentification]:
+    ) -> Awaitable[DeviceIdentification]:
         """Read device identification (FC 0x2B / MEI 0x0E)."""
         ...
 

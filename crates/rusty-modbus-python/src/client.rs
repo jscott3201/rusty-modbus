@@ -44,10 +44,7 @@ impl ModbusClient {
         let addr: SocketAddr = address
             .parse()
             .map_err(|e| errors::ConnectionError::new_err(format!("invalid address: {e}")))?;
-        let cfg = config.map_or_else(
-            rusty_modbus_client::ClientConfig::default,
-            |c| c.to_rust(),
-        );
+        let cfg = config.map_or_else(rusty_modbus_client::ClientConfig::default, |c| c.to_rust());
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let client = RustClient::connect(addr, cfg)
@@ -71,10 +68,7 @@ impl ModbusClient {
         let addr: SocketAddr = address
             .parse()
             .map_err(|e| errors::ConnectionError::new_err(format!("invalid address: {e}")))?;
-        let cfg = config.map_or_else(
-            rusty_modbus_client::ClientConfig::default,
-            |c| c.to_rust(),
-        );
+        let cfg = config.map_or_else(rusty_modbus_client::ClientConfig::default, |c| c.to_rust());
         let tls_cfg = tls.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -359,12 +353,8 @@ impl ModbusClient {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = match &inner {
-                InnerClient::Tcp(c) => {
-                    c.write_single_coil(UnitId(unit_id), address, value).await
-                }
-                InnerClient::Tls(c) => {
-                    c.write_single_coil(UnitId(unit_id), address, value).await
-                }
+                InnerClient::Tcp(c) => c.write_single_coil(UnitId(unit_id), address, value).await,
+                InnerClient::Tls(c) => c.write_single_coil(UnitId(unit_id), address, value).await,
             };
             result.map_err(errors::client_error_to_pyerr)
         })
@@ -408,12 +398,8 @@ impl ModbusClient {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = match &inner {
-                InnerClient::Tcp(c) => {
-                    c.read_fifo_queue(UnitId(unit_id), pointer_address).await
-                }
-                InnerClient::Tls(c) => {
-                    c.read_fifo_queue(UnitId(unit_id), pointer_address).await
-                }
+                InnerClient::Tcp(c) => c.read_fifo_queue(UnitId(unit_id), pointer_address).await,
+                InnerClient::Tls(c) => c.read_fifo_queue(UnitId(unit_id), pointer_address).await,
             };
             result.map_err(errors::client_error_to_pyerr)
         })
@@ -432,14 +418,8 @@ impl ModbusClient {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = match &inner {
-                InnerClient::Tcp(c) => {
-                    c.read_file_record(UnitId(unit_id), &sub_request_data)
-                        .await
-                }
-                InnerClient::Tls(c) => {
-                    c.read_file_record(UnitId(unit_id), &sub_request_data)
-                        .await
-                }
+                InnerClient::Tcp(c) => c.read_file_record(UnitId(unit_id), &sub_request_data).await,
+                InnerClient::Tls(c) => c.read_file_record(UnitId(unit_id), &sub_request_data).await,
             };
             result
                 .map(|r| r.data.to_vec())

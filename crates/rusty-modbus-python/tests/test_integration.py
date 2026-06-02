@@ -1,20 +1,30 @@
 """Full-stack integration tests using an embedded Modbus server."""
 import pytest
 from rusty_modbus import (
+    InMemoryStore,
     ModbusClient,
+    ModbusServer,
+    ServerConfig,
     SyncModbusClient,
-    _start_test_server,
 )
 
-# Start server once for all tests
-_server_addr = None
+_servers = []
 
 
 def get_server_addr():
-    global _server_addr
-    if _server_addr is None:
-        _server_addr = _start_test_server()
-    return _server_addr
+    store = InMemoryStore()
+    store.set_holding_register(0, 1)
+    store.set_holding_register(1, 2)
+    store.set_input_register(0, 1)
+    store.set_input_register(1, 2)
+    store.set_coil(0, True)
+    store.set_coil(1, False)
+    store.set_coil(2, True)
+    store.set_fifo_queue(0, [10, 11])
+
+    server = ModbusServer.start(ServerConfig(), store)
+    _servers.append(server)
+    return server.local_addr
 
 
 class TestSyncIntegration:
