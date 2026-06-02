@@ -118,6 +118,48 @@ async fn direct_packed_register_write_reads_back() {
 }
 
 #[tokio::test]
+async fn direct_packed_holding_register_read_writes_wire_bytes() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_holding_register(10, 0x1234).unwrap();
+    store.set_holding_register(11, 0xABCD).unwrap();
+
+    let mut bytes = [0u8; 4];
+    let count = store
+        .read_holding_registers_be(10, 2, &mut bytes)
+        .await
+        .unwrap();
+
+    assert_eq!(count, 2);
+    assert_eq!(bytes, [0x12, 0x34, 0xAB, 0xCD]);
+}
+
+#[tokio::test]
+async fn direct_packed_holding_register_read_bad_output_len_is_illegal_data_value() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    let mut bytes = [0u8; 3];
+
+    let result = store.read_holding_registers_be(0, 2, &mut bytes).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataValue));
+}
+
+#[tokio::test]
+async fn direct_packed_input_register_read_writes_wire_bytes() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_input_register(20, 0x0001).unwrap();
+    store.set_input_register(21, 0xFF00).unwrap();
+
+    let mut bytes = [0u8; 4];
+    let count = store
+        .read_input_registers_be(20, 2, &mut bytes)
+        .await
+        .unwrap();
+
+    assert_eq!(count, 2);
+    assert_eq!(bytes, [0x00, 0x01, 0xFF, 0x00]);
+}
+
+#[tokio::test]
 async fn direct_packed_register_write_bad_byte_count_is_illegal_data_value() {
     let store = InMemoryStore::new(StoreConfig::default());
 

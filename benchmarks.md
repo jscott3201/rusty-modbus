@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `cf3405d` base plus this packed-read benchmark refresh |
+| Git commit | `56a93f0` base plus this register-read benchmark refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -145,11 +145,11 @@ decode operates over caller-owned `&[u8]`, variable-length response payloads
 borrow from that buffer, and owned response types slice `bytes::Bytes` instead of
 copying payloads.
 
-On the server side, the in-memory store now exposes packed-bit read hooks for
-FC 0x01 and FC 0x02. The handler allocates the final response PDU once and lets
-the store write directly into the wire payload bytes, avoiding the previous
-2,000-element bool scratch buffer and second packing pass on the common
-read-coils/read-discrete-inputs path.
+On the server side, the in-memory store now exposes direct wire-byte read hooks
+for FC 0x01/0x02 bit tables and FC 0x03/0x04 register tables. The handler
+allocates the final response PDU once and lets the store write directly into the
+wire payload bytes, avoiding the previous bool/register scratch buffers and
+second response-encoding pass on common read paths.
 
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
@@ -180,15 +180,17 @@ Treat these as hotspot-shape indicators, not release-grade Criterion baselines:
 | Max register write unpack to `Vec<u16>` | 63.1 ns | Server write materialization is larger than decode. |
 | Max coil write unpack to `Vec<bool>` | 377.5 ns | Packed-bit expansion is the strongest current allocation/copy candidate. |
 
-The packed store-write quick smoke was run with
+The packed store read/write quick smoke was run with
 `scripts/bench-local.sh store --quick --noplot` after adding direct wire-byte
-write paths to the in-memory store:
+paths to the in-memory store:
 
 | Path | Quick-mode timing | Signal |
 |---|---:|---|
 | Max register write from `&[u16]` | 6.60 ns | Slice baseline for existing store API. |
 | Max register write from wire bytes | 6.49 ns | Direct packed path avoids the previous temporary `Vec<u16>`. |
 | Max register wire bytes via `Vec<u16>` | 67.9 ns | Approximate old handler shape. |
+| Max register read to BE wire bytes | 27.6 ns | Store writes directly into the response payload buffer. |
+| Max register read via `u16` buffer then pack | 36.9 ns | Approximate old handler shape; extra scratch copy/encode pass costs ~25%. |
 | Max coil write from `&[bool]` | 23.4 ns | Slice baseline for existing store API. |
 | Max coil write from packed wire bytes | 691 ns | Direct packed path avoids the previous temporary `Vec<bool>`. |
 | Max coil packed bytes via `Vec<bool>` | 746 ns | Approximate old handler shape; packed-bit expansion dominates. |
