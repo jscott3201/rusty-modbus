@@ -177,7 +177,10 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::WriteSingleRegister(_) => Ok(()),
+            OwnedResponsePdu::WriteSingleRegister(resp) => {
+                expect_echo("address", address, resp.address.0)?;
+                expect_echo("value", value, resp.value)
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -222,7 +225,10 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::WriteMultipleRegisters(_) => Ok(()),
+            OwnedResponsePdu::WriteMultipleRegisters(resp) => {
+                expect_echo("address", address, resp.address.0)?;
+                expect_echo("quantity", quantity, resp.quantity.0)
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -259,7 +265,11 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::MaskWriteRegister(_) => Ok(()),
+            OwnedResponsePdu::MaskWriteRegister(resp) => {
+                expect_echo("address", address, resp.address.0)?;
+                expect_echo("and_mask", and_mask, resp.and_mask)?;
+                expect_echo("or_mask", or_mask, resp.or_mask)
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -330,5 +340,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
         }
+    }
+}
+
+fn expect_echo(field: &'static str, expected: u16, got: u16) -> Result<(), ClientError> {
+    if expected == got {
+        Ok(())
+    } else {
+        Err(ClientError::UnexpectedResponseEcho {
+            field,
+            expected,
+            got,
+        })
     }
 }

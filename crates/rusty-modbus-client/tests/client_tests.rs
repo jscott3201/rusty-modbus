@@ -151,6 +151,25 @@ fn assert_file_byte_count_encode_error<T>(
     );
 }
 
+fn assert_echo_mismatch<T>(
+    result: Result<T, ClientError>,
+    field: &'static str,
+    expected: u16,
+    got: u16,
+) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::UnexpectedResponseEcho {
+                field: got_field,
+                expected: got_expected,
+                got: got_value,
+            }) if got_field == field && got_expected == expected && got_value == got
+        ),
+        "expected echo mismatch for {field}: {expected:#06x} != {got:#06x}"
+    );
+}
+
 #[tokio::test]
 async fn read_holding_registers() {
     let addr = start_register_server().await;
@@ -558,6 +577,119 @@ async fn matching_exception_surfaces_as_exception() {
         Err(ClientError::Exception(exc)) => assert_eq!(exc.function_code.code(), 0x03),
         other => panic!("expected Exception for FC 0x03, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn write_single_register_rejects_mismatched_echo() {
+    // FC06 response must echo the requested address and value.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x06 {
+            vec![0x06, 0x00, 0x02, 0xBE, 0xEF]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client
+            .write_single_register(UnitId(0xFF), 0x0001, 0xBEEF)
+            .await,
+        "address",
+        0x0001,
+        0x0002,
+    );
+}
+
+#[tokio::test]
+async fn write_single_coil_rejects_mismatched_echo() {
+    // FC05 response must echo 0xFF00 for an ON write.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x05 {
+            vec![0x05, 0x00, 0x05, 0x00, 0x00]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client.write_single_coil(UnitId(0xFF), 0x0005, true).await,
+        "value",
+        0xFF00,
+        0x0000,
+    );
+}
+
+#[tokio::test]
+async fn write_multiple_coils_rejects_mismatched_echo() {
+    // FC0F response must echo the starting address and quantity written.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x0F {
+            vec![0x0F, 0x00, 0x10, 0x00, 0x03]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client
+            .write_multiple_coils(UnitId(0xFF), 0x0010, &[true, false])
+            .await,
+        "quantity",
+        0x0002,
+        0x0003,
+    );
+}
+
+#[tokio::test]
+async fn write_multiple_registers_rejects_mismatched_echo() {
+    // FC10 response must echo the starting address and quantity written.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x10 {
+            vec![0x10, 0x00, 0x20, 0x00, 0x01]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client
+            .write_multiple_registers(UnitId(0xFF), 0x0020, &[0x0001, 0x0002])
+            .await,
+        "quantity",
+        0x0002,
+        0x0001,
+    );
+}
+
+#[tokio::test]
+async fn mask_write_register_rejects_mismatched_echo() {
+    // FC16 response must echo address, AND mask, and OR mask.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x16 {
+            vec![0x16, 0x00, 0x04, 0x00, 0xF2, 0x00, 0x24]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client
+            .mask_write_register(UnitId(0xFF), 0x0004, 0x00F2, 0x0025)
+            .await,
+        "or_mask",
+        0x0025,
+        0x0024,
+    );
 }
 
 #[tokio::test]

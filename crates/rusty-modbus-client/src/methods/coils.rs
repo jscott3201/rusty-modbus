@@ -143,7 +143,10 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::WriteSingleCoil(_) => Ok(()),
+            OwnedResponsePdu::WriteSingleCoil(resp) => {
+                expect_echo("address", address, resp.address.0)?;
+                expect_echo("value", req.value.to_wire(), resp.value.to_wire())
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -191,11 +194,26 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::WriteMultipleCoils(_) => Ok(()),
+            OwnedResponsePdu::WriteMultipleCoils(resp) => {
+                expect_echo("address", address, resp.address.0)?;
+                expect_echo("quantity", quantity, resp.quantity.0)
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
         }
+    }
+}
+
+fn expect_echo(field: &'static str, expected: u16, got: u16) -> Result<(), ClientError> {
+    if expected == got {
+        Ok(())
+    } else {
+        Err(ClientError::UnexpectedResponseEcho {
+            field,
+            expected,
+            got,
+        })
     }
 }
