@@ -8,7 +8,10 @@ use rusty_modbus_tcp::TcpConfig;
 /// Connection pool configuration.
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Maximum total connections across both pools. Default: 64.
+    /// Maximum connections in the **non-priority** pool. Default: 64.
+    ///
+    /// Priority devices have their own per-device budgets
+    /// ([`PriorityDevice::max_connections`]) and do **not** count against this.
     pub max_connections: usize,
     /// Priority device entries — connections to these addresses are never evicted.
     pub priority_devices: Vec<PriorityDevice>,

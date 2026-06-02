@@ -72,7 +72,7 @@ impl Drop for PooledConnection {
         if let Some(mut entry) = self.entry.take() {
             entry.last_used = Instant::now();
             let mut inner = self.pool.lock();
-            inner.active_count = inner.active_count.saturating_sub(1);
+            inner.release_active(entry.is_priority, entry.addr);
             if !inner.shutting_down {
                 inner.idle.push(entry);
             }
