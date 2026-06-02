@@ -11,9 +11,10 @@
 use bytes::Bytes;
 use rusty_modbus_codec::error::DecodeError;
 use rusty_modbus_codec::response::{
-    ExceptionResponse, GetCommEventCounterResponse, MaskWriteRegisterResponse,
-    ReadExceptionStatusResponse, WriteMultipleCoilsResponse, WriteMultipleRegistersResponse,
-    WriteSingleCoilResponse, WriteSingleRegisterResponse,
+    ExceptionResponse, GetCommEventCounterResponse, GetCommEventLogResponse,
+    MaskWriteRegisterResponse, ReadExceptionStatusResponse, ReadFifoQueueResponse,
+    ReadFileRecordResponse, WriteFileRecordResponse, WriteMultipleCoilsResponse,
+    WriteMultipleRegistersResponse, WriteSingleCoilResponse, WriteSingleRegisterResponse,
 };
 use rusty_modbus_types::{DiagnosticSubFunction, FunctionCode, MeiType};
 
@@ -371,27 +372,11 @@ impl OwnedReadFifoQueueResponse {
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
         let data = pdu_data(&pdu)?;
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
-        let byte_count = u16::from_be_bytes([data[0], data[1]]);
-        let fifo_count = u16::from_be_bytes([data[2], data[3]]);
-        let fifo_values_slice = &data[4..];
-        // byte_count includes the 2 bytes for fifo_count + the fifo data
-        let expected_remaining = usize::from(byte_count).saturating_sub(2);
-        if fifo_values_slice.len() != expected_remaining {
-            return Err(DecodeError::ByteCountMismatch {
-                declared: expected_remaining,
-                actual: fifo_values_slice.len(),
-            });
-        }
-        let fifo_values = pdu.slice(5..5 + expected_remaining);
+        let decoded = ReadFifoQueueResponse::decode(data)?;
+        let fifo_values = pdu.slice(5..5 + decoded.fifo_values.len());
         Ok(Self {
-            byte_count,
-            fifo_count,
+            byte_count: decoded.byte_count,
+            fifo_count: decoded.fifo_count,
             fifo_values,
         })
     }
@@ -418,23 +403,10 @@ impl OwnedReadFileRecordResponse {
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
         let data = pdu_data(&pdu)?;
-        if data.is_empty() {
-            return Err(DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            });
-        }
-        let byte_count = data[0];
-        let payload = &data[1..];
-        if payload.len() != usize::from(byte_count) {
-            return Err(DecodeError::ByteCountMismatch {
-                declared: usize::from(byte_count),
-                actual: payload.len(),
-            });
-        }
-        let owned_data = pdu.slice(2..2 + usize::from(byte_count));
+        let decoded = ReadFileRecordResponse::decode(data)?;
+        let owned_data = pdu.slice(2..2 + decoded.data.len());
         Ok(Self {
-            byte_count,
+            byte_count: decoded.byte_count,
             data: owned_data,
         })
     }
@@ -457,23 +429,10 @@ impl OwnedWriteFileRecordResponse {
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
         let data = pdu_data(&pdu)?;
-        if data.is_empty() {
-            return Err(DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            });
-        }
-        let byte_count = data[0];
-        let payload = &data[1..];
-        if payload.len() != usize::from(byte_count) {
-            return Err(DecodeError::ByteCountMismatch {
-                declared: usize::from(byte_count),
-                actual: payload.len(),
-            });
-        }
-        let owned_data = pdu.slice(2..2 + usize::from(byte_count));
+        let decoded = WriteFileRecordResponse::decode(data)?;
+        let owned_data = pdu.slice(2..2 + decoded.data.len());
         Ok(Self {
-            byte_count,
+            byte_count: decoded.byte_count,
             data: owned_data,
         })
     }
@@ -546,31 +505,13 @@ impl OwnedGetCommEventLogResponse {
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
         let data = pdu_data(&pdu)?;
-        if data.len() < 7 {
-            return Err(DecodeError::Truncated {
-                expected: 7,
-                actual: data.len(),
-            });
-        }
-        let byte_count = data[0];
-        let status = u16::from_be_bytes([data[1], data[2]]);
-        let event_count = u16::from_be_bytes([data[3], data[4]]);
-        let message_count = u16::from_be_bytes([data[5], data[6]]);
-        let events_slice = &data[7..];
-        // byte_count covers status(2) + event_count(2) + message_count(2) + events
-        let declared_events_len = usize::from(byte_count).saturating_sub(6);
-        if events_slice.len() != declared_events_len {
-            return Err(DecodeError::ByteCountMismatch {
-                declared: usize::from(byte_count),
-                actual: 6 + events_slice.len(),
-            });
-        }
-        let events = pdu.slice(8..8 + declared_events_len);
+        let decoded = GetCommEventLogResponse::decode(data)?;
+        let events = pdu.slice(8..8 + decoded.events.len());
         Ok(Self {
-            byte_count,
-            status,
-            event_count,
-            message_count,
+            byte_count: decoded.byte_count,
+            status: decoded.status,
+            event_count: decoded.event_count,
+            message_count: decoded.message_count,
             events,
         })
     }
