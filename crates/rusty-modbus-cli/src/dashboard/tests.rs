@@ -1,6 +1,11 @@
+use std::collections::VecDeque;
+use std::time::Duration;
+
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use rusty_modbus_client::{ClientConfig, ModbusClient};
+use rusty_modbus_sim::{ModbusSimulator, generic_io};
 
 use super::*;
 
@@ -17,6 +22,11 @@ fn sample_view(data: DashboardData) -> DashboardView {
         refresh_count: 2,
         refresh_age: "now".to_string(),
         message: "Refresh OK: 2 values".to_string(),
+        command_mode: CommandMode::Idle,
+        command_input: String::new(),
+        command_log: VecDeque::from([CommandLogEntry::info(
+            "Press ':' to run read/write/status/help commands.",
+        )]),
     }
 }
 
@@ -24,7 +34,7 @@ fn render_to_buffer(view: &DashboardView, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| render_dashboard(frame, view))
+        .draw(|frame| render::render_dashboard(frame, view))
         .unwrap();
     terminal.backend().buffer().clone()
 }
@@ -55,6 +65,7 @@ fn render_dashboard_shows_endpoint_mode_and_registers() {
     assert!(text.contains("0x1234"));
     assert!(text.contains("4660"));
     assert!(text.contains("PageUp/PageDown"));
+    assert!(text.contains("COMMAND"));
 }
 
 #[test]
@@ -101,6 +112,20 @@ fn render_compact_dashboard_for_small_terminals() {
 }
 
 #[test]
+fn render_dashboard_shows_command_input_and_log() {
+    let mut view = sample_view(DashboardData::Registers(vec![1]));
+    view.command_mode = CommandMode::Editing;
+    view.command_input = "read coils 0 8".to_string();
+    view.command_log
+        .push_back(CommandLogEntry::success("Read 8 CO values from 0"));
+
+    let text = buffer_text(&render_to_buffer(&view, 110, 32));
+
+    assert!(text.contains(":read coils 0 8"));
+    assert!(text.contains("Read 8 CO values from 0"));
+}
+
+#[test]
 fn clamps_quantity_by_target_limits() {
     let mut view = sample_view(DashboardData::Empty);
 
@@ -117,4 +142,103 @@ fn clamps_quantity_by_target_limits() {
     view.target = DashboardTarget::Coils;
     view.clamp_quantity();
     assert_eq!(view.quantity, 500);
+}
+
+#[tokio::test]
+async fn dashboard_command_reads_registers() {
+    let (mut sim, addr) = start_sim().await;
+    sim.set_holding_register(0, 0x1234);
+    sim.set_holding_register(1, 0x0002);
+
+    let mut app = app_for(addr).await;
+    app.execute_command_line("read holding-registers 0 2".to_string())
+        .await;
+
+    assert_eq!(app.view.target, DashboardTarget::HoldingRegisters);
+    assert_eq!(app.view.address, 0);
+    assert_eq!(app.view.quantity, 2);
+    assert_eq!(
+        app.view.data,
+        DashboardData::Registers(vec![0x1234, 0x0002])
+    );
+    assert!(
+        app.view
+            .command_log
+            .iter()
+            .any(|entry| entry.text.contains("Read 2 HR values from 0"))
+    );
+
+    sim.stop().await;
+}
+
+#[tokio::test]
+async fn dashboard_command_writes_register_and_refreshes() {
+    let (mut sim, addr) = start_sim().await;
+
+    let mut app = app_for(addr).await;
+    app.execute_command_line("write register 0 42".to_string())
+        .await;
+
+    assert_eq!(app.view.target, DashboardTarget::HoldingRegisters);
+    assert_eq!(app.view.address, 0);
+    assert_eq!(app.view.quantity, 1);
+    assert_eq!(app.view.data, DashboardData::Registers(vec![42]));
+    assert!(
+        app.view
+            .command_log
+            .iter()
+            .any(|entry| entry.text.contains("Write OK: 1 HR values at 0"))
+    );
+
+    sim.stop().await;
+}
+
+#[tokio::test]
+async fn dashboard_command_reports_parse_errors() {
+    let (mut sim, addr) = start_sim().await;
+
+    let mut app = app_for(addr).await;
+    app.execute_command_line("write register 0 nope".to_string())
+        .await;
+
+    assert_eq!(app.view.status, DashboardStatus::Error);
+    assert!(
+        app.view
+            .command_log
+            .iter()
+            .any(|entry| entry.status == CommandLogStatus::Error)
+    );
+
+    sim.stop().await;
+}
+
+async fn start_sim() -> (ModbusSimulator, std::net::SocketAddr) {
+    let mut sim = ModbusSimulator::from_config(generic_io()).unwrap();
+    let addr = sim.start().await.unwrap();
+    (sim, addr)
+}
+
+async fn app_for(addr: std::net::SocketAddr) -> DashboardApp {
+    let client = ModbusClient::connect(
+        addr,
+        ClientConfig {
+            timeout: Duration::from_secs(2),
+            ..ClientConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    DashboardApp::new(
+        DashboardConfig {
+            addr,
+            unit_id: 1,
+            timeout: 2,
+            address: 0,
+            quantity: 1,
+            target: DashboardTarget::HoldingRegisters,
+            refresh_interval: Duration::ZERO,
+        },
+        client,
+    )
 }

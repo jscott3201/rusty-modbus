@@ -1,21 +1,22 @@
 //! Ratatui dashboard for interactive Modbus diagnostics.
 
+use std::collections::VecDeque;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::DefaultTerminal;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, BorderType, Cell, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
-};
-use ratatui::{DefaultTerminal, Frame};
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient};
 use rusty_modbus_types::UnitId;
 
+use crate::shell_parser::{self, ShellCommand};
+
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_COMMAND_LOG: usize = 8;
+
+mod render;
 
 mod palette {
     use ratatui::style::Color;
@@ -170,10 +171,10 @@ async fn run_loop(
 ) -> Result<(), Box<dyn Error>> {
     while !app.should_quit {
         app.update_refresh_age();
-        terminal.draw(|frame| render_dashboard(frame, &app.view))?;
+        terminal.draw(|frame| render::render_dashboard(frame, &app.view))?;
 
         if app.needs_initial_refresh() || app.should_auto_refresh() {
-            app.refresh().await;
+            let _ = app.refresh().await;
             continue;
         }
 
@@ -184,8 +185,8 @@ async fn run_loop(
             continue;
         }
 
-        if app.handle_key(key) {
-            app.refresh().await;
+        if app.handle_key(key).await {
+            let _ = app.refresh().await;
         }
     }
     Ok(())
@@ -243,6 +244,11 @@ impl DashboardApp {
             refresh_count: 0,
             refresh_age: "not refreshed".to_string(),
             message: "Ready".to_string(),
+            command_mode: CommandMode::Idle,
+            command_input: String::new(),
+            command_log: VecDeque::from([CommandLogEntry::info(
+                "Press ':' to run read/write/status/help commands.",
+            )]),
         };
         view.clamp_quantity();
 
@@ -255,7 +261,7 @@ impl DashboardApp {
         }
     }
 
-    async fn refresh(&mut self) {
+    async fn refresh(&mut self) -> Result<usize, ClientError> {
         let result = self.read_current_target().await;
         self.view.refresh_count = self.view.refresh_count.saturating_add(1);
         self.last_refresh = Some(Instant::now());
@@ -267,10 +273,12 @@ impl DashboardApp {
                 self.view.data = data;
                 self.view.status = DashboardStatus::Connected;
                 self.view.message = format!("Refresh OK: {rows} values");
+                Ok(rows)
             }
             Err(error) => {
                 self.view.status = DashboardStatus::Error;
                 self.view.message = format!("Refresh failed: {error}");
+                Err(error)
             }
         }
     }
@@ -320,10 +328,20 @@ impl DashboardApp {
             .unwrap_or_else(|| "not refreshed".to_string());
     }
 
-    fn handle_key(&mut self, key: KeyEvent) -> bool {
+    async fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if self.view.command_mode == CommandMode::Editing {
+            self.handle_command_key(key).await;
+            return false;
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.should_quit = true;
+                false
+            }
+            KeyCode::Char(':') => {
+                self.view.command_mode = CommandMode::Editing;
+                self.view.command_input.clear();
                 false
             }
             KeyCode::Char('r') => true,
@@ -354,6 +372,173 @@ impl DashboardApp {
         }
     }
 
+    async fn handle_command_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.view.command_mode = CommandMode::Idle;
+                self.view.command_input.clear();
+            }
+            KeyCode::Enter => {
+                let command = std::mem::take(&mut self.view.command_input);
+                self.view.command_mode = CommandMode::Idle;
+                self.execute_command_line(command).await;
+            }
+            KeyCode::Backspace => {
+                self.view.command_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.view.command_input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    async fn execute_command_line(&mut self, line: String) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.push_log(CommandLogEntry::info(format!("> {trimmed}")));
+
+        match shell_parser::parse_command(trimmed) {
+            Ok(command) => self.execute_shell_command(command).await,
+            Err(error) => self.record_error(format!("Parse error: {error}")),
+        }
+    }
+
+    async fn execute_shell_command(&mut self, command: ShellCommand) {
+        match command {
+            ShellCommand::ReadCoils { address, quantity } => {
+                self.read_target(DashboardTarget::Coils, address, quantity)
+                    .await;
+            }
+            ShellCommand::ReadDiscreteInputs { address, quantity } => {
+                self.read_target(DashboardTarget::DiscreteInputs, address, quantity)
+                    .await;
+            }
+            ShellCommand::ReadHoldingRegisters { address, quantity } => {
+                self.read_target(DashboardTarget::HoldingRegisters, address, quantity)
+                    .await;
+            }
+            ShellCommand::ReadInputRegisters { address, quantity } => {
+                self.read_target(DashboardTarget::InputRegisters, address, quantity)
+                    .await;
+            }
+            ShellCommand::WriteCoil { address, value } => {
+                let result = self
+                    .client
+                    .write_single_coil(UnitId(self.view.unit_id), address, value)
+                    .await;
+                self.finish_write(result, DashboardTarget::Coils, address, 1)
+                    .await;
+            }
+            ShellCommand::WriteCoils { address, values } => {
+                let quantity = u16::try_from(values.len()).unwrap_or(u16::MAX);
+                let result = self
+                    .client
+                    .write_multiple_coils(UnitId(self.view.unit_id), address, &values)
+                    .await;
+                self.finish_write(result, DashboardTarget::Coils, address, quantity)
+                    .await;
+            }
+            ShellCommand::WriteRegister { address, value } => {
+                let result = self
+                    .client
+                    .write_single_register(UnitId(self.view.unit_id), address, value)
+                    .await;
+                self.finish_write(result, DashboardTarget::HoldingRegisters, address, 1)
+                    .await;
+            }
+            ShellCommand::WriteRegisters { address, values } => {
+                let quantity = u16::try_from(values.len()).unwrap_or(u16::MAX);
+                let result = self
+                    .client
+                    .write_multiple_registers(UnitId(self.view.unit_id), address, &values)
+                    .await;
+                self.finish_write(result, DashboardTarget::HoldingRegisters, address, quantity)
+                    .await;
+            }
+            ShellCommand::SetUnitId(id) => {
+                self.view.unit_id = id;
+                self.push_log(CommandLogEntry::success(format!("Unit ID set to {id}")));
+                let _ = self.refresh().await;
+            }
+            ShellCommand::Status => {
+                self.push_log(CommandLogEntry::info(format!(
+                    "Endpoint {} unit {} connected {}",
+                    self.view.endpoint,
+                    self.view.unit_id,
+                    self.client.is_connected()
+                )));
+            }
+            ShellCommand::Help => {
+                for line in [
+                    "read holding-registers <address> <quantity>",
+                    "read coils <address> <quantity>",
+                    "write register <address> <value>",
+                    "write coil <address> <on|off>",
+                ] {
+                    self.push_log(CommandLogEntry::info(line));
+                }
+            }
+            ShellCommand::Exit => {
+                self.should_quit = true;
+            }
+            ShellCommand::Empty => {}
+        }
+    }
+
+    async fn read_target(&mut self, target: DashboardTarget, address: u16, quantity: u16) {
+        self.view.target = target;
+        self.view.address = address;
+        self.view.quantity = quantity;
+        self.view.clamp_quantity();
+
+        match self.refresh().await {
+            Ok(rows) => self.push_log(CommandLogEntry::success(format!(
+                "Read {rows} {} values from {address}",
+                target.short_label()
+            ))),
+            Err(error) => self.push_log(CommandLogEntry::error(format!("Read failed: {error}"))),
+        }
+    }
+
+    async fn finish_write(
+        &mut self,
+        result: Result<(), ClientError>,
+        target: DashboardTarget,
+        address: u16,
+        quantity: u16,
+    ) {
+        match result {
+            Ok(()) => {
+                self.push_log(CommandLogEntry::success(format!(
+                    "Write OK: {quantity} {} values at {address}",
+                    target.short_label()
+                )));
+                self.view.target = target;
+                self.view.address = address;
+                self.view.quantity = quantity.max(1);
+                self.view.clamp_quantity();
+                let _ = self.refresh().await;
+            }
+            Err(error) => self.record_error(format!("Write failed: {error}")),
+        }
+    }
+
+    fn record_error(&mut self, message: String) {
+        self.view.status = DashboardStatus::Error;
+        self.view.message = message.clone();
+        self.push_log(CommandLogEntry::error(message));
+    }
+
+    fn push_log(&mut self, entry: CommandLogEntry) {
+        if self.view.command_log.len() == MAX_COMMAND_LOG {
+            self.view.command_log.pop_front();
+        }
+        self.view.command_log.push_back(entry);
+    }
+
     fn set_target(&mut self, target: DashboardTarget) -> bool {
         if self.view.target == target {
             return false;
@@ -361,6 +546,48 @@ impl DashboardApp {
         self.view.target = target;
         self.view.clamp_quantity();
         true
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandMode {
+    Idle,
+    Editing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandLogStatus {
+    Info,
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandLogEntry {
+    status: CommandLogStatus,
+    text: String,
+}
+
+impl CommandLogEntry {
+    fn info(text: impl Into<String>) -> Self {
+        Self {
+            status: CommandLogStatus::Info,
+            text: text.into(),
+        }
+    }
+
+    fn success(text: impl Into<String>) -> Self {
+        Self {
+            status: CommandLogStatus::Success,
+            text: text.into(),
+        }
+    }
+
+    fn error(text: impl Into<String>) -> Self {
+        Self {
+            status: CommandLogStatus::Error,
+            text: text.into(),
+        }
     }
 }
 
@@ -377,6 +604,9 @@ struct DashboardView {
     refresh_count: u64,
     refresh_age: String,
     message: String,
+    command_mode: CommandMode,
+    command_input: String,
+    command_log: VecDeque<CommandLogEntry>,
 }
 
 impl DashboardView {
@@ -422,256 +652,6 @@ impl DashboardData {
             Self::Empty => 0,
         }
     }
-}
-
-fn render_dashboard(frame: &mut Frame, view: &DashboardView) {
-    let area = frame.area();
-    if area.width < 72 || area.height < 20 {
-        render_compact(frame, area, view);
-        return;
-    }
-
-    frame.render_widget(
-        Block::new().style(Style::new().bg(palette::BACKGROUND)),
-        area,
-    );
-
-    let [header_area, body_area, footer_area] = Layout::vertical([
-        Constraint::Length(4),
-        Constraint::Fill(1),
-        Constraint::Length(3),
-    ])
-    .areas(area);
-
-    render_header(frame, header_area, view);
-
-    let [sidebar_area, data_area] =
-        Layout::horizontal([Constraint::Length(31), Constraint::Fill(1)]).areas(body_area);
-    render_sidebar(frame, sidebar_area, view);
-    render_data_panel(frame, data_area, view);
-    render_footer(frame, footer_area);
-}
-
-fn render_compact(frame: &mut Frame, area: Rect, view: &DashboardView) {
-    let text = Text::from(vec![
-        Line::from(Span::styled(
-            "rusty-modbus dashboard",
-            Style::new().fg(palette::CYAN).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!("Endpoint: {}", view.endpoint)),
-        Line::from(format!(
-            "Unit: {}  View: {}",
-            view.unit_id,
-            view.target.label()
-        )),
-        Line::from(format!("Status: {}", view.status.label())),
-        Line::from("Resize for full controls. q/Esc quits."),
-    ]);
-    frame.render_widget(
-        Paragraph::new(text)
-            .style(Style::new().fg(palette::TEXT).bg(palette::BACKGROUND))
-            .wrap(Wrap { trim: true })
-            .block(panel("DASHBOARD")),
-        area,
-    );
-}
-
-fn render_header(frame: &mut Frame, area: Rect, view: &DashboardView) {
-    let title = Line::from(vec![
-        Span::styled(
-            "rusty-modbus",
-            Style::new().fg(palette::CYAN).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" dashboard", Style::new().fg(palette::TEXT)),
-        Span::styled("  |  ", Style::new().fg(palette::MUTED)),
-        Span::styled(view.status.label(), view.status.style()),
-    ]);
-    let metadata = Line::from(vec![
-        Span::styled("Endpoint ", Style::new().fg(palette::MUTED)),
-        Span::styled(&view.endpoint, Style::new().fg(palette::TEXT)),
-        Span::styled("  Unit ", Style::new().fg(palette::MUTED)),
-        Span::styled(view.unit_id.to_string(), Style::new().fg(palette::TEXT)),
-        Span::styled("  Timeout ", Style::new().fg(palette::MUTED)),
-        Span::styled(
-            format!("{}s", view.timeout_secs),
-            Style::new().fg(palette::TEXT),
-        ),
-        Span::styled("  Refresh ", Style::new().fg(palette::MUTED)),
-        Span::styled(&view.refresh_age, Style::new().fg(palette::AMBER)),
-    ]);
-
-    frame.render_widget(
-        Paragraph::new(vec![title, metadata]).block(panel("CONTROL")),
-        area,
-    );
-}
-
-fn render_sidebar(frame: &mut Frame, area: Rect, view: &DashboardView) {
-    let items = DashboardTarget::ALL
-        .iter()
-        .enumerate()
-        .map(|(index, target)| {
-            let selected = *target == view.target;
-            let marker = if selected { ">" } else { " " };
-            let style = if selected {
-                Style::new().fg(palette::CYAN).add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(palette::TEXT)
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{marker} {}", index + 1),
-                    Style::new().fg(palette::MUTED),
-                ),
-                Span::raw(" "),
-                Span::styled(target.short_label(), style),
-                Span::styled("  ", Style::new().fg(palette::MUTED)),
-                Span::styled(target.label(), style),
-            ]))
-        })
-        .collect::<Vec<_>>();
-
-    let status = Text::from(vec![
-        Line::from(vec![
-            Span::styled("Mode ", Style::new().fg(palette::MUTED)),
-            Span::styled(view.target.function_code(), Style::new().fg(palette::AMBER)),
-        ]),
-        Line::from(vec![
-            Span::styled("Address ", Style::new().fg(palette::MUTED)),
-            Span::styled(view.address.to_string(), Style::new().fg(palette::TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("Quantity ", Style::new().fg(palette::MUTED)),
-            Span::styled(view.quantity.to_string(), Style::new().fg(palette::TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("Reads ", Style::new().fg(palette::MUTED)),
-            Span::styled(
-                view.refresh_count.to_string(),
-                Style::new().fg(palette::TEXT),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(&view.message, Style::new().fg(palette::AMBER))),
-    ]);
-
-    let [modes_area, status_area] =
-        Layout::vertical([Constraint::Length(9), Constraint::Fill(1)]).areas(area);
-
-    frame.render_widget(
-        List::new(items)
-            .block(panel("AREAS"))
-            .style(Style::new().bg(palette::PANEL)),
-        modes_area,
-    );
-    frame.render_widget(
-        Paragraph::new(status)
-            .wrap(Wrap { trim: true })
-            .block(panel("STATUS")),
-        status_area,
-    );
-}
-
-fn render_data_panel(frame: &mut Frame, area: Rect, view: &DashboardView) {
-    let [tabs_area, table_area] =
-        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
-    let tabs = Tabs::new(DashboardTarget::ALL.iter().map(|target| target.label()))
-        .select(view.target.tab_index())
-        .style(Style::new().fg(palette::MUTED).bg(palette::PANEL))
-        .highlight_style(Style::new().fg(palette::CYAN).add_modifier(Modifier::BOLD))
-        .divider("|")
-        .block(panel("DATA"));
-    frame.render_widget(tabs, tabs_area);
-
-    let rows = data_rows(view);
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Length(14),
-            Constraint::Fill(1),
-        ],
-    )
-    .header(
-        Row::new(["Address", "Value", "Decimal", "State"])
-            .style(Style::new().fg(palette::CYAN).add_modifier(Modifier::BOLD))
-            .bottom_margin(1),
-    )
-    .column_spacing(2)
-    .block(panel(view.target.label()))
-    .style(Style::new().fg(palette::TEXT).bg(palette::PANEL))
-    .row_highlight_style(Style::new().bg(palette::STEEL));
-    frame.render_widget(table, table_area);
-}
-
-fn render_footer(frame: &mut Frame, area: Rect) {
-    let footer = Line::from(vec![
-        Span::styled("q/Esc", Style::new().fg(palette::CYAN)),
-        Span::raw(" quit  "),
-        Span::styled("r", Style::new().fg(palette::CYAN)),
-        Span::raw(" refresh  "),
-        Span::styled("1-4/Tab", Style::new().fg(palette::CYAN)),
-        Span::raw(" area  "),
-        Span::styled("PageUp/PageDown", Style::new().fg(palette::CYAN)),
-        Span::raw(" address  "),
-        Span::styled("+/-", Style::new().fg(palette::CYAN)),
-        Span::raw(" quantity"),
-    ]);
-    frame.render_widget(
-        Paragraph::new(footer)
-            .style(Style::new().fg(palette::TEXT).bg(palette::BACKGROUND))
-            .block(panel("KEYS")),
-        area,
-    );
-}
-
-fn data_rows(view: &DashboardView) -> Vec<Row<'static>> {
-    match &view.data {
-        DashboardData::Registers(values) => values
-            .iter()
-            .enumerate()
-            .map(|(offset, value)| {
-                Row::new(vec![
-                    Cell::from(display_address(view.address, offset).to_string()),
-                    Cell::from(format!("0x{value:04X}")),
-                    Cell::from(value.to_string()),
-                    Cell::from("register"),
-                ])
-            })
-            .collect(),
-        DashboardData::Bits(values) => values
-            .iter()
-            .enumerate()
-            .map(|(offset, value)| {
-                let state = if *value { "ON" } else { "OFF" };
-                Row::new(vec![
-                    Cell::from(display_address(view.address, offset).to_string()),
-                    Cell::from(if *value { "1" } else { "0" }),
-                    Cell::from(if *value { "1" } else { "0" }),
-                    Cell::from(state),
-                ])
-            })
-            .collect(),
-        DashboardData::Empty => vec![Row::new(vec![
-            Cell::from("-"),
-            Cell::from("-"),
-            Cell::from("-"),
-            Cell::from("no data"),
-        ])],
-    }
-}
-
-fn panel(title: &'static str) -> Block<'static> {
-    Block::bordered()
-        .border_type(BorderType::Plain)
-        .title(title)
-        .border_style(Style::new().fg(palette::STEEL))
-        .style(Style::new().fg(palette::TEXT).bg(palette::PANEL))
-}
-
-fn display_address(address: u16, offset: usize) -> u32 {
-    u32::from(address).saturating_add(u32::try_from(offset).unwrap_or(u32::MAX))
 }
 
 fn format_elapsed(instant: Instant) -> String {
