@@ -160,6 +160,7 @@ impl TlsConfig {
             ca_cert: PathBuf::from(&self.ca_cert),
             client_cert: PathBuf::from(&self.client_cert),
             client_key: PathBuf::from(&self.client_key),
+            server_name: None,
             connect_timeout: timeout,
             read_timeout: Some(timeout),
             write_timeout: Some(timeout),
