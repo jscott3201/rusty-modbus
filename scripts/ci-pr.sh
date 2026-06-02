@@ -37,8 +37,10 @@ run cargo fmt --all --check
 run rust-analyzer --version
 run cargo clippy --workspace --all-targets --locked -- -D warnings
 
+export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
+
 if have cargo-nextest; then
-  run cargo nextest run --workspace --locked
+  run cargo nextest run --workspace --locked --profile ci
 else
   echo
   echo "==> cargo-nextest missing; falling back to cargo test --workspace --locked"

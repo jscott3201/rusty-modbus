@@ -1,0 +1,12 @@
+nextest-version = { required = "0.9.100", recommended = "0.9.133" }
+
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 2, grace-period = "10s" }
+failure-output = "immediate-final"
+
+[profile.ci]
+inherits = "default"
+fail-fast = false
+global-timeout = "20m"
+status-level = "fail"
+final-status-level = "slow"

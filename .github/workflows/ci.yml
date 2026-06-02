@@ -95,7 +95,7 @@ jobs:
           tool: nextest
       - name: cargo nextest + doctests
         run: |
-          cargo nextest run --workspace --locked
+          cargo nextest run --workspace --locked --profile ci
           cargo test --workspace --locked --doc
 
   python:
