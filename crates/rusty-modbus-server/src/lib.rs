@@ -12,6 +12,7 @@ pub mod config;
 mod device_id;
 pub mod error;
 pub mod handler;
+mod response_encode;
 pub mod server;
 pub mod store;
 
