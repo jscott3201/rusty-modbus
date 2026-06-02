@@ -10,6 +10,7 @@ use rusty_modbus_frame::mbap::MbapCodec;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
+use tracing::{debug, trace, warn};
 
 use crate::config::TcpConfig;
 use crate::error::TransportError;
@@ -31,12 +32,18 @@ impl TransportConnect for TcpTransport {
         config: TcpConfig,
         addr: SocketAddr,
     ) -> Result<(Self::Sink, Self::Stream), TransportError> {
+        debug!(
+            addr = %addr,
+            connect_timeout = ?config.connect_timeout,
+            "connecting TCP transport"
+        );
         let stream = timeout(config.connect_timeout, TcpStream::connect(addr))
             .await
             .map_err(|_| TransportError::Timeout)?
             .map_err(TransportError::Io)?;
 
         configure_socket(&stream, &config)?;
+        debug!(addr = %addr, "TCP transport connected");
 
         let framed = Framed::new(stream, MbapCodec);
         let (sink, recv_stream) = framed.split();
@@ -51,6 +58,7 @@ impl TransportConnect for TcpTransport {
 /// Apply TCP socket options per Modbus TCP Guide §4.2–4.3.
 fn configure_socket(stream: &TcpStream, config: &TcpConfig) -> Result<(), TransportError> {
     stream.set_nodelay(config.tcp_nodelay)?;
+    trace!(tcp_nodelay = config.tcp_nodelay, "configured TCP nodelay");
 
     let sock_ref = socket2::SockRef::from(stream);
     if let Some(keepalive_duration) = config.keepalive {
@@ -63,6 +71,11 @@ fn configure_socket(stream: &TcpStream, config: &TcpConfig) -> Result<(), Transp
             .with_time(keepalive_duration)
             .with_interval(KEEPALIVE_PROBE_INTERVAL);
         sock_ref.set_tcp_keepalive(&keepalive)?;
+        trace!(
+            keepalive = ?keepalive_duration,
+            interval = ?KEEPALIVE_PROBE_INTERVAL,
+            "configured TCP keepalive"
+        );
     }
 
     Ok(())
@@ -93,15 +106,22 @@ impl TcpSink {
 
 impl TransportSink for TcpSink {
     async fn send(&mut self, frame: Frame) -> Result<(), TransportError> {
+        let unit_id = frame.unit_id();
+        let pdu_len = frame.pdu.len();
+        trace!(unit_id, pdu_len, "sending TCP Modbus frame");
         let fut = SinkExt::send(&mut self.inner, frame);
-        if let Some(dur) = self.write_timeout {
-            timeout(dur, fut)
-                .await
-                .map_err(|_| TransportError::Timeout)?
-                .map_err(TransportError::Frame)
+        let result = if let Some(dur) = self.write_timeout {
+            match timeout(dur, fut).await {
+                Ok(result) => result.map_err(TransportError::Frame),
+                Err(_) => Err(TransportError::Timeout),
+            }
         } else {
             fut.await.map_err(TransportError::Frame)
+        };
+        if let Err(error) = &result {
+            warn!(unit_id, pdu_len, error = %error, "failed to send TCP Modbus frame");
         }
+        result
     }
 }
 
@@ -125,17 +145,33 @@ impl TransportStream for TcpRecvStream {
     async fn recv(&mut self) -> Result<Frame, TransportError> {
         let fut = self.inner.next();
         let item = if let Some(dur) = self.read_timeout {
-            timeout(dur, fut)
-                .await
-                .map_err(|_| TransportError::Timeout)?
+            if let Ok(item) = timeout(dur, fut).await {
+                item
+            } else {
+                trace!(timeout = ?dur, "timed out waiting for TCP Modbus frame");
+                return Err(TransportError::Timeout);
+            }
         } else {
             fut.await
         };
 
         match item {
-            Some(Ok(frame)) => Ok(frame),
-            Some(Err(e)) => Err(TransportError::Frame(e)),
-            None => Err(TransportError::Disconnected),
+            Some(Ok(frame)) => {
+                trace!(
+                    unit_id = frame.unit_id(),
+                    pdu_len = frame.pdu.len(),
+                    "received TCP Modbus frame"
+                );
+                Ok(frame)
+            }
+            Some(Err(e)) => {
+                warn!(error = %e, "failed to decode TCP Modbus frame");
+                Err(TransportError::Frame(e))
+            }
+            None => {
+                debug!("TCP Modbus stream disconnected");
+                Err(TransportError::Disconnected)
+            }
         }
     }
 }

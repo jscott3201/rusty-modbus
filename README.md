@@ -72,6 +72,13 @@ modbus discover --range 192.168.1.0/24
 
 # JSON output (for scripting)
 modbus read -H 192.168.1.100 holding 0 10 --format json
+
+# Structured diagnostics stay on stderr; command output stays on stdout
+modbus --log-filter rusty_modbus_client=debug --log-format json \
+  read -H 192.168.1.100 holding 0 10 --format json
+
+# Write diagnostics to a file instead of stderr
+modbus --log-filter info --log-file modbus.log discover --range 192.168.1.0/24
 ```
 
 ## Workspace Structure
