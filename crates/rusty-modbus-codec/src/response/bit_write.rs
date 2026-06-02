@@ -2,7 +2,7 @@
 
 use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
-use rusty_modbus_types::{Address, CoilValue, FunctionCode, Quantity};
+use rusty_modbus_types::{Address, CoilValue, FunctionCode, MAX_WRITE_COILS, Quantity};
 
 /// Response to a Write Single Coil request (FC 0x05).
 ///
@@ -99,6 +99,7 @@ impl Encode for WriteMultipleCoilsResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, MAX_WRITE_COILS)?;
         buf[0] = FunctionCode::WriteMultipleCoils.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];

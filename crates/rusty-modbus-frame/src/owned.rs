@@ -17,6 +17,16 @@ use rusty_modbus_codec::response::{
 };
 use rusty_modbus_types::{DiagnosticSubFunction, FunctionCode, MeiType};
 
+fn pdu_data(pdu: &Bytes) -> Result<&[u8], DecodeError> {
+    if pdu.is_empty() {
+        return Err(DecodeError::Truncated {
+            expected: 1,
+            actual: 0,
+        });
+    }
+    Ok(&pdu[1..])
+}
+
 // ---------------------------------------------------------------------------
 // Owned bit-read responses
 // ---------------------------------------------------------------------------
@@ -37,7 +47,7 @@ impl OwnedReadCoilsResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,
@@ -88,7 +98,7 @@ impl OwnedReadDiscreteInputsResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,
@@ -143,7 +153,7 @@ impl OwnedReadHoldingRegistersResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,
@@ -212,7 +222,7 @@ impl OwnedReadInputRegistersResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,
@@ -285,7 +295,7 @@ impl OwnedReadWriteMultipleRegistersResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,
@@ -360,7 +370,7 @@ impl OwnedReadFifoQueueResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.len() < 4 {
             return Err(DecodeError::Truncated {
                 expected: 4,
@@ -407,7 +417,7 @@ impl OwnedReadFileRecordResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,
@@ -446,7 +456,7 @@ impl OwnedWriteFileRecordResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,
@@ -489,7 +499,7 @@ impl OwnedDiagnosticsResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.len() < 2 {
             return Err(DecodeError::Truncated {
                 expected: 2,
@@ -529,7 +539,7 @@ impl OwnedGetCommEventLogResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.len() < 7 {
             return Err(DecodeError::Truncated {
                 expected: 7,
@@ -576,7 +586,7 @@ impl OwnedReportServerIdResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,
@@ -619,7 +629,7 @@ impl OwnedEncapsulatedInterfaceResponse {
     ///
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
-        let data = &pdu[1..];
+        let data = pdu_data(&pdu)?;
         if data.is_empty() {
             return Err(DecodeError::Truncated {
                 expected: 1,

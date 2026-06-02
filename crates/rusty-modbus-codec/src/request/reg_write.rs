@@ -129,6 +129,10 @@ impl Encode for WriteMultipleRegistersRequest<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        let expected_bytes = usize::from(self.quantity.0) * 2;
+        EncodeError::check_byte_count(usize::from(self.byte_count), expected_bytes)?;
+        EncodeError::check_byte_count(expected_bytes, self.register_values.len())?;
         buf[0] = FunctionCode::WriteMultipleRegisters.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());
@@ -294,6 +298,11 @@ impl Encode for ReadWriteMultipleRegistersRequest<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.read_quantity.0, Self::MAX_READ_QUANTITY)?;
+        EncodeError::check_quantity(self.write_quantity.0, Self::MAX_WRITE_QUANTITY)?;
+        let expected_bytes = usize::from(self.write_quantity.0) * 2;
+        EncodeError::check_byte_count(usize::from(self.write_byte_count), expected_bytes)?;
+        EncodeError::check_byte_count(expected_bytes, self.write_register_values.len())?;
         buf[0] = FunctionCode::ReadWriteMultipleRegisters.code();
         buf[1..3].copy_from_slice(&self.read_address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.read_quantity.0.to_be_bytes());

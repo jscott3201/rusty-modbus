@@ -2,7 +2,7 @@
 
 use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
-use rusty_modbus_types::FunctionCode;
+use rusty_modbus_types::{FunctionCode, MAX_FIFO_VALUES};
 
 /// Response to a Read FIFO Queue request (FC 0x18).
 #[derive(Debug)]
@@ -79,6 +79,14 @@ impl Encode for ReadFifoQueueResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count(usize::from(self.byte_count), 2 + self.fifo_values.len())?;
+        if self.fifo_count > MAX_FIFO_VALUES {
+            return Err(EncodeError::QuantityOutOfRange {
+                quantity: self.fifo_count,
+            });
+        }
+        let expected_data_len = usize::from(self.fifo_count) * 2;
+        EncodeError::check_byte_count(expected_data_len, self.fifo_values.len())?;
         buf[0] = FunctionCode::ReadFifoQueue.code();
         let bc = self.byte_count.to_be_bytes();
         buf[1] = bc[0];

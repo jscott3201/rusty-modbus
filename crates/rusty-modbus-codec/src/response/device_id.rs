@@ -111,6 +111,11 @@ impl<'buf> Iterator for DeviceIdObjectIter<'buf> {
         }
         let id = self.data[0];
         let len = self.data[1] as usize;
+        if self.data.len() < 2 + len {
+            self.remaining = 0;
+            self.data = &[];
+            return None;
+        }
         let value = &self.data[2..2 + len];
         self.data = &self.data[2 + len..];
         self.remaining -= 1;
@@ -177,5 +182,19 @@ mod tests {
             ReadDeviceIdentificationResponse::decode(&data),
             Err(DecodeError::Truncated { .. })
         ));
+    }
+
+    #[test]
+    fn object_iterator_stops_on_malformed_manual_response() {
+        let resp = ReadDeviceIdentificationResponse {
+            device_id_code: DeviceIdCode::BasicStream,
+            conformity_level: 0x01,
+            more_follows: false,
+            next_object_id: 0,
+            num_objects: 1,
+            object_data: &[0x00, 0x05, b'h', b'i'],
+        };
+
+        assert!(resp.objects().next().is_none());
     }
 }

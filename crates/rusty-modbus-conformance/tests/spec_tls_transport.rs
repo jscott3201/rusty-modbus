@@ -4,7 +4,7 @@
 //! Protocol Specification V36 (2021-07-30).
 
 use rusty_modbus_tls::config::{AuthzDecision, TlsServerConfig};
-use rusty_modbus_types::MODBUS_ROLE_OID;
+use rusty_modbus_types::{MODBUS_ROLE_OID, MODBUS_TLS_MAX_FRAGMENT_SIZE};
 
 // ── Security Spec §8.2 — TLS Handshake Requirements ───────────────
 
@@ -99,4 +99,9 @@ fn spec_r31_authorize_helper_enforces_callback() {
 #[test]
 fn spec_security_5_tls_port() {
     assert_eq!(rusty_modbus_types::MODBUS_TLS_PORT, 802);
+}
+
+#[test]
+fn spec_security_6_2_max_fragment_length() {
+    assert_eq!(MODBUS_TLS_MAX_FRAGMENT_SIZE, 512);
 }

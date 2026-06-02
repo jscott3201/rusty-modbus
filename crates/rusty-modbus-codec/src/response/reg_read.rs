@@ -82,6 +82,7 @@ impl Encode for ReadHoldingRegistersResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count(usize::from(self.byte_count), self.register_data.len())?;
         buf[0] = FunctionCode::ReadHoldingRegisters.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.register_data);
@@ -171,6 +172,7 @@ impl Encode for ReadInputRegistersResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count(usize::from(self.byte_count), self.register_data.len())?;
         buf[0] = FunctionCode::ReadInputRegisters.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.register_data);
