@@ -18,7 +18,7 @@ use crate::config::DeviceIdentification;
 use crate::device_id::build_device_id_response;
 use crate::file_record;
 use crate::response_encode::encode_response;
-use crate::store::DataStore;
+use crate::store::{DataStore, MAX_FILE_RECORD_REGISTERS};
 
 const MAX_DIAGNOSTIC_DATA_LEN: usize = MAX_PDU_SIZE - 3;
 
@@ -592,7 +592,6 @@ async fn handle_read_file_record<S: DataStore>(
         );
     }
     let mut data: Vec<u8> = Vec::new();
-    let mut scratch = [0u16; 122]; // 0xF5 / 2 = max registers in one sub-response
     for chunk in subs.chunks_exact(7) {
         if chunk[0] != 6 {
             // Reference type must be 6 (Figure 24 groups this under 0x02).
@@ -607,12 +606,27 @@ async fn handle_read_file_record<S: DataStore>(
         if let Err(ec) = file_record::validate_range(file, record, usize::from(length)) {
             return encode_exception(FunctionCode::ReadFileRecord.exception_code(), ec);
         }
+        let requested_count = usize::from(length);
+        if requested_count > MAX_FILE_RECORD_REGISTERS {
+            return encode_exception(
+                FunctionCode::ReadFileRecord.exception_code(),
+                ExceptionCode::IllegalDataAddress,
+            );
+        }
+        let group_start = data.len();
+        let value_byte_count = requested_count * 2;
+        data.resize(group_start + 2 + value_byte_count, 0);
         match store
-            .read_file_record(file, record, length, &mut scratch)
+            .read_file_record_be(
+                file,
+                record,
+                length,
+                &mut data[group_start + 2..group_start + 2 + value_byte_count],
+            )
             .await
         {
             Ok(n) => {
-                let n = match validate_store_count(n, length, scratch.len()) {
+                let n = match validate_store_count(n, length, requested_count) {
                     Ok(n) => n,
                     Err(ec) => {
                         return encode_exception(FunctionCode::ReadFileRecord.exception_code(), ec);
@@ -625,11 +639,8 @@ async fn handle_read_file_record<S: DataStore>(
                     Ok(resp_len) => resp_len,
                     Err(resp) => return resp,
                 };
-                data.push(resp_len);
-                data.push(0x06);
-                for &w in &scratch[..n] {
-                    data.extend_from_slice(&w.to_be_bytes());
-                }
+                data[group_start] = resp_len;
+                data[group_start + 1] = 0x06;
             }
             Err(ec) => return encode_exception(FunctionCode::ReadFileRecord.exception_code(), ec),
         }
@@ -665,7 +676,7 @@ async fn apply_write_file_record<S: DataStore>(
     // a malformed later sub-request rejects the whole request without committing
     // the earlier ones (write is atomic with respect to framing errors).
     let mut subs = req.sub_requests;
-    let mut groups: Vec<(u16, u16, Vec<u16>)> = Vec::new();
+    let mut groups: Vec<(u16, u16, u16, &[u8])> = Vec::new();
     while !subs.is_empty() {
         // Sub-request header [ref_type][file Hi/Lo][record Hi/Lo][len Hi/Lo]
         // followed by len*2 data bytes (§6.15).
@@ -677,22 +688,20 @@ async fn apply_write_file_record<S: DataStore>(
         }
         let file = u16::from_be_bytes([subs[1], subs[2]]);
         let record = u16::from_be_bytes([subs[3], subs[4]]);
-        let length = usize::from(u16::from_be_bytes([subs[5], subs[6]]));
-        let data_end = 7 + 2 * length;
+        let length = u16::from_be_bytes([subs[5], subs[6]]);
+        let data_end = 7 + 2 * usize::from(length);
         if subs.len() < data_end {
             return Err(ExceptionCode::IllegalDataValue);
         }
-        file_record::validate_range(file, record, length)?;
-        let values: Vec<u16> = subs[7..data_end]
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-            .collect();
-        groups.push((file, record, values));
+        file_record::validate_range(file, record, usize::from(length))?;
+        groups.push((file, record, length, &subs[7..data_end]));
         subs = &subs[data_end..];
     }
     // Pass 2: apply the validated sub-requests.
-    for (file, record, values) in &groups {
-        store.write_file_record(*file, *record, values).await?;
+    for &(file, record, length, value_bytes) in &groups {
+        store
+            .write_file_record_be(file, record, length, value_bytes)
+            .await?;
     }
     Ok(())
 }

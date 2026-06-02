@@ -8,8 +8,8 @@ use rusty_modbus_types::ExceptionCode;
 use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT};
 
 use super::{
-    DataStore, pack_coils, pack_registers_be, packed_coil_value, validate_packed_coils,
-    validate_register_values_be,
+    DataStore, MAX_FILE_RECORD_REGISTERS, pack_coils, pack_registers_be, packed_coil_value,
+    validate_packed_coils, validate_register_values_be,
 };
 
 /// Maximum number of entries in any Modbus data table.
@@ -498,6 +498,33 @@ impl DataStore for InMemoryStore {
         Ok(len)
     }
 
+    async fn read_file_record_be(
+        &self,
+        file_number: u16,
+        record_number: u16,
+        record_length: u16,
+        out: &mut [u8],
+    ) -> Result<usize, ExceptionCode> {
+        let len = usize::from(record_length);
+        file_record::validate_range(file_number, record_number, len)?;
+        if len > MAX_FILE_RECORD_REGISTERS {
+            return Err(ExceptionCode::IllegalDataAddress);
+        }
+        let files = self.files.read();
+        let file = files
+            .get(&file_number)
+            .ok_or(ExceptionCode::IllegalDataAddress)?;
+        let start = usize::from(record_number);
+        let end = start
+            .checked_add(len)
+            .ok_or(ExceptionCode::IllegalDataAddress)?;
+        if end > file.len() {
+            return Err(ExceptionCode::IllegalDataAddress);
+        }
+        pack_registers_be(&file[start..end], out)?;
+        Ok(len)
+    }
+
     async fn write_file_record(
         &self,
         file_number: u16,
@@ -517,6 +544,33 @@ impl DataStore for InMemoryStore {
             file.resize(end, 0);
         }
         file[start..end].copy_from_slice(values);
+        Ok(())
+    }
+
+    async fn write_file_record_be(
+        &self,
+        file_number: u16,
+        record_number: u16,
+        record_length: u16,
+        value_bytes: &[u8],
+    ) -> Result<(), ExceptionCode> {
+        let len = usize::from(record_length);
+        if value_bytes.len() != len * 2 {
+            return Err(ExceptionCode::IllegalDataValue);
+        }
+        file_record::validate_range(file_number, record_number, len)?;
+        let mut files = self.files.write();
+        let file = files.entry(file_number).or_default();
+        let start = usize::from(record_number);
+        let end = start
+            .checked_add(len)
+            .ok_or(ExceptionCode::IllegalDataAddress)?;
+        if end > file.len() {
+            file.resize(end, 0);
+        }
+        for (slot, chunk) in file[start..end].iter_mut().zip(value_bytes.chunks_exact(2)) {
+            *slot = u16::from_be_bytes([chunk[0], chunk[1]]);
+        }
         Ok(())
     }
 
