@@ -252,6 +252,30 @@ async fn dashboard_command_help_uses_shared_help_lines() {
 }
 
 #[tokio::test]
+async fn dashboard_command_discovers_units() {
+    let (mut sim, addr) = start_sim().await;
+    let mut app = app_for(addr).await;
+
+    app.execute_command_line("discover units 1".to_string())
+        .await;
+
+    assert!(
+        app.view
+            .command_log
+            .iter()
+            .any(|entry| entry.text.contains("Discovery OK: 1 responding unit IDs"))
+    );
+    assert!(
+        app.view
+            .command_log
+            .iter()
+            .any(|entry| entry.text.contains("Unit   1"))
+    );
+
+    sim.stop().await;
+}
+
+#[tokio::test]
 async fn dashboard_command_tab_completes_input() {
     let (mut sim, addr) = start_sim().await;
     let mut app = app_for(addr).await;

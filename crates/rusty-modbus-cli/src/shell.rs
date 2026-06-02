@@ -8,8 +8,11 @@ use rusty_modbus_types::UnitId;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
+use crate::discover::{self, DiscoverConfig};
 use crate::output::{self, OutputFormat};
 use crate::shell_parser::{self, ShellCommand};
+
+const DISCOVERY_CONCURRENCY: usize = 64;
 
 /// Shell session configuration (from CLI args).
 pub struct ShellConfig {
@@ -82,6 +85,20 @@ pub async fn run(config: ShellConfig) -> Result<(), Box<dyn std::error::Error>> 
             ShellCommand::SetUnitId(id) => {
                 unit_id = UnitId(id);
                 println!("Unit ID set to {id}");
+            }
+            ShellCommand::DiscoverUnits { unit_id_range } => {
+                let discover_config = DiscoverConfig {
+                    range: None,
+                    host: Some(config.addr.ip().to_string()),
+                    port: config.addr.port(),
+                    unit_id_range,
+                    timeout: config.timeout,
+                    concurrency: DISCOVERY_CONCURRENCY,
+                    format: config.format,
+                };
+                if let Err(e) = discover::run(discover_config).await {
+                    eprintln!("Error: {e}");
+                }
             }
             _ => match execute_command(&client, unit_id, &cmd, config.format).await {
                 Ok(()) => {}
@@ -179,6 +196,7 @@ async fn execute_command(
         | ShellCommand::Status
         | ShellCommand::Exit
         | ShellCommand::Empty
+        | ShellCommand::DiscoverUnits { .. }
         | ShellCommand::SetUnitId(_) => {
             // Handled in run() directly.
         }

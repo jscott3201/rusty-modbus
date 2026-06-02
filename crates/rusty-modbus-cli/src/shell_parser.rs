@@ -5,10 +5,13 @@ pub const HELP_LINES: &[&str] = &[
     "read <type> <addr> <qty>; types: coils, discrete-inputs",
     "read types: holding-registers, input-registers",
     "write <type> <addr> <values>; types: coil, coils, register, registers",
-    "set unit-id <id> | status | help | exit",
+    "set unit-id <id> | discover units [range] | status | help | exit",
 ];
 
-const COMMANDS: &[&str] = &["exit", "help", "quit", "read", "set", "status", "write"];
+const COMMANDS: &[&str] = &[
+    "discover", "exit", "help", "quit", "read", "set", "status", "write",
+];
+const DISCOVER_KEYS: &[&str] = &["units"];
 const READ_TYPES: &[&str] = &[
     "coils",
     "discrete-inputs",
@@ -37,6 +40,8 @@ pub enum ShellCommand {
     WriteRegister { address: u16, value: u16 },
     /// Write multiple registers (FC 0x10).
     WriteRegisters { address: u16, values: Vec<u16> },
+    /// Discover responding unit IDs on the current endpoint.
+    DiscoverUnits { unit_id_range: String },
     /// Change the active unit ID.
     SetUnitId(u8),
     /// Show connection status.
@@ -76,6 +81,7 @@ pub fn parse_command(line: &str) -> Result<ShellCommand, ParseError> {
         "help" => Ok(ShellCommand::Help),
         "status" => Ok(ShellCommand::Status),
         "exit" | "quit" => Ok(ShellCommand::Exit),
+        "discover" => parse_discover(&tokens[1..]),
         "set" => parse_set(&tokens[1..]),
         "read" => parse_read(&tokens[1..]),
         "write" => parse_write(&tokens[1..]),
@@ -99,6 +105,8 @@ pub fn complete_command(line: &str) -> Option<String> {
         ["write", partial] if !trailing_space => (*partial, WRITE_TYPES, 1),
         ["set"] if trailing_space => ("", SET_KEYS, 1),
         ["set", partial] if !trailing_space => (*partial, SET_KEYS, 1),
+        ["discover"] if trailing_space => ("", DISCOVER_KEYS, 1),
+        ["discover", partial] if !trailing_space => (*partial, DISCOVER_KEYS, 1),
         _ => return None,
     };
     let completion = complete_token(prefix, candidates)?;
@@ -139,6 +147,21 @@ fn replace_token(tokens: &[&str], index: usize, completion: &str) -> String {
         completed[index] = completion;
     }
     completed.join(" ")
+}
+
+fn parse_discover(tokens: &[&str]) -> Result<ShellCommand, ParseError> {
+    match tokens {
+        [] => Ok(ShellCommand::DiscoverUnits {
+            unit_id_range: "1-247".to_string(),
+        }),
+        ["units"] => Ok(ShellCommand::DiscoverUnits {
+            unit_id_range: "1-247".to_string(),
+        }),
+        ["units", range] => Ok(ShellCommand::DiscoverUnits {
+            unit_id_range: (*range).to_string(),
+        }),
+        _ => Err(ParseError("usage: discover units [unit-id-range]".into())),
+    }
 }
 
 fn parse_set(tokens: &[&str]) -> Result<ShellCommand, ParseError> {
@@ -360,6 +383,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_discover_units() {
+        assert_eq!(
+            parse_command("discover").unwrap(),
+            ShellCommand::DiscoverUnits {
+                unit_id_range: "1-247".to_string()
+            }
+        );
+        assert_eq!(
+            parse_command("discover units").unwrap(),
+            ShellCommand::DiscoverUnits {
+                unit_id_range: "1-247".to_string()
+            }
+        );
+        assert_eq!(
+            parse_command("discover units 1-10").unwrap(),
+            ShellCommand::DiscoverUnits {
+                unit_id_range: "1-10".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn parse_builtins() {
         assert_eq!(parse_command("help").unwrap(), ShellCommand::Help);
         assert_eq!(parse_command("status").unwrap(), ShellCommand::Status);
@@ -382,6 +427,12 @@ mod tests {
     fn parse_unknown_register_type() {
         assert!(parse_command("read foobar 0 1").is_err());
         assert!(parse_command("write foobar 0 1").is_err());
+    }
+
+    #[test]
+    fn parse_invalid_discover_command() {
+        assert!(parse_command("discover hosts 1-10").is_err());
+        assert!(parse_command("discover units 1 2").is_err());
     }
 
     #[test]
@@ -416,6 +467,18 @@ mod tests {
     }
 
     #[test]
+    fn complete_discover_units_key() {
+        assert_eq!(
+            complete_command("discover u").as_deref(),
+            Some("discover units")
+        );
+        assert_eq!(
+            complete_command("discover ").as_deref(),
+            Some("discover units")
+        );
+    }
+
+    #[test]
     fn complete_ignores_ambiguous_or_argument_positions() {
         assert_eq!(complete_command("s").as_deref(), None);
         assert_eq!(complete_command("write ").as_deref(), None);
@@ -431,6 +494,7 @@ mod tests {
             "holding-registers",
             "input-registers",
             "registers",
+            "discover units",
             "set unit-id",
             "status",
             "exit",
