@@ -8,7 +8,7 @@ use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::config::TcpServerConfig;
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
-use rusty_modbus_types::{MbapHeader, UnitId};
+use rusty_modbus_types::{ExceptionCode, MAX_PDU_SIZE, MbapHeader, UnitId};
 use tokio::sync::watch;
 
 use crate::config::{DeviceIdentification, ServerConfig};
@@ -172,19 +172,77 @@ async fn handle_connection<S: DataStore>(
         if let Some(response_pdu) =
             handler::process_request(&frame.pdu, request_unit_id, store.as_ref(), &device_id).await
         {
-            let header = MbapHeader::new(
-                txn_id,
-                request_unit_id.0,
-                u16::try_from(response_pdu.len()).unwrap_or(u16::MAX),
-            );
-            let resp_frame = Frame {
-                header: FrameHeader::Mbap(header),
-                pdu: Bytes::from(response_pdu),
+            let Some(response_frame) = response_frame(txn_id, request_unit_id, response_pdu) else {
+                break;
             };
-            if sink.send(resp_frame).await.is_err() {
+            if sink.send(response_frame).await.is_err() {
                 break; // Connection lost.
             }
         }
         // If process_request returned None, it was a broadcast — no response.
+    }
+}
+
+fn response_frame(txn_id: u16, unit_id: UnitId, response_pdu: Vec<u8>) -> Option<Frame> {
+    let pdu = bounded_response_pdu(response_pdu)?;
+    let pdu_len = u16::try_from(pdu.len()).expect("MAX_PDU_SIZE fits in u16");
+    let header = MbapHeader::new(txn_id, unit_id.0, pdu_len);
+    Some(Frame {
+        header: FrameHeader::Mbap(header),
+        pdu: Bytes::from(pdu),
+    })
+}
+
+fn bounded_response_pdu(response_pdu: Vec<u8>) -> Option<Vec<u8>> {
+    let fc = response_pdu.first().copied()?;
+    if response_pdu.len() <= MAX_PDU_SIZE {
+        return Some(response_pdu);
+    }
+
+    Some(vec![fc | 0x80, ExceptionCode::ServerDeviceFailure.code()])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_frame_preserves_valid_pdu() {
+        let frame = response_frame(0x1234, UnitId(7), vec![0x03, 0x02, 0xAA, 0xBB])
+            .expect("valid response should produce a frame");
+
+        match frame.header {
+            FrameHeader::Mbap(header) => {
+                assert_eq!(header.transaction_id.get(), 0x1234);
+                assert_eq!(header.unit_id, 7);
+                assert_eq!(header.pdu_length(), 4);
+            }
+            FrameHeader::Rtu { .. } => panic!("expected MBAP response"),
+        }
+        assert_eq!(frame.pdu.as_ref(), &[0x03, 0x02, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn response_frame_turns_oversized_pdu_into_exception() {
+        let frame = response_frame(0xBEEF, UnitId(2), vec![0x03; MAX_PDU_SIZE + 1])
+            .expect("oversized response should become an exception frame");
+
+        match frame.header {
+            FrameHeader::Mbap(header) => {
+                assert_eq!(header.transaction_id.get(), 0xBEEF);
+                assert_eq!(header.unit_id, 2);
+                assert_eq!(header.pdu_length(), 2);
+            }
+            FrameHeader::Rtu { .. } => panic!("expected MBAP response"),
+        }
+        assert_eq!(
+            frame.pdu.as_ref(),
+            &[0x83, ExceptionCode::ServerDeviceFailure.code()]
+        );
+    }
+
+    #[test]
+    fn response_frame_drops_empty_pdu() {
+        assert!(response_frame(0, UnitId(1), Vec::new()).is_none());
     }
 }
