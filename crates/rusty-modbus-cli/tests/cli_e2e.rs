@@ -3,13 +3,17 @@
 //! These tests call the command handlers directly rather than spawning a process,
 //! which is faster and avoids binary path issues in CI.
 
+use std::net::SocketAddr;
+use std::process::Stdio;
 use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ModbusClient};
 use rusty_modbus_sim::{ModbusSimulator, generic_io};
 use rusty_modbus_types::UnitId;
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::time;
 
 async fn start_sim() -> (ModbusSimulator, std::net::SocketAddr) {
     let mut sim = ModbusSimulator::from_config(generic_io()).unwrap();
@@ -183,4 +187,65 @@ async fn json_logging_goes_to_stderr_without_polluting_stdout() {
             .as_str()
             .is_some_and(|target| target.starts_with("rusty_modbus_"))
     );
+}
+
+#[tokio::test]
+async fn server_command_serves_seeded_memory_store() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_modbus"))
+        .args([
+            "--unit-id",
+            "1",
+            "server",
+            "--listen",
+            "127.0.0.1:0",
+            "--holding",
+            "0=0xBEEF",
+            "--coil",
+            "5=on",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stderr = child.stderr.take().unwrap();
+    let mut lines = BufReader::new(stderr).lines();
+    let startup = match time::timeout(Duration::from_secs(30), lines.next_line()).await {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => {
+            let _ = child.kill().await;
+            panic!("server exited before writing startup line");
+        }
+        Ok(Err(error)) => {
+            let _ = child.kill().await;
+            panic!("failed to read server startup line: {error}");
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            panic!("timed out waiting for server startup line");
+        }
+    };
+    let addr = parse_server_listen_addr(&startup);
+
+    let client = ModbusClient::connect(addr, config()).await.unwrap();
+    let regs = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
+    let coils = client.read_coils(UnitId(1), 5, 1).await.unwrap();
+    client.shutdown().await;
+
+    child.kill().await.unwrap();
+    let _ = child.wait().await;
+
+    assert_eq!(regs, vec![0xBEEF]);
+    assert_eq!(coils, vec![true]);
+}
+
+fn parse_server_listen_addr(line: &str) -> SocketAddr {
+    line.strip_prefix("Modbus server listening on ")
+        .and_then(|rest| rest.split_once(" (unit ").map(|(addr, _)| addr))
+        .expect("unexpected server startup line")
+        .parse()
+        .unwrap()
 }

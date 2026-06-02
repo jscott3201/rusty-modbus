@@ -13,7 +13,7 @@ A complete Modbus protocol stack written in Rust, covering TCP, RTU, and TLS tra
 - **TCP-RTU gateway** — transparent protocol translation bridge
 - **Connection pooling** — two-pool architecture with health checks and backoff
 - **YAML simulator** — device profiles with scenario-driven register behavior
-- **CLI tool** — read/write/shell/discover commands with JSON output
+- **CLI tool** — read/write/server/shell/dashboard/discover commands with JSON output
 - **Spec conformance** — 537+ tests, validation order per V1.1b3 section 4.5
 - **`no_std` foundation** — types and codec crates work without allocator
 - **Zero `unsafe`** — `#![forbid(unsafe_code)]` on all crates
@@ -70,6 +70,9 @@ modbus shell -H 192.168.1.100
 # Discover devices on a subnet
 modbus discover --range 192.168.1.0/24
 
+# Run an in-memory Modbus/TCP server
+modbus server --listen 0.0.0.0:5502 --holding 0=0x1234
+
 # JSON output (for scripting)
 modbus read -H 192.168.1.100 holding 0 10 --format json
 
@@ -79,6 +82,34 @@ modbus --log-filter rusty_modbus_client=debug --log-format json \
 
 # Write diagnostics to a file instead of stderr
 modbus --log-filter info --log-file modbus.log discover --range 192.168.1.0/24
+```
+
+## Docker
+
+The Docker image packages the `modbus` CLI. By default it runs an in-memory
+server on port 5502 as a non-root user; override the command to run client,
+shell, dashboard, or discovery modes.
+
+```bash
+# Build the Alpine runtime image
+scripts/docker-build.sh
+
+# Run the default server
+docker run --rm -p 5502:5502 rusty-modbus:local
+
+# Run client commands from the same image
+docker run --rm rusty-modbus:local \
+  --host host.docker.internal --port 5502 --unit-id 1 read hr 0 1
+
+# Run the interactive shell
+docker run --rm -it rusty-modbus:local \
+  --host host.docker.internal --port 5502 --unit-id 1 shell
+
+# Docker-only e2e smoke: server container + client containers
+scripts/docker-smoke.sh
+
+# Build and run the benchmark target
+scripts/docker-bench.sh --duration 5 --clients 1 --in-flight 8 --json
 ```
 
 ## Workspace Structure
@@ -96,7 +127,7 @@ crates/
   rusty-modbus-server/      Pluggable DataStore server
   rusty-modbus-gateway/     TCP <-> RTU bridge
   rusty-modbus-sim/         YAML simulator + device profiles
-  rusty-modbus-cli/         CLI binary (read/write/shell/discover)
+  rusty-modbus-cli/         CLI binary (read/write/server/shell/dashboard/discover)
   rusty-modbus/             Facade crate with feature flags
   rusty-modbus-conformance/ Spec compliance test suite
 benchmarks/                 Criterion benchmarks + stress-test binary
@@ -183,6 +214,9 @@ scripts/bench-local.sh smoke
 scripts/bench-local.sh codec --quick --noplot
 scripts/bench-local.sh tcp-pipelined --quick --noplot
 scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --operation mixed --json
+
+# Docker benchmark target
+scripts/docker-bench.sh --duration 5 --clients 1 --in-flight 8 --json
 
 # Full benchmark suite
 scripts/bench-local.sh all --quick --noplot
