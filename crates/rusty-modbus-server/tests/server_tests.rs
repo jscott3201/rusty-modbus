@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ModbusClient};
-use rusty_modbus_server::{InMemoryStore, ModbusServer, ServerConfig, StoreConfig};
-use rusty_modbus_types::UnitId;
+use rusty_modbus_server::{DataStore, InMemoryStore, ModbusServer, ServerConfig, StoreConfig};
+use rusty_modbus_types::{ExceptionCode, UnitId};
 
 async fn start_server_with_store(
     store: Arc<InMemoryStore>,
@@ -90,6 +90,16 @@ async fn write_multiple_and_read_back() {
 }
 
 #[tokio::test]
+async fn direct_bulk_register_write_over_store_capacity_returns_error() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    let values = vec![0x1234; 65_537];
+
+    let result = store.write_registers(0, &values).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataAddress));
+}
+
+#[tokio::test]
 async fn read_coils() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
     store.set_coil(0, true);
@@ -112,6 +122,16 @@ async fn write_single_coil_and_read_back() {
     client.write_single_coil(UnitId(1), 7, true).await.unwrap();
     let coils = client.read_coils(UnitId(1), 7, 1).await.unwrap();
     assert_eq!(coils, vec![true]);
+}
+
+#[tokio::test]
+async fn direct_bulk_coil_write_over_store_capacity_returns_error() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    let values = vec![true; 65_537];
+
+    let result = store.write_coils(0, &values).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataAddress));
 }
 
 #[tokio::test]
