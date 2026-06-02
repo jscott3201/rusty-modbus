@@ -20,7 +20,7 @@ fn config() -> ClientConfig {
 
 #[tokio::test]
 async fn generic_io_profile_responds() {
-    let mut sim = ModbusSimulator::from_config(generic_io());
+    let mut sim = ModbusSimulator::from_config(generic_io()).unwrap();
     let addr = sim.start().await.unwrap();
     let client = ModbusClient::connect(addr, config()).await.unwrap();
 
@@ -37,7 +37,7 @@ async fn generic_io_profile_responds() {
 
 #[tokio::test]
 async fn hvac_controller_profile_has_setpoints() {
-    let mut sim = ModbusSimulator::from_config(hvac_controller());
+    let mut sim = ModbusSimulator::from_config(hvac_controller()).unwrap();
     let addr = sim.start().await.unwrap();
     let client = ModbusClient::connect(addr, config()).await.unwrap();
 
@@ -55,7 +55,7 @@ async fn hvac_controller_profile_has_setpoints() {
 
 #[tokio::test]
 async fn power_meter_profile_has_input_registers() {
-    let mut sim = ModbusSimulator::from_config(power_meter());
+    let mut sim = ModbusSimulator::from_config(power_meter()).unwrap();
     let addr = sim.start().await.unwrap();
     let client = ModbusClient::connect(addr, config()).await.unwrap();
 
@@ -70,7 +70,7 @@ async fn power_meter_profile_has_input_registers() {
 
 #[tokio::test]
 async fn vfd_drive_profile_has_all_tables() {
-    let mut sim = ModbusSimulator::from_config(vfd_drive());
+    let mut sim = ModbusSimulator::from_config(vfd_drive()).unwrap();
     let addr = sim.start().await.unwrap();
     let client = ModbusClient::connect(addr, config()).await.unwrap();
 
@@ -97,7 +97,7 @@ async fn vfd_drive_profile_has_all_tables() {
 
 #[tokio::test]
 async fn simulator_runtime_update() {
-    let mut sim = ModbusSimulator::from_config(generic_io());
+    let mut sim = ModbusSimulator::from_config(generic_io()).unwrap();
     let addr = sim.start().await.unwrap();
     let client = ModbusClient::connect(addr, config()).await.unwrap();
 
@@ -125,7 +125,7 @@ async fn simulator_runtime_update() {
 
 #[tokio::test]
 async fn simulator_write_and_read_back() {
-    let mut sim = ModbusSimulator::from_config(generic_io());
+    let mut sim = ModbusSimulator::from_config(generic_io()).unwrap();
     let addr = sim.start().await.unwrap();
     let client = ModbusClient::connect(addr, config()).await.unwrap();
 
