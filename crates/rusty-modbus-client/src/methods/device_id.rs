@@ -1,6 +1,6 @@
 //! Device identification method — FC 0x2B, MEI 0x0E.
 
-use rusty_modbus_codec::request::{Encode, ReadDeviceIdentificationRequest};
+use rusty_modbus_codec::request::ReadDeviceIdentificationRequest;
 use rusty_modbus_codec::response::device_id::ReadDeviceIdentificationResponse;
 use rusty_modbus_frame::OwnedDeviceIdentification;
 use rusty_modbus_frame::OwnedResponsePdu;
@@ -10,6 +10,7 @@ use rusty_modbus_tcp::transport::TransportSink;
 
 use crate::client::ModbusClient;
 use crate::error::ClientError;
+use crate::methods::encode_request;
 
 impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read Device Identification (FC 0x2B / MEI 0x0E).
@@ -33,12 +34,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 object_id: next_object_id,
             };
             let mut buf = [0u8; 4];
-            let len = req.encode_into(&mut buf).map_err(|_| {
-                ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                    expected: 4,
-                    actual: 0,
-                })
-            })?;
+            let len = encode_request(&req, &mut buf)?;
 
             let response = self
                 .send_with_retry(

@@ -101,6 +101,7 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
             RetryError::new_err((msg, attempts))
         }
         ClientError::Codec(e) => ModbusError::new_err(format!("codec error: {e}")),
+        ClientError::Encode(e) => ModbusError::new_err(format!("request encode error: {e}")),
         ClientError::BroadcastReadNotAllowed => {
             ModbusError::new_err("read operations not allowed on broadcast unit ID")
         }

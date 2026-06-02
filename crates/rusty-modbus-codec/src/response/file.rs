@@ -4,6 +4,22 @@ use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
 use rusty_modbus_types::FunctionCode;
 
+const FILE_RECORD_MIN_BYTE_COUNT: usize = 0x07;
+const FILE_RECORD_MAX_BYTE_COUNT: usize = 0xF5;
+
+fn check_file_record_byte_count(byte_count: u8) -> Result<(), DecodeError> {
+    let count = usize::from(byte_count);
+    if (FILE_RECORD_MIN_BYTE_COUNT..=FILE_RECORD_MAX_BYTE_COUNT).contains(&count) {
+        Ok(())
+    } else {
+        Err(DecodeError::ByteCountOutOfRange {
+            count,
+            minimum: FILE_RECORD_MIN_BYTE_COUNT,
+            maximum: FILE_RECORD_MAX_BYTE_COUNT,
+        })
+    }
+}
+
 /// Response to a Read File Record request (FC 0x14).
 #[derive(Debug)]
 pub struct ReadFileRecordResponse<'buf> {
@@ -29,6 +45,7 @@ impl<'buf> ReadFileRecordResponse<'buf> {
             });
         }
         let byte_count = data[0];
+        check_file_record_byte_count(byte_count)?;
         let payload = &data[1..];
         if payload.len() != usize::from(byte_count) {
             return Err(DecodeError::ByteCountMismatch {
@@ -52,6 +69,11 @@ impl Encode for ReadFileRecordResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count_range(
+            usize::from(self.byte_count),
+            FILE_RECORD_MIN_BYTE_COUNT,
+            FILE_RECORD_MAX_BYTE_COUNT,
+        )?;
         EncodeError::check_byte_count(usize::from(self.byte_count), self.data.len())?;
         buf[0] = FunctionCode::ReadFileRecord.code();
         buf[1] = self.byte_count;
@@ -89,6 +111,7 @@ impl<'buf> WriteFileRecordResponse<'buf> {
             });
         }
         let byte_count = data[0];
+        check_file_record_byte_count(byte_count)?;
         let payload = &data[1..];
         if payload.len() != usize::from(byte_count) {
             return Err(DecodeError::ByteCountMismatch {
@@ -112,6 +135,11 @@ impl Encode for WriteFileRecordResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count_range(
+            usize::from(self.byte_count),
+            FILE_RECORD_MIN_BYTE_COUNT,
+            FILE_RECORD_MAX_BYTE_COUNT,
+        )?;
         EncodeError::check_byte_count(usize::from(self.byte_count), self.data.len())?;
         buf[0] = FunctionCode::WriteFileRecord.code();
         buf[1] = self.byte_count;
