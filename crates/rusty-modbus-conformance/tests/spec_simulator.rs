@@ -102,9 +102,9 @@ async fn simulator_runtime_update() {
     let client = ModbusClient::connect(addr, config()).await.unwrap();
 
     // Update at runtime
-    sim.set_holding_register(0, 0xBEEF);
-    sim.set_input_register(0, 0xCAFE);
-    sim.set_coil(0, true);
+    sim.set_holding_register(0, 0xBEEF).unwrap();
+    sim.set_input_register(0, 0xCAFE).unwrap();
+    sim.set_coil(0, true).unwrap();
 
     let regs = client
         .read_holding_registers(UnitId(1), 0, 1)

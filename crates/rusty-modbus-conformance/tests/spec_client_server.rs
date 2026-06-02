@@ -46,8 +46,8 @@ fn client_config() -> ClientConfig {
 #[tokio::test]
 async fn spec_4_3_holding_registers_read_write() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(0, 0xAAAA);
-    store.set_holding_register(1, 0xBBBB);
+    store.set_holding_register(0, 0xAAAA).unwrap();
+    store.set_holding_register(1, 0xBBBB).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -84,7 +84,7 @@ async fn spec_4_3_holding_registers_read_write() {
 #[tokio::test]
 async fn spec_4_3_input_registers_read() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_input_register(5, 0xCAFE);
+    store.set_input_register(5, 0xCAFE).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -95,9 +95,9 @@ async fn spec_4_3_input_registers_read() {
 #[tokio::test]
 async fn spec_4_3_coils_read_write() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_coil(0, true);
-    store.set_coil(1, false);
-    store.set_coil(2, true);
+    store.set_coil(0, true).unwrap();
+    store.set_coil(1, false).unwrap();
+    store.set_coil(2, true).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -122,8 +122,8 @@ async fn spec_4_3_coils_read_write() {
 #[tokio::test]
 async fn spec_4_3_discrete_inputs_read() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_discrete_input(0, true);
-    store.set_discrete_input(1, false);
+    store.set_discrete_input(0, true).unwrap();
+    store.set_discrete_input(1, false).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -136,7 +136,7 @@ async fn spec_4_3_discrete_inputs_read() {
 #[tokio::test]
 async fn spec_6_16_mask_write_algorithm() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(4, 0x0012);
+    store.set_holding_register(4, 0x0012).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -156,7 +156,7 @@ async fn spec_6_16_mask_write_algorithm() {
 #[tokio::test]
 async fn spec_6_16_mask_write_and_only() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(0, 0xFF00);
+    store.set_holding_register(0, 0xFF00).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -175,7 +175,7 @@ async fn spec_6_16_mask_write_and_only() {
 #[tokio::test]
 async fn spec_6_16_mask_write_or_only() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(0, 0x0000);
+    store.set_holding_register(0, 0x0000).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -196,7 +196,7 @@ async fn spec_6_16_mask_write_or_only() {
 #[tokio::test]
 async fn spec_6_17_write_before_read_same_address() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(0, 0x0000);
+    store.set_holding_register(0, 0x0000).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -259,7 +259,7 @@ async fn unit_id_mismatch_silently_discarded() {
 async fn unit_id_0xff_accepted_as_tcp_device() {
     // TCP Guide §4.4.1.2: "The value 0xFF has to be used" for direct TCP
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(0, 42);
+    store.set_holding_register(0, 42).unwrap();
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
@@ -288,7 +288,7 @@ async fn spec_4_broadcast_read_rejected_by_client() {
 async fn spec_tcp_guide_4_4_pipelining() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
     for i in 0u16..10 {
-        store.set_holding_register(i, i * 100);
+        store.set_holding_register(i, i * 100).unwrap();
     }
     let (_server, addr) = start_server_with_store(store).await;
     let client = Arc::new(ModbusClient::connect(addr, client_config()).await.unwrap());

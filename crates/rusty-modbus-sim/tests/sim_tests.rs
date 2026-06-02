@@ -60,7 +60,7 @@ async fn runtime_register_update() {
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
 
     // Update register programmatically.
-    sim.set_holding_register(5, 0x1234);
+    sim.set_holding_register(5, 0x1234).unwrap();
     let regs = client
         .read_holding_registers(UnitId(1), 5, 1)
         .await
@@ -169,7 +169,7 @@ async fn set_input_register_at_runtime() {
     let mut sim = ModbusSimulator::from_config(generic_io()).unwrap();
     let addr = sim.start().await.unwrap();
 
-    sim.set_input_register(0, 0x5555);
+    sim.set_input_register(0, 0x5555).unwrap();
 
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
     let regs = client.read_input_registers(UnitId(1), 0, 1).await.unwrap();

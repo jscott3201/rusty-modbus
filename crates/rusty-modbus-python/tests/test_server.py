@@ -29,6 +29,13 @@ def test_in_memory_server_round_trip():
             assert client.read_holding_registers(unit_id=1, address=1, quantity=1) == [456]
 
 
+def test_in_memory_store_setup_rejects_address_outside_configured_table():
+    store = InMemoryStore(StoreConfig(holding_register_count=1))
+
+    with pytest.raises(ValueError, match="holding_registers"):
+        store.set_holding_register(1, 123)
+
+
 class PythonStore:
     def __init__(self):
         self.coils = [False] * 16

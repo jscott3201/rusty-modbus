@@ -93,7 +93,7 @@ async fn fc03_address_beyond_store_returns_illegal_data_address() {
 async fn fc16_mask_write_algorithm() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
     // Set register 4 to 0x0012 (spec example value)
-    store.set_holding_register(4, 0x0012);
+    store.set_holding_register(4, 0x0012).unwrap();
 
     let config = ServerConfig {
         listen_addr: "127.0.0.1:0".parse().unwrap(),

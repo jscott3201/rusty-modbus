@@ -25,8 +25,8 @@ fn config() -> ClientConfig {
 #[tokio::test]
 async fn read_holding_registers_human() {
     let (mut sim, addr) = start_sim().await;
-    sim.set_holding_register(0, 100);
-    sim.set_holding_register(1, 200);
+    sim.set_holding_register(0, 100).unwrap();
+    sim.set_holding_register(1, 200).unwrap();
 
     let client = ModbusClient::connect(addr, config()).await.unwrap();
     let regs = client
@@ -79,9 +79,9 @@ async fn write_multiple_registers_via_client() {
 #[tokio::test]
 async fn read_coils_via_client() {
     let (mut sim, addr) = start_sim().await;
-    sim.set_coil(0, true);
-    sim.set_coil(1, false);
-    sim.set_coil(2, true);
+    sim.set_coil(0, true).unwrap();
+    sim.set_coil(1, false).unwrap();
+    sim.set_coil(2, true).unwrap();
 
     let client = ModbusClient::connect(addr, config()).await.unwrap();
     let coils = client.read_coils(UnitId(1), 0, 3).await.unwrap();
@@ -106,7 +106,7 @@ async fn write_coil_via_client() {
 #[tokio::test]
 async fn read_input_registers_via_client() {
     let (mut sim, addr) = start_sim().await;
-    sim.set_input_register(0, 999);
+    sim.set_input_register(0, 999).unwrap();
 
     let client = ModbusClient::connect(addr, config()).await.unwrap();
     let regs = client.read_input_registers(UnitId(1), 0, 1).await.unwrap();

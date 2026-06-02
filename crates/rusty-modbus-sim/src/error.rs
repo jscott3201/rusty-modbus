@@ -1,6 +1,6 @@
 //! Simulator error types.
 
-use rusty_modbus_server::ServerError;
+use rusty_modbus_server::{ServerError, StoreError};
 
 /// Errors that can occur during simulator operations.
 #[derive(Debug, thiserror::Error)]
@@ -16,4 +16,8 @@ pub enum SimError {
     /// Underlying server error.
     #[error("server error: {0}")]
     Server(#[from] ServerError),
+
+    /// In-memory store setup error.
+    #[error("store error: {0}")]
+    Store(#[from] StoreError),
 }

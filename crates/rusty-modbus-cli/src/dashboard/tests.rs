@@ -166,8 +166,8 @@ fn clamps_quantity_by_target_limits() {
 #[tokio::test]
 async fn dashboard_command_reads_registers() {
     let (mut sim, addr) = start_sim().await;
-    sim.set_holding_register(0, 0x1234);
-    sim.set_holding_register(1, 0x0002);
+    sim.set_holding_register(0, 0x1234).unwrap();
+    sim.set_holding_register(1, 0x0002).unwrap();
 
     let mut app = app_for(addr).await;
     app.execute_command_line("read holding-registers 0 2".to_string())
