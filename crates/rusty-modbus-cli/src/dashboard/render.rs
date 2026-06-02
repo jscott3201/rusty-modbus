@@ -8,8 +8,21 @@ use ratatui::widgets::{
 
 use super::{
     CommandLogStatus, CommandMode, DashboardData, DashboardStatus, DashboardTarget, DashboardView,
-    palette,
 };
+
+pub(super) mod palette {
+    use ratatui::style::Color;
+
+    pub const BACKGROUND: Color = Color::Rgb(8, 20, 31);
+    pub const PANEL: Color = Color::Rgb(13, 35, 52);
+    pub const STEEL: Color = Color::Rgb(48, 103, 145);
+    pub const CYAN: Color = Color::Rgb(91, 192, 222);
+    pub const TEXT: Color = Color::Rgb(219, 232, 240);
+    pub const MUTED: Color = Color::Rgb(126, 153, 169);
+    pub const AMBER: Color = Color::Rgb(226, 170, 62);
+    pub const GREEN: Color = Color::Rgb(70, 180, 130);
+    pub const RED: Color = Color::Rgb(219, 96, 96);
+}
 
 pub(super) fn render_dashboard(frame: &mut Frame, view: &DashboardView) {
     let area = frame.area();

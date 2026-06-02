@@ -18,20 +18,6 @@ const MAX_COMMAND_HISTORY: usize = 32;
 
 mod render;
 
-mod palette {
-    use ratatui::style::Color;
-
-    pub const BACKGROUND: Color = Color::Rgb(8, 20, 31);
-    pub const PANEL: Color = Color::Rgb(13, 35, 52);
-    pub const STEEL: Color = Color::Rgb(48, 103, 145);
-    pub const CYAN: Color = Color::Rgb(91, 192, 222);
-    pub const TEXT: Color = Color::Rgb(219, 232, 240);
-    pub const MUTED: Color = Color::Rgb(126, 153, 169);
-    pub const AMBER: Color = Color::Rgb(226, 170, 62);
-    pub const GREEN: Color = Color::Rgb(70, 180, 130);
-    pub const RED: Color = Color::Rgb(219, 96, 96);
-}
-
 /// Arguments for the `dashboard` subcommand.
 #[derive(clap::Args, Debug)]
 pub struct DashboardArgs {
@@ -564,8 +550,9 @@ impl DashboardApp {
 
         let index = self
             .command_history_cursor
-            .and_then(|index| index.checked_sub(1))
-            .unwrap_or(self.command_history.len() - 1);
+            .map_or(self.command_history.len() - 1, |index| {
+                index.saturating_sub(1)
+            });
         self.command_history_cursor = Some(index);
         self.view.command_input = self.command_history[index].clone();
     }

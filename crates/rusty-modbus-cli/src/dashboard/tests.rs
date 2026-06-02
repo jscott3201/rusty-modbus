@@ -8,6 +8,7 @@ use ratatui::buffer::Buffer;
 use rusty_modbus_client::{ClientConfig, ModbusClient};
 use rusty_modbus_sim::{ModbusSimulator, generic_io};
 
+use super::render::palette;
 use super::*;
 
 fn sample_view(data: DashboardData) -> DashboardView {
@@ -226,6 +227,10 @@ async fn dashboard_command_history_navigates_previous_and_next() {
     app.handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
         .await;
     assert_eq!(app.view.command_input, "help");
+
+    app.handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.view.command_input, "status");
 
     app.handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
         .await;
