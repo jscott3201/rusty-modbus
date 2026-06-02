@@ -8,6 +8,8 @@
 #   pre-push   -> rust-analyzer --version + clippy       (fast; the full
 #                 nextest + doctest gate runs via scripts/test-local.sh
 #                 or scripts/ci-pr.sh, not on every push)
+#   python     -> scripts/ci-python.sh                    (opt-in wheel,
+#                 pytest, stubtest, pyright gate)
 #
 # Escape hatches: `git commit/push --no-verify` (once) or
 # `export RUSTY_MODBUS_SKIP_HOOKS=1` (whole shell session).
@@ -26,4 +28,5 @@ else
   echo "  nextest:    missing; install with: cargo install cargo-nextest --locked"
 fi
 echo "  full local: scripts/test-local.sh or scripts/ci-pr.sh"
+echo "  python:     scripts/ci-python.sh or RUSTY_MODBUS_RUN_PYTHON=full scripts/ci-pr.sh"
 echo "Skip once: --no-verify   |   skip session: export RUSTY_MODBUS_SKIP_HOOKS=1"

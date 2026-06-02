@@ -154,6 +154,9 @@ cargo build --workspace
 # Run the workspace test gate with nextest + doctests
 scripts/test-local.sh
 
+# Run the Python binding wheel, pytest, stubtest, and pyright gate
+scripts/ci-python.sh
+
 # Lint (must be zero warnings)
 cargo clippy --workspace -- -D warnings
 
