@@ -39,6 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       deps: ${{ steps.filter.outputs.deps }}
+      python: ${{ steps.filter.outputs.python }}
     steps:
       - uses: actions/checkout@v4
       - id: filter
@@ -51,6 +52,19 @@ jobs:
               - 'crates/*/Cargo.toml'
               - 'benchmarks/Cargo.toml'
               - 'deny.toml'
+            python:
+              - '.github/workflows/ci.yml'
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'deny.toml'
+              - 'crates/rusty-modbus-client/**'
+              - 'crates/rusty-modbus-codec/**'
+              - 'crates/rusty-modbus-frame/**'
+              - 'crates/rusty-modbus-python/**'
+              - 'crates/rusty-modbus-server/**'
+              - 'crates/rusty-modbus-tcp/**'
+              - 'crates/rusty-modbus-tls/**'
+              - 'crates/rusty-modbus-types/**'
 
   fmt:
     name: fmt
@@ -100,7 +114,10 @@ jobs:
 
   python:
     name: python bindings
-    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: |
+      (github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch')
+      && (needs.changes.outputs.python == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
