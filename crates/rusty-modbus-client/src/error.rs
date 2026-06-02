@@ -66,6 +66,20 @@ pub enum ClientError {
         got: u8,
     },
 
+    /// The server's write response did not echo a request field required by
+    /// the Modbus function definition. Write responses for FC05, FC06, FC0F,
+    /// FC10, and FC16 are confirmations of the requested address/value/masks;
+    /// accepting a different echo would report success for the wrong mutation.
+    #[error("unexpected response echo for {field}: expected {expected:#06x}, got {got:#06x}")]
+    UnexpectedResponseEcho {
+        /// Field that failed to echo, such as `address`, `value`, or `quantity`.
+        field: &'static str,
+        /// Requested field value.
+        expected: u16,
+        /// Field value returned by the server.
+        got: u16,
+    },
+
     /// The server returned fewer data bytes than the requested quantity needs.
     /// Rejecting this prevents a malicious or buggy peer from truncating a read
     /// (and, for bit reads, from triggering an out-of-bounds index).

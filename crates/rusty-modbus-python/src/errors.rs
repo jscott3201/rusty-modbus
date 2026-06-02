@@ -111,6 +111,13 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
         ClientError::UnexpectedResponse { expected, got } => ModbusError::new_err(format!(
             "unexpected response function code: expected 0x{expected:02X}, got 0x{got:02X}"
         )),
+        ClientError::UnexpectedResponseEcho {
+            field,
+            expected,
+            got,
+        } => ModbusError::new_err(format!(
+            "unexpected response echo for {field}: expected 0x{expected:04X}, got 0x{got:04X}"
+        )),
         ClientError::ShortResponse { expected, actual } => ModbusError::new_err(format!(
             "short response: need {expected} data bytes for the request, got {actual}"
         )),
