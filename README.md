@@ -112,6 +112,8 @@ The `rusty-modbus` facade crate re-exports subcrates behind feature flags:
 
 ## Supported Function Codes
 
+The client exposes **14** typed function codes; the server handles **11**.
+
 | Function Code | Name | Client | Server |
 |---------------|------|--------|--------|
 | 0x01 | Read Coils | yes | yes |
@@ -120,19 +122,19 @@ The `rusty-modbus` facade crate re-exports subcrates behind feature flags:
 | 0x04 | Read Input Registers | yes | yes |
 | 0x05 | Write Single Coil | yes | yes |
 | 0x06 | Write Single Register | yes | yes |
-| 0x07 | Read Exception Status | yes | yes |
-| 0x08 | Diagnostics (all sub-functions) | yes | yes |
-| 0x0B | Get Comm Event Counter | yes | yes |
-| 0x0C | Get Comm Event Log | yes | yes |
 | 0x0F | Write Multiple Coils | yes | yes |
 | 0x10 | Write Multiple Registers | yes | yes |
-| 0x11 | Report Server ID | yes | yes |
-| 0x14 | Read File Record | yes | yes |
-| 0x15 | Write File Record | yes | yes |
+| 0x14 | Read File Record | yes | no |
+| 0x15 | Write File Record | yes | no |
 | 0x16 | Mask Write Register | yes | yes |
 | 0x17 | Read/Write Multiple Registers | yes | yes |
-| 0x18 | Read FIFO Queue | yes | yes |
-| 0x2B | Read Device Identification (MEI) | yes | yes |
+| 0x18 | Read FIFO Queue | yes | no |
+| 0x2B/0x0E | Read Device Identification (MEI) | yes | yes |
+
+File Record (0x14/0x15) and FIFO Queue (0x18) are currently client-only.
+
+**Not yet implemented:** Read Exception Status (0x07), Diagnostics (0x08),
+Get Comm Event Counter/Log (0x0B/0x0C), Report Server ID (0x11).
 
 ## Development
 

@@ -10,6 +10,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Pipelined async Modbus client"
+readme = "README.md"
 
 [dependencies]
 rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
@@ -30,3 +31,6 @@ tokio = { version = "1", features = ["full"] }
 bytes = "1"
 rusty-modbus-types = { path = "../rusty-modbus-types" }
 zerocopy = "0.8"
+
+[package.metadata.docs.rs]
+all-features = true

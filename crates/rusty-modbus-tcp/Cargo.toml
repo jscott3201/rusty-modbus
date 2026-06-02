@@ -10,6 +10,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Modbus/TCP transport — split sink/stream traits and TCP implementation"
+readme = "README.md"
 
 [dependencies]
 rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
@@ -25,3 +26,6 @@ socket2 = { version = "0.6", features = ["all"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 zerocopy = "0.8"
+
+[package.metadata.docs.rs]
+all-features = true
