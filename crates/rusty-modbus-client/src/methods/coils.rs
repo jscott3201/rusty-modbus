@@ -1,8 +1,7 @@
 //! Coil and discrete input access methods — FC 01, 02, 05, 0F.
 
 use rusty_modbus_codec::request::{
-    Encode, ReadCoilsRequest, ReadDiscreteInputsRequest, WriteMultipleCoilsRequest,
-    WriteSingleCoilRequest,
+    ReadCoilsRequest, ReadDiscreteInputsRequest, WriteMultipleCoilsRequest, WriteSingleCoilRequest,
 };
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_types::{Address, CoilValue, FunctionCode, Quantity, UnitId};
@@ -11,6 +10,9 @@ use rusty_modbus_tcp::transport::TransportSink;
 
 use crate::client::ModbusClient;
 use crate::error::ClientError;
+use crate::methods::{
+    MAX_WRITE_MULTIPLE_COILS, checked_byte_count_len, checked_quantity_len, encode_request,
+};
 
 impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read coils (FC 0x01).
@@ -33,12 +35,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             quantity: Quantity(quantity),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 5,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(unit_id, FunctionCode::ReadCoils, &buf[..len])
@@ -89,12 +86,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             quantity: Quantity(quantity),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 5,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(unit_id, FunctionCode::ReadDiscreteInputs, &buf[..len])
@@ -140,12 +132,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             value: CoilValue::from_bool(value),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 5,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         if unit_id.is_broadcast() {
             return self.send_broadcast(&buf[..len]).await;
@@ -175,8 +162,8 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         address: u16,
         values: &[bool],
     ) -> Result<(), ClientError> {
-        let quantity = u16::try_from(values.len()).unwrap_or(u16::MAX);
-        let byte_count = u8::try_from(values.len().div_ceil(8)).unwrap_or(u8::MAX);
+        let quantity = checked_quantity_len(values.len(), MAX_WRITE_MULTIPLE_COILS)?;
+        let byte_count = checked_byte_count_len(values.len().div_ceil(8))?;
         let mut coil_bytes = vec![0u8; byte_count as usize];
 
         for (i, &val) in values.iter().enumerate() {
@@ -193,12 +180,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         };
 
         let mut buf = [0u8; 256];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         if unit_id.is_broadcast() {
             return self.send_broadcast(&buf[..len]).await;

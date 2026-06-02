@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient, RetryConfig};
+use rusty_modbus_codec::EncodeError;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::config::TcpServerConfig;
 use rusty_modbus_tcp::listener::TcpServerListener;
@@ -118,6 +119,36 @@ fn default_config() -> ClientConfig {
         timeout: Duration::from_secs(2),
         ..ClientConfig::default()
     }
+}
+
+fn assert_quantity_encode_error<T>(result: Result<T, ClientError>, quantity: u16) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Encode(EncodeError::QuantityOutOfRange { quantity: got }))
+                if got == quantity
+        ),
+        "expected quantity encode error for {quantity}"
+    );
+}
+
+fn assert_file_byte_count_encode_error<T>(
+    result: Result<T, ClientError>,
+    count: usize,
+    minimum: usize,
+    maximum: usize,
+) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Encode(EncodeError::ByteCountOutOfRange {
+                count: got,
+                minimum: got_minimum,
+                maximum: got_maximum,
+            })) if got == count && got_minimum == minimum && got_maximum == maximum
+        ),
+        "expected file byte-count encode error for {count}"
+    );
 }
 
 #[tokio::test]
@@ -238,6 +269,53 @@ async fn shutdown_cancels_pending() {
 
     let result = client.read_holding_registers(UnitId(0xFF), 0, 1).await;
     assert!(matches!(result, Err(ClientError::NotConnected)));
+}
+
+#[tokio::test]
+async fn invalid_request_arguments_return_encode_errors_before_send() {
+    let addr = start_register_server().await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_quantity_encode_error(client.read_coils(UnitId(0xFF), 0, 2001).await, 2001);
+    assert_quantity_encode_error(client.read_holding_registers(UnitId(0xFF), 0, 0).await, 0);
+    assert_quantity_encode_error(client.read_input_registers(UnitId(0xFF), 0, 126).await, 126);
+
+    assert_quantity_encode_error(client.write_multiple_coils(UnitId(0xFF), 0, &[]).await, 0);
+    let too_many_coils = vec![false; 1969];
+    assert_quantity_encode_error(
+        client
+            .write_multiple_coils(UnitId(0xFF), 0, &too_many_coils)
+            .await,
+        1969,
+    );
+
+    let too_many_registers = vec![0; 124];
+    assert_quantity_encode_error(
+        client
+            .write_multiple_registers(UnitId(0xFF), 0, &too_many_registers)
+            .await,
+        124,
+    );
+
+    assert_quantity_encode_error(
+        client
+            .read_write_multiple_registers(UnitId(0xFF), 0, 126, 0, &[0x0001])
+            .await,
+        126,
+    );
+
+    assert_file_byte_count_encode_error(
+        client.read_file_record(UnitId(0xFF), &[0; 6]).await,
+        6,
+        7,
+        245,
+    );
+    assert_file_byte_count_encode_error(
+        client.write_file_record(UnitId(0xFF), &[0; 246]).await,
+        246,
+        7,
+        245,
+    );
 }
 
 // ---------------------------------------------------------------------------

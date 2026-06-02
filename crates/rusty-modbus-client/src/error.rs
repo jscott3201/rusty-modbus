@@ -1,7 +1,7 @@
 //! Client error types.
 
-use rusty_modbus_codec::DecodeError;
 use rusty_modbus_codec::response::ExceptionResponse;
+use rusty_modbus_codec::{DecodeError, EncodeError};
 use rusty_modbus_tcp::TransportError;
 use rusty_modbus_types::TransactionId;
 
@@ -23,6 +23,11 @@ pub enum ClientError {
     /// Codec encode/decode error.
     #[error("codec error: {0}")]
     Codec(#[from] DecodeError),
+
+    /// Request could not be encoded because caller-supplied arguments violate
+    /// Modbus wire limits.
+    #[error("request encode error: {0}")]
+    Encode(#[from] EncodeError),
 
     /// Transaction ID collision — slot already occupied.
     #[error("transaction ID conflict: {0:?}")]

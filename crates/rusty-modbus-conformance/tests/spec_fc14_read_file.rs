@@ -49,3 +49,49 @@ fn truncated() {
         Err(rusty_modbus_codec::DecodeError::Truncated { .. })
     ));
 }
+
+#[test]
+fn request_byte_count_must_be_in_spec_range() {
+    assert!(matches!(
+        decode_request(&[0x14, 0x06, 0, 0, 0, 0, 0, 0]),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 6,
+            minimum: 7,
+            maximum: 245,
+        })
+    ));
+
+    let mut pdu = vec![0x14, 0xF6];
+    pdu.extend_from_slice(&[0; 246]);
+    assert!(matches!(
+        decode_request(&pdu),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 246,
+            minimum: 7,
+            maximum: 245,
+        })
+    ));
+}
+
+#[test]
+fn response_byte_count_must_be_in_spec_range() {
+    assert!(matches!(
+        decode_response(&[0x14, 0x06, 0, 0, 0, 0, 0, 0]),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 6,
+            minimum: 7,
+            maximum: 245,
+        })
+    ));
+
+    let mut pdu = vec![0x14, 0xF6];
+    pdu.extend_from_slice(&[0; 246]);
+    assert!(matches!(
+        decode_response(&pdu),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 246,
+            minimum: 7,
+            maximum: 245,
+        })
+    ));
+}

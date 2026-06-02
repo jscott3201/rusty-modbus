@@ -21,6 +21,17 @@ fn assert_byte_count_mismatch(err: EncodeError, declared: usize, actual: usize) 
     assert_eq!(err, EncodeError::ByteCountMismatch { declared, actual });
 }
 
+fn assert_byte_count_out_of_range(err: EncodeError, count: usize, minimum: usize, maximum: usize) {
+    assert_eq!(
+        err,
+        EncodeError::ByteCountOutOfRange {
+            count,
+            minimum,
+            maximum,
+        }
+    );
+}
+
 #[test]
 fn encode_rejects_read_request_quantities_out_of_range() {
     assert_quantity_out_of_range(
@@ -165,6 +176,26 @@ fn encode_rejects_fc17_quantity_and_byte_count_mismatches() {
 
 #[test]
 fn encode_rejects_file_record_request_byte_count_mismatches() {
+    assert_byte_count_out_of_range(
+        encode_err(&ReadFileRecordRequest {
+            byte_count: 6,
+            sub_requests: &[0; 6],
+        }),
+        6,
+        7,
+        245,
+    );
+
+    assert_byte_count_out_of_range(
+        encode_err(&WriteFileRecordRequest {
+            byte_count: 246,
+            sub_requests: &[0; 246],
+        }),
+        246,
+        7,
+        245,
+    );
+
     assert_byte_count_mismatch(
         encode_err(&ReadFileRecordRequest {
             byte_count: 7,
@@ -176,10 +207,10 @@ fn encode_rejects_file_record_request_byte_count_mismatches() {
 
     assert_byte_count_mismatch(
         encode_err(&WriteFileRecordRequest {
-            byte_count: 6,
+            byte_count: 8,
             sub_requests: &[0; 7],
         }),
-        6,
+        8,
         7,
     );
 }
@@ -230,21 +261,41 @@ fn encode_rejects_response_byte_count_mismatches() {
 
 #[test]
 fn encode_rejects_file_and_diagnostic_response_byte_count_mismatches() {
+    assert_byte_count_out_of_range(
+        encode_err(&ReadFileRecordResponse {
+            byte_count: 6,
+            data: &[0; 6],
+        }),
+        6,
+        7,
+        245,
+    );
+
+    assert_byte_count_out_of_range(
+        encode_err(&WriteFileRecordResponse {
+            byte_count: 246,
+            data: &[0; 246],
+        }),
+        246,
+        7,
+        245,
+    );
+
     assert_byte_count_mismatch(
         encode_err(&ReadFileRecordResponse {
-            byte_count: 4,
-            data: &[0, 1, 2],
+            byte_count: 8,
+            data: &[0; 7],
         }),
-        4,
-        3,
+        8,
+        7,
     );
     assert_byte_count_mismatch(
         encode_err(&WriteFileRecordResponse {
-            byte_count: 3,
-            data: &[0, 1, 2, 3],
+            byte_count: 7,
+            data: &[0; 8],
         }),
-        3,
-        4,
+        7,
+        8,
     );
     assert_byte_count_mismatch(
         encode_err(&GetCommEventLogResponse {

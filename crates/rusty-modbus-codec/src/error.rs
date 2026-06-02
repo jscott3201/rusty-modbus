@@ -19,6 +19,15 @@ pub enum DecodeError {
         /// Actual remaining data length.
         actual: usize,
     },
+    /// Byte count field is outside the allowed range for this function code.
+    ByteCountOutOfRange {
+        /// The invalid byte count.
+        count: usize,
+        /// The minimum allowed byte count.
+        minimum: usize,
+        /// The maximum allowed byte count.
+        maximum: usize,
+    },
     /// Quantity value is outside the allowed range for this function code.
     QuantityOutOfRange {
         /// The invalid quantity value.
@@ -51,6 +60,14 @@ impl core::fmt::Display for DecodeError {
                     "byte count mismatch: declared {declared}, actual {actual}"
                 )
             }
+            Self::ByteCountOutOfRange {
+                count,
+                minimum,
+                maximum,
+            } => write!(
+                f,
+                "byte count out of range: {count} (expected {minimum}..={maximum})"
+            ),
             Self::QuantityOutOfRange { quantity } => {
                 write!(f, "quantity out of range: {quantity}")
             }
@@ -91,6 +108,15 @@ pub enum EncodeError {
         /// Actual payload length.
         actual: usize,
     },
+    /// Byte count is outside the allowed range for this function code.
+    ByteCountOutOfRange {
+        /// The invalid byte count.
+        count: usize,
+        /// The minimum allowed byte count.
+        minimum: usize,
+        /// The maximum allowed byte count.
+        maximum: usize,
+    },
 }
 
 impl core::fmt::Display for EncodeError {
@@ -114,6 +140,14 @@ impl core::fmt::Display for EncodeError {
                     "byte count mismatch: declared {declared}, actual {actual}"
                 )
             }
+            Self::ByteCountOutOfRange {
+                count,
+                minimum,
+                maximum,
+            } => write!(
+                f,
+                "byte count out of range: {count} (expected {minimum}..={maximum})"
+            ),
         }
     }
 }
@@ -132,6 +166,22 @@ impl EncodeError {
             Ok(())
         } else {
             Err(Self::ByteCountMismatch { declared, actual })
+        }
+    }
+
+    pub(crate) fn check_byte_count_range(
+        count: usize,
+        minimum: usize,
+        maximum: usize,
+    ) -> Result<(), Self> {
+        if (minimum..=maximum).contains(&count) {
+            Ok(())
+        } else {
+            Err(Self::ByteCountOutOfRange {
+                count,
+                minimum,
+                maximum,
+            })
         }
     }
 }
