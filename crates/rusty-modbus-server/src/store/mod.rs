@@ -6,11 +6,12 @@ pub mod memory;
 use std::future::Future;
 
 use rusty_modbus_types::{
-    DiagnosticSubFunction, ExceptionCode, MAX_FIFO_VALUES, MAX_READ_COILS,
+    DiagnosticSubFunction, ExceptionCode, MAX_FIFO_VALUES, MAX_PDU_SIZE, MAX_READ_COILS,
     MAX_READ_DISCRETE_INPUTS, MAX_READ_REGISTERS, MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
 };
 
 pub(crate) const MAX_FILE_RECORD_REGISTERS: usize = 122;
+pub(crate) const MAX_SERVER_ID_BYTES: usize = MAX_PDU_SIZE - 2;
 
 /// Snapshot of the communications event log returned by Get Comm Event Log
 /// (FC 0x0C, Spec V1.1b3 §6.10).
@@ -497,6 +498,25 @@ pub trait DataStore: Send + Sync {
     /// [`ExceptionCode::IllegalFunction`].
     fn report_server_id(&self) -> impl Future<Output = Result<Vec<u8>, ExceptionCode>> + Send {
         async { Err(ExceptionCode::IllegalFunction) }
+    }
+
+    /// Append the FC 0x11 server-identification data bytes to `out`.
+    ///
+    /// The default delegates to [`Self::report_server_id`]. Direct-access
+    /// stores can override this method to avoid cloning the identification blob
+    /// before the handler copies it into the final response PDU.
+    fn append_server_id(
+        &self,
+        out: &mut Vec<u8>,
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let data = self.report_server_id().await?;
+            if data.len() > MAX_SERVER_ID_BYTES {
+                return Err(ExceptionCode::ServerDeviceFailure);
+            }
+            out.extend_from_slice(&data);
+            Ok(data.len())
+        }
     }
 
     /// Execute a Diagnostics sub-function (FC 0x08, §6.8).

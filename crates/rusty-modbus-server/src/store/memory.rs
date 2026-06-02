@@ -8,8 +8,8 @@ use rusty_modbus_types::ExceptionCode;
 use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT};
 
 use super::{
-    DataStore, MAX_FILE_RECORD_REGISTERS, pack_coils, pack_registers_be, packed_coil_value,
-    validate_packed_coils, validate_register_values_be,
+    DataStore, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES, pack_coils, pack_registers_be,
+    packed_coil_value, validate_packed_coils, validate_register_values_be,
 };
 
 /// Maximum number of entries in any Modbus data table.
@@ -605,5 +605,14 @@ impl DataStore for InMemoryStore {
 
     async fn report_server_id(&self) -> Result<Vec<u8>, ExceptionCode> {
         Ok(self.server_id.read().clone())
+    }
+
+    async fn append_server_id(&self, out: &mut Vec<u8>) -> Result<usize, ExceptionCode> {
+        let server_id = self.server_id.read();
+        if server_id.len() > MAX_SERVER_ID_BYTES {
+            return Err(ExceptionCode::ServerDeviceFailure);
+        }
+        out.extend_from_slice(&server_id);
+        Ok(server_id.len())
     }
 }

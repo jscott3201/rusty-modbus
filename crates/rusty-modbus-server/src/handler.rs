@@ -4,8 +4,8 @@ use rusty_modbus_codec::request::{ReadFileRecordRequest, WriteFileRecordRequest}
 use rusty_modbus_codec::response::{
     DiagnosticsResponse, GetCommEventCounterResponse, GetCommEventLogResponse,
     MaskWriteRegisterResponse, ReadExceptionStatusResponse, ReadFileRecordResponse,
-    ReportServerIdResponse, WriteFileRecordResponse, WriteMultipleCoilsResponse,
-    WriteMultipleRegistersResponse, WriteSingleCoilResponse, WriteSingleRegisterResponse,
+    WriteFileRecordResponse, WriteMultipleCoilsResponse, WriteMultipleRegistersResponse,
+    WriteSingleCoilResponse, WriteSingleRegisterResponse,
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
@@ -17,7 +17,7 @@ use crate::config::DeviceIdentification;
 use crate::device_id::build_device_id_response;
 use crate::file_record;
 use crate::response_encode::encode_response;
-use crate::store::{DataStore, MAX_FILE_RECORD_REGISTERS};
+use crate::store::{DataStore, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES};
 
 const MAX_DIAGNOSTIC_DATA_LEN: usize = MAX_PDU_SIZE - 3;
 
@@ -360,27 +360,7 @@ async fn dispatch_request<S: DataStore>(
             if is_broadcast {
                 return None;
             }
-            Some(match store.report_server_id().await {
-                // The PDU is FC + byte_count(u8) + data, capped at 253 bytes; a blob
-                // over 251 bytes would exceed the Modbus PDU cap → ServerDeviceFailure.
-                Ok(data) if data.len() > 251 => encode_exception(
-                    FunctionCode::ReportServerId.exception_code(),
-                    ExceptionCode::ServerDeviceFailure,
-                ),
-                Ok(data) => {
-                    // byte_count MUST equal data.len() or the encoder rejects the response.
-                    let byte_count =
-                        match checked_response_u8(data.len(), FunctionCode::ReportServerId) {
-                            Ok(byte_count) => byte_count,
-                            Err(resp) => return Some(resp),
-                        };
-                    encode_response(&ReportServerIdResponse {
-                        byte_count,
-                        data: &data,
-                    })
-                }
-                Err(ec) => encode_exception(FunctionCode::ReportServerId.exception_code(), ec),
-            })
+            Some(handle_report_server_id(store).await)
         }
         RequestPdu::EncapsulatedInterface(req) => {
             if is_broadcast {
@@ -400,6 +380,33 @@ async fn dispatch_request<S: DataStore>(
             let fc = pdu.first().copied().unwrap_or(0);
             Some(encode_exception(fc | 0x80, ExceptionCode::IllegalFunction))
         }
+    }
+}
+
+async fn handle_report_server_id<S: DataStore>(store: &S) -> Vec<u8> {
+    let mut response = Vec::with_capacity(2 + MAX_SERVER_ID_BYTES);
+    response.push(FunctionCode::ReportServerId.code());
+    response.push(0);
+
+    let data_start = response.len();
+    let result = store.append_server_id(&mut response).await;
+    match result {
+        Ok(count) => {
+            let actual_count = response.len().saturating_sub(data_start);
+            if count != actual_count || actual_count > MAX_SERVER_ID_BYTES {
+                return encode_exception(
+                    FunctionCode::ReportServerId.exception_code(),
+                    ExceptionCode::ServerDeviceFailure,
+                );
+            }
+            let byte_count = match checked_response_u8(actual_count, FunctionCode::ReportServerId) {
+                Ok(byte_count) => byte_count,
+                Err(resp) => return resp,
+            };
+            response[1] = byte_count;
+            response
+        }
+        Err(ec) => encode_exception(FunctionCode::ReportServerId.exception_code(), ec),
     }
 }
 

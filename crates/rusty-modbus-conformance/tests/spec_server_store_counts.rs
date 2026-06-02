@@ -106,6 +106,11 @@ impl DataStore for BadCountStore {
     ) -> Result<Option<Vec<u8>>, ExceptionCode> {
         Err(ExceptionCode::IllegalFunction)
     }
+
+    async fn append_server_id(&self, out: &mut Vec<u8>) -> Result<usize, ExceptionCode> {
+        out.push(0x42);
+        Ok(self.count)
+    }
 }
 
 async fn respond(store: &BadCountStore, pdu: &[u8]) -> Vec<u8> {
@@ -234,5 +239,13 @@ async fn file_record_partial_count_is_server_device_failure() {
     assert_eq!(
         respond(&BadCountStore::new(1), &req).await,
         vec![0x94, 0x04]
+    );
+}
+
+#[tokio::test]
+async fn report_server_id_mismatched_append_count_is_server_device_failure() {
+    assert_eq!(
+        respond(&BadCountStore::new(2), &[0x11]).await,
+        vec![0x91, 0x04]
     );
 }
