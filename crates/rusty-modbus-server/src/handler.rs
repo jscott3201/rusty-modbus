@@ -3,11 +3,10 @@
 use rusty_modbus_codec::request::{ReadFileRecordRequest, WriteFileRecordRequest};
 use rusty_modbus_codec::response::{
     DiagnosticsResponse, GetCommEventCounterResponse, GetCommEventLogResponse,
-    MaskWriteRegisterResponse, ReadCoilsResponse, ReadDiscreteInputsResponse,
-    ReadExceptionStatusResponse, ReadFifoQueueResponse, ReadFileRecordResponse,
-    ReadHoldingRegistersResponse, ReadInputRegistersResponse, ReadWriteMultipleRegistersResponse,
-    ReportServerIdResponse, WriteFileRecordResponse, WriteMultipleCoilsResponse,
-    WriteMultipleRegistersResponse, WriteSingleCoilResponse, WriteSingleRegisterResponse,
+    MaskWriteRegisterResponse, ReadExceptionStatusResponse, ReadFifoQueueResponse,
+    ReadFileRecordResponse, ReportServerIdResponse, WriteFileRecordResponse,
+    WriteMultipleCoilsResponse, WriteMultipleRegistersResponse, WriteSingleCoilResponse,
+    WriteSingleRegisterResponse,
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
@@ -443,21 +442,12 @@ async fn handle_read_registers<S: DataStore>(
                 Ok(byte_count) => byte_count,
                 Err(resp) => return resp,
             };
-            let mut data = vec![0u8; count * 2];
-            for (i, &val) in buf[..count].iter().enumerate() {
-                data[i * 2..i * 2 + 2].copy_from_slice(&val.to_be_bytes());
-            }
-            if is_holding {
-                encode_response(&ReadHoldingRegistersResponse {
-                    byte_count,
-                    register_data: &data,
-                })
+            let fc = if is_holding {
+                FunctionCode::ReadHoldingRegisters
             } else {
-                encode_response(&ReadInputRegistersResponse {
-                    byte_count,
-                    register_data: &data,
-                })
-            }
+                FunctionCode::ReadInputRegisters
+            };
+            encode_register_read_response(fc, byte_count, &buf[..count])
         }
         Err(ec) => encode_exception(fc.exception_code(), ec),
     }
@@ -498,23 +488,12 @@ async fn handle_read_bits<S: DataStore>(
                 Ok(byte_count) => byte_count,
                 Err(resp) => return resp,
             };
-            let mut bit_bytes = vec![0u8; byte_count as usize];
-            for (i, &val) in buf[..count].iter().enumerate() {
-                if val {
-                    bit_bytes[i / 8] |= 1 << (i % 8);
-                }
-            }
-            if is_coils {
-                encode_response(&ReadCoilsResponse {
-                    byte_count,
-                    coil_status: &bit_bytes,
-                })
+            let fc = if is_coils {
+                FunctionCode::ReadCoils
             } else {
-                encode_response(&ReadDiscreteInputsResponse {
-                    byte_count,
-                    coil_status: &bit_bytes,
-                })
-            }
+                FunctionCode::ReadDiscreteInputs
+            };
+            encode_bit_read_response(fc, byte_count, &buf[..count])
         }
         Err(ec) => encode_exception(fc.exception_code(), ec),
     }
@@ -588,14 +567,11 @@ async fn handle_read_write_multiple<S: DataStore>(
                     Ok(byte_count) => byte_count,
                     Err(resp) => return resp,
                 };
-            let mut data = vec![0u8; count * 2];
-            for (i, &val) in buf[..count].iter().enumerate() {
-                data[i * 2..i * 2 + 2].copy_from_slice(&val.to_be_bytes());
-            }
-            encode_response(&ReadWriteMultipleRegistersResponse {
+            encode_register_read_response(
+                FunctionCode::ReadWriteMultipleRegisters,
                 byte_count,
-                register_data: &data,
-            })
+                &buf[..count],
+            )
         }
         Err(ec) => encode_exception(
             FunctionCode::ReadWriteMultipleRegisters.exception_code(),
@@ -765,6 +741,29 @@ fn checked_response_u8(value: usize, fc: FunctionCode) -> Result<u8, Vec<u8>> {
 fn checked_response_u16(value: usize, fc: FunctionCode) -> Result<u16, Vec<u8>> {
     u16::try_from(value)
         .map_err(|_| encode_exception(fc.exception_code(), ExceptionCode::ServerDeviceFailure))
+}
+
+fn encode_register_read_response(fc: FunctionCode, byte_count: u8, registers: &[u16]) -> Vec<u8> {
+    let data_len = usize::from(byte_count);
+    let mut pdu = vec![0u8; 2 + data_len];
+    pdu[0] = fc.code();
+    pdu[1] = byte_count;
+    for (i, &value) in registers.iter().enumerate() {
+        pdu[2 + i * 2..2 + i * 2 + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    pdu
+}
+
+fn encode_bit_read_response(fc: FunctionCode, byte_count: u8, bits: &[bool]) -> Vec<u8> {
+    let mut pdu = vec![0u8; 2 + usize::from(byte_count)];
+    pdu[0] = fc.code();
+    pdu[1] = byte_count;
+    for (i, &value) in bits.iter().enumerate() {
+        if value {
+            pdu[2 + i / 8] |= 1 << (i % 8);
+        }
+    }
+    pdu
 }
 
 fn validate_store_count(
