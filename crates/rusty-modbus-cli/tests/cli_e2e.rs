@@ -10,7 +10,7 @@ use rusty_modbus_sim::{ModbusSimulator, generic_io};
 use rusty_modbus_types::UnitId;
 
 async fn start_sim() -> (ModbusSimulator, std::net::SocketAddr) {
-    let mut sim = ModbusSimulator::from_config(generic_io());
+    let mut sim = ModbusSimulator::from_config(generic_io()).unwrap();
     let addr = sim.start().await.unwrap();
     (sim, addr)
 }
