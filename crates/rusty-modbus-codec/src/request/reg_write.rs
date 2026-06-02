@@ -44,6 +44,7 @@ impl Encode for WriteSingleRegisterRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteSingleRegister.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.value.to_be_bytes());
@@ -133,6 +134,7 @@ impl Encode for WriteMultipleRegistersRequest<'_> {
         let expected_bytes = usize::from(self.quantity.0) * 2;
         EncodeError::check_byte_count(usize::from(self.byte_count), expected_bytes)?;
         EncodeError::check_byte_count(expected_bytes, self.register_values.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteMultipleRegisters.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());
@@ -194,6 +196,7 @@ impl Encode for MaskWriteRegisterRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::MaskWriteRegister.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.and_mask.to_be_bytes());
@@ -303,6 +306,7 @@ impl Encode for ReadWriteMultipleRegistersRequest<'_> {
         let expected_bytes = usize::from(self.write_quantity.0) * 2;
         EncodeError::check_byte_count(usize::from(self.write_byte_count), expected_bytes)?;
         EncodeError::check_byte_count(expected_bytes, self.write_register_values.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadWriteMultipleRegisters.code();
         buf[1..3].copy_from_slice(&self.read_address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.read_quantity.0.to_be_bytes());

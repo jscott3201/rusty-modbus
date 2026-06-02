@@ -87,6 +87,7 @@ impl Encode for ReadFifoQueueResponse<'_> {
         }
         let expected_data_len = usize::from(self.fifo_count) * 2;
         EncodeError::check_byte_count(expected_data_len, self.fifo_values.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadFifoQueue.code();
         let bc = self.byte_count.to_be_bytes();
         buf[1] = bc[0];

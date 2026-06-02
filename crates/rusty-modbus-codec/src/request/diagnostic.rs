@@ -60,6 +60,7 @@ impl Encode for DiagnosticsRequest<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::Diagnostics.code();
         buf[1..3].copy_from_slice(&self.sub_function.code().to_be_bytes());
         buf[3..3 + self.data.len()].copy_from_slice(self.data);

@@ -10,6 +10,13 @@ pub enum DecodeError {
         /// Actual length received.
         actual: usize,
     },
+    /// PDU exceeds the Modbus maximum of 253 bytes.
+    PduTooLarge {
+        /// Actual PDU length.
+        length: usize,
+        /// Maximum allowed PDU length.
+        maximum: usize,
+    },
     /// Function code byte is not recognized.
     UnknownFunctionCode(u8),
     /// Byte count field does not match actual remaining data length.
@@ -52,6 +59,9 @@ impl core::fmt::Display for DecodeError {
         match self {
             Self::Truncated { expected, actual } => {
                 write!(f, "PDU truncated: expected {expected} bytes, got {actual}")
+            }
+            Self::PduTooLarge { length, maximum } => {
+                write!(f, "PDU too large: {length} bytes (maximum {maximum})")
             }
             Self::UnknownFunctionCode(fc) => write!(f, "unknown function code: {fc:#04X}"),
             Self::ByteCountMismatch { declared, actual } => {
@@ -96,6 +106,13 @@ pub enum EncodeError {
         /// Available buffer size.
         available: usize,
     },
+    /// Encoded PDU would exceed the Modbus maximum of 253 bytes.
+    PduTooLarge {
+        /// Encoded PDU length.
+        length: usize,
+        /// Maximum allowed PDU length.
+        maximum: usize,
+    },
     /// Quantity exceeds protocol limits.
     QuantityOutOfRange {
         /// The invalid quantity value.
@@ -131,6 +148,9 @@ impl core::fmt::Display for EncodeError {
                     "buffer too small: need {required} bytes, have {available}"
                 )
             }
+            Self::PduTooLarge { length, maximum } => {
+                write!(f, "PDU too large: {length} bytes (maximum {maximum})")
+            }
             Self::QuantityOutOfRange { quantity } => {
                 write!(f, "quantity out of range: {quantity}")
             }
@@ -153,6 +173,15 @@ impl core::fmt::Display for EncodeError {
 }
 
 impl EncodeError {
+    pub(crate) fn check_pdu_len(length: usize) -> Result<(), Self> {
+        let maximum = rusty_modbus_types::MAX_PDU_SIZE;
+        if length > maximum {
+            Err(Self::PduTooLarge { length, maximum })
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn check_quantity(quantity: u16, max: u16) -> Result<(), Self> {
         if quantity == 0 || quantity > max {
             Err(Self::QuantityOutOfRange { quantity })

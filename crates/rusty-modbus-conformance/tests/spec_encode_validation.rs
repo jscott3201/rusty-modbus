@@ -5,8 +5,8 @@
 
 use rusty_modbus_codec::request::*;
 use rusty_modbus_codec::response::*;
-use rusty_modbus_codec::{Encode, EncodeError};
-use rusty_modbus_types::{Address, Quantity};
+use rusty_modbus_codec::{DecodeError, Encode, EncodeError, decode_request, decode_response};
+use rusty_modbus_types::{Address, MAX_PDU_SIZE, Quantity};
 
 fn encode_err(value: &impl Encode) -> EncodeError {
     let mut buf = [0u8; 300];
@@ -28,6 +28,37 @@ fn assert_byte_count_out_of_range(err: EncodeError, count: usize, minimum: usize
             count,
             minimum,
             maximum,
+        }
+    );
+}
+
+fn assert_pdu_too_large(err: EncodeError, length: usize) {
+    assert_eq!(
+        err,
+        EncodeError::PduTooLarge {
+            length,
+            maximum: MAX_PDU_SIZE,
+        }
+    );
+}
+
+#[test]
+fn decode_rejects_pdus_larger_than_253_bytes() {
+    let request = [0x41; MAX_PDU_SIZE + 1];
+    assert_eq!(
+        decode_request(&request).unwrap_err(),
+        DecodeError::PduTooLarge {
+            length: MAX_PDU_SIZE + 1,
+            maximum: MAX_PDU_SIZE,
+        }
+    );
+
+    let response = [0x41; MAX_PDU_SIZE + 1];
+    assert_eq!(
+        decode_response(&response).unwrap_err(),
+        DecodeError::PduTooLarge {
+            length: MAX_PDU_SIZE + 1,
+            maximum: MAX_PDU_SIZE,
         }
     );
 }
@@ -256,6 +287,25 @@ fn encode_rejects_response_byte_count_mismatches() {
         }),
         6,
         4,
+    );
+}
+
+#[test]
+fn encode_rejects_pdus_larger_than_253_bytes() {
+    assert_pdu_too_large(
+        encode_err(&ReadHoldingRegistersResponse {
+            byte_count: 255,
+            register_data: &[0; 255],
+        }),
+        257,
+    );
+
+    assert_pdu_too_large(
+        encode_err(&ReadCoilsResponse {
+            byte_count: 255,
+            coil_status: &[0; 255],
+        }),
+        257,
     );
 }
 

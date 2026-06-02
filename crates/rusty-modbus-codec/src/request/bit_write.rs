@@ -47,6 +47,7 @@ impl Encode for WriteSingleCoilRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteSingleCoil.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.value.to_wire().to_be_bytes());
@@ -138,6 +139,7 @@ impl Encode for WriteMultipleCoilsRequest<'_> {
         let expected_bytes = usize::from(self.quantity.0.div_ceil(8));
         EncodeError::check_byte_count(usize::from(self.byte_count), expected_bytes)?;
         EncodeError::check_byte_count(expected_bytes, self.coil_values.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteMultipleCoils.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());

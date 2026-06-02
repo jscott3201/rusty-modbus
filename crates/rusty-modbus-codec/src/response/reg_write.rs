@@ -43,6 +43,7 @@ impl Encode for WriteSingleRegisterResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteSingleRegister.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -96,6 +97,7 @@ impl Encode for WriteMultipleRegistersResponse {
             });
         }
         EncodeError::check_quantity(self.quantity.0, MAX_WRITE_REGISTERS)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteMultipleRegisters.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -157,6 +159,7 @@ impl Encode for MaskWriteRegisterResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::MaskWriteRegister.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -254,6 +257,7 @@ impl Encode for ReadWriteMultipleRegistersResponse<'_> {
             });
         }
         EncodeError::check_byte_count(usize::from(self.byte_count), self.register_data.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadWriteMultipleRegisters.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.register_data);
