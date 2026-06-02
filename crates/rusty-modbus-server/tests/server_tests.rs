@@ -190,6 +190,47 @@ async fn direct_packed_coil_write_reads_back() {
 }
 
 #[tokio::test]
+async fn direct_packed_coil_read_writes_wire_bytes() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    for address in [20, 22, 27, 28] {
+        store.set_coil(address, true).unwrap();
+    }
+
+    let mut packed = [0xFF, 0xFF];
+    let count = store.read_coils_packed(20, 9, &mut packed).await.unwrap();
+
+    assert_eq!(count, 9);
+    assert_eq!(packed, [0b1000_0101, 0b0000_0001]);
+}
+
+#[tokio::test]
+async fn direct_packed_coil_read_bad_output_len_is_illegal_data_value() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    let mut packed = [0u8; 1];
+
+    let result = store.read_coils_packed(0, 9, &mut packed).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataValue));
+}
+
+#[tokio::test]
+async fn direct_packed_discrete_input_read_writes_wire_bytes() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    for address in [3, 4, 10, 12] {
+        store.set_discrete_input(address, true).unwrap();
+    }
+
+    let mut packed = [0xFF, 0xFF];
+    let count = store
+        .read_discrete_inputs_packed(3, 10, &mut packed)
+        .await
+        .unwrap();
+
+    assert_eq!(count, 10);
+    assert_eq!(packed, [0b1000_0011, 0b0000_0010]);
+}
+
+#[tokio::test]
 async fn direct_packed_coil_write_bad_byte_count_is_illegal_data_value() {
     let store = InMemoryStore::new(StoreConfig::default());
 
