@@ -12,7 +12,7 @@ use rusty_modbus_server::handler::process_request;
 use rusty_modbus_server::{
     CommEventLog, DataStore, DeviceIdentification, InMemoryStore, StoreConfig,
 };
-use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, UnitId};
+use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, MAX_PDU_SIZE, UnitId};
 
 const UNIT: UnitId = UnitId(1);
 
@@ -369,6 +369,22 @@ impl DataStore for DiagCapableStore {
     }
 }
 
+/// Returns a diagnostic payload of a configured length, regardless of request data.
+struct SizedDiagnosticStore {
+    len: usize,
+}
+impl DataStore for SizedDiagnosticStore {
+    stub_core_tables!();
+
+    async fn diagnostic(
+        &self,
+        _: DiagnosticSubFunction,
+        _: &[u8],
+    ) -> Result<Option<Vec<u8>>, ExceptionCode> {
+        Ok(Some(vec![0x5A; self.len]))
+    }
+}
+
 /// A misbehaving store that claims to have written more registers than the
 /// caller's buffer holds — the handler must not panic.
 struct LyingFileStore;
@@ -492,6 +508,23 @@ async fn fc08_return_query_data_empty_payload() {
     assert_eq!(
         respond(&s, &[0x08, 0x00, 0x00]).await,
         vec![0x08, 0x00, 0x00]
+    );
+}
+
+#[tokio::test]
+async fn fc08_diagnostic_response_payload_at_pdu_cap_is_ok() {
+    let resp = respond(&SizedDiagnosticStore { len: 250 }, &[0x08, 0x00, 0x00]).await;
+
+    assert_eq!(resp.len(), MAX_PDU_SIZE);
+    assert_eq!(&resp[..3], &[0x08, 0x00, 0x00]);
+    assert!(resp[3..].iter().all(|&b| b == 0x5A));
+}
+
+#[tokio::test]
+async fn fc08_diagnostic_response_payload_over_pdu_cap_is_server_device_failure() {
+    assert_eq!(
+        respond(&SizedDiagnosticStore { len: 251 }, &[0x08, 0x00, 0x00]).await,
+        vec![0x88, 0x04]
     );
 }
 

@@ -11,13 +11,15 @@ use rusty_modbus_codec::response::{
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request};
 use rusty_modbus_types::{
-    Address, ExceptionCode, FunctionCode, MAX_READ_COILS, MAX_READ_REGISTERS, MeiType, Quantity,
-    UnitId,
+    Address, ExceptionCode, FunctionCode, MAX_PDU_SIZE, MAX_READ_COILS, MAX_READ_REGISTERS,
+    MeiType, Quantity, UnitId,
 };
 
 use crate::config::DeviceIdentification;
 use crate::device_id::build_device_id_response;
 use crate::store::DataStore;
+
+const MAX_DIAGNOSTIC_DATA_LEN: usize = MAX_PDU_SIZE - 3;
 
 /// Process a request PDU and return a response PDU (or `None` for broadcast writes).
 ///
@@ -257,6 +259,14 @@ async fn dispatch_request<S: DataStore>(
                 return None;
             }
             match result {
+                // Response PDU is FC + sub-function(u16) + data, capped at 253
+                // bytes. A store returning more would make the TCP/RTU frame
+                // encoder reject the response after the handler has already
+                // accepted the request.
+                Ok(Some(data)) if data.len() > MAX_DIAGNOSTIC_DATA_LEN => Some(encode_exception(
+                    FunctionCode::Diagnostics.exception_code(),
+                    ExceptionCode::ServerDeviceFailure,
+                )),
                 Ok(Some(data)) => Some(encode_response(&DiagnosticsResponse {
                     sub_function: req.sub_function,
                     data: &data,
