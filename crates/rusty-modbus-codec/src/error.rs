@@ -44,6 +44,20 @@ pub enum DecodeError {
     InvalidCoilValue(u16),
     /// File sub-request reference type is not 6.
     InvalidReferenceType(u8),
+    /// Packed file-record data cannot be split into valid sub-record groups.
+    InvalidFileRecordLength {
+        /// Invalid packed file-record byte length.
+        length: usize,
+    },
+    /// File-record address fields are outside the Modbus file-record model.
+    FileRecordOutOfRange {
+        /// File number.
+        file_number: u16,
+        /// Starting record number.
+        record_number: u16,
+        /// Number of records.
+        record_length: u16,
+    },
     /// MEI type byte is not recognized.
     UnknownMeiType(u8),
     /// Exception code byte is not recognized.
@@ -83,6 +97,17 @@ impl core::fmt::Display for DecodeError {
             }
             Self::InvalidCoilValue(v) => write!(f, "invalid coil value: {v:#06X}"),
             Self::InvalidReferenceType(rt) => write!(f, "invalid reference type: {rt}"),
+            Self::InvalidFileRecordLength { length } => {
+                write!(f, "invalid file-record data length: {length}")
+            }
+            Self::FileRecordOutOfRange {
+                file_number,
+                record_number,
+                record_length,
+            } => write!(
+                f,
+                "file record out of range: file {file_number}, record {record_number}, length {record_length}"
+            ),
             Self::UnknownMeiType(mt) => write!(f, "unknown MEI type: {mt:#04X}"),
             Self::UnknownExceptionCode(ec) => write!(f, "unknown exception code: {ec:#04X}"),
             Self::UnknownDiagnosticSubFunction(sf) => {
@@ -134,6 +159,22 @@ pub enum EncodeError {
         /// The maximum allowed byte count.
         maximum: usize,
     },
+    /// File sub-request reference type is not 6.
+    InvalidReferenceType(u8),
+    /// Packed file-record data cannot be split into valid sub-record groups.
+    InvalidFileRecordLength {
+        /// Invalid packed file-record byte length.
+        length: usize,
+    },
+    /// File-record address fields are outside the Modbus file-record model.
+    FileRecordOutOfRange {
+        /// File number.
+        file_number: u16,
+        /// Starting record number.
+        record_number: u16,
+        /// Number of records.
+        record_length: u16,
+    },
 }
 
 impl core::fmt::Display for EncodeError {
@@ -167,6 +208,18 @@ impl core::fmt::Display for EncodeError {
             } => write!(
                 f,
                 "byte count out of range: {count} (expected {minimum}..={maximum})"
+            ),
+            Self::InvalidReferenceType(rt) => write!(f, "invalid reference type: {rt}"),
+            Self::InvalidFileRecordLength { length } => {
+                write!(f, "invalid file-record data length: {length}")
+            }
+            Self::FileRecordOutOfRange {
+                file_number,
+                record_number,
+                record_length,
+            } => write!(
+                f,
+                "file record out of range: file {file_number}, record {record_number}, length {record_length}"
             ),
         }
     }

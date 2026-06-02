@@ -61,6 +61,9 @@ pub async fn process_request<S: DataStore>(
                 // values (V1.1b3 §4.5 and §6.8, Figure 18).
                 DecodeError::UnknownFunctionCode(_)
                 | DecodeError::UnknownDiagnosticSubFunction(_) => ExceptionCode::IllegalFunction,
+                DecodeError::InvalidReferenceType(_) | DecodeError::FileRecordOutOfRange { .. } => {
+                    ExceptionCode::IllegalDataAddress
+                }
                 _ => {
                     // FC is recognized (otherwise decode would return UnknownFunctionCode),
                     // but the data is malformed (truncated, bad quantity, bad byte count,
@@ -607,7 +610,9 @@ async fn handle_read_file_record<S: DataStore>(
             Err(ec) => return encode_exception(FunctionCode::ReadFileRecord.exception_code(), ec),
         }
         // Response PDU is FC + byte_count(1) + data, capped at 253 bytes.
-        if data.len() > 251 {
+        // FC14 sub-response groups are even-sized, so the largest valid
+        // byte_count is 250.
+        if data.len() > 250 {
             return encode_exception(
                 FunctionCode::ReadFileRecord.exception_code(),
                 ExceptionCode::IllegalDataValue,
@@ -628,8 +633,8 @@ async fn apply_write_file_record<S: DataStore>(
     req: &WriteFileRecordRequest<'_>,
     store: &S,
 ) -> Result<(), ExceptionCode> {
-    // §6.15 / Figure 25: byte_count must be 0x07..=0xF5.
-    if req.byte_count > 0xF5 {
+    // §6.15 field table: request data length must be 0x09..=0xFB.
+    if !(0x09..=0xFB).contains(&req.byte_count) {
         return Err(ExceptionCode::IllegalDataValue);
     }
     // Pass 1: validate framing and collect every sub-request *before* writing, so

@@ -219,12 +219,12 @@ fn encode_rejects_file_record_request_byte_count_mismatches() {
 
     assert_byte_count_out_of_range(
         encode_err(&WriteFileRecordRequest {
-            byte_count: 246,
-            sub_requests: &[0; 246],
+            byte_count: 8,
+            sub_requests: &[0; 8],
         }),
-        246,
-        7,
-        245,
+        8,
+        9,
+        251,
     );
 
     assert_byte_count_mismatch(
@@ -238,11 +238,27 @@ fn encode_rejects_file_record_request_byte_count_mismatches() {
 
     assert_byte_count_mismatch(
         encode_err(&WriteFileRecordRequest {
-            byte_count: 8,
-            sub_requests: &[0; 7],
+            byte_count: 9,
+            sub_requests: &[0; 10],
         }),
-        8,
-        7,
+        9,
+        10,
+    );
+
+    assert_eq!(
+        encode_err(&ReadFileRecordRequest {
+            byte_count: 7,
+            sub_requests: &[0x07, 0, 1, 0, 0, 0, 1],
+        }),
+        EncodeError::InvalidReferenceType(0x07)
+    );
+
+    assert_eq!(
+        encode_err(&WriteFileRecordRequest {
+            byte_count: 9,
+            sub_requests: &[0x07, 0, 1, 0, 0, 0, 1, 0x12, 0x34],
+        }),
+        EncodeError::InvalidReferenceType(0x07)
     );
 }
 
@@ -313,22 +329,22 @@ fn encode_rejects_pdus_larger_than_253_bytes() {
 fn encode_rejects_file_and_diagnostic_response_byte_count_mismatches() {
     assert_byte_count_out_of_range(
         encode_err(&ReadFileRecordResponse {
-            byte_count: 6,
-            data: &[0; 6],
+            byte_count: 3,
+            data: &[0; 3],
         }),
-        6,
-        7,
-        245,
+        3,
+        4,
+        250,
     );
 
     assert_byte_count_out_of_range(
         encode_err(&WriteFileRecordResponse {
-            byte_count: 246,
-            data: &[0; 246],
+            byte_count: 252,
+            data: &[0; 252],
         }),
-        246,
-        7,
-        245,
+        252,
+        9,
+        251,
     );
 
     assert_byte_count_mismatch(
@@ -341,11 +357,27 @@ fn encode_rejects_file_and_diagnostic_response_byte_count_mismatches() {
     );
     assert_byte_count_mismatch(
         encode_err(&WriteFileRecordResponse {
-            byte_count: 7,
-            data: &[0; 8],
+            byte_count: 9,
+            data: &[0; 10],
         }),
-        7,
-        8,
+        9,
+        10,
+    );
+
+    assert_eq!(
+        encode_err(&ReadFileRecordResponse {
+            byte_count: 4,
+            data: &[0x03, 0x07, 0x12, 0x34],
+        }),
+        EncodeError::InvalidReferenceType(0x07)
+    );
+
+    assert_eq!(
+        encode_err(&WriteFileRecordResponse {
+            byte_count: 9,
+            data: &[0x07, 0, 1, 0, 0, 0, 1, 0x12, 0x34],
+        }),
+        EncodeError::InvalidReferenceType(0x07)
     );
     assert_byte_count_mismatch(
         encode_err(&GetCommEventLogResponse {
