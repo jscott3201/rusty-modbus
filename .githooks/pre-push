@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rusty-modbus pre-push gate — fast lint guard.
+# rusty-modbus pre-push gate — fast local toolchain + lint guard.
 #
 # The full cross-platform test matrix intentionally does NOT run here: it lives
 # in .github/workflows/release.yml (the dev -> main release PR) and nightly.yml.
@@ -9,6 +9,9 @@
 set -euo pipefail
 [ -n "${RUSTY_MODBUS_SKIP_HOOKS:-}" ] && { echo "[pre-push] skipped (RUSTY_MODBUS_SKIP_HOOKS)"; exit 0; }
 cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-push] rust-analyzer --version"
+rust-analyzer --version
 
 echo "[pre-push] cargo clippy --workspace --all-targets --locked -- -D warnings"
 cargo clippy --workspace --all-targets --locked -- -D warnings
