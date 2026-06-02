@@ -39,6 +39,7 @@ deps_changed() {
 python_changed() {
   changed_since_base \
     .github/workflows/ci.yml \
+    .github/workflows/python.yml \
     Cargo.lock \
     Cargo.toml \
     deny.toml \

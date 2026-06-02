@@ -54,6 +54,7 @@ jobs:
               - 'deny.toml'
             python:
               - '.github/workflows/ci.yml'
+              - '.github/workflows/python.yml'
               - 'Cargo.lock'
               - 'Cargo.toml'
               - 'deny.toml'
