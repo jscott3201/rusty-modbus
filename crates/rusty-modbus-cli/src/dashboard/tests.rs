@@ -67,7 +67,6 @@ fn render_dashboard_shows_endpoint_mode_and_registers() {
     assert!(text.contains("0x1234"));
     assert!(text.contains("4660"));
     assert!(text.contains("PageUp/PageDown"));
-    assert!(text.contains("Up/Down"));
     assert!(text.contains("COMMAND"));
 }
 
@@ -126,6 +125,8 @@ fn render_dashboard_shows_command_input_and_log() {
 
     assert!(text.contains(":read coils 0 8"));
     assert!(text.contains("Read 8 CO values from 0"));
+    assert!(text.contains("Tab"));
+    assert!(text.contains("complete"));
 }
 
 #[test]
@@ -246,6 +247,21 @@ async fn dashboard_command_help_uses_shared_help_lines() {
     for help_line in shell_parser::HELP_LINES {
         assert!(log_text.contains(help_line));
     }
+
+    sim.stop().await;
+}
+
+#[tokio::test]
+async fn dashboard_command_tab_completes_input() {
+    let (mut sim, addr) = start_sim().await;
+    let mut app = app_for(addr).await;
+
+    app.view.command_mode = CommandMode::Editing;
+    app.view.command_input = "read h".to_string();
+    app.handle_command_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        .await;
+
+    assert_eq!(app.view.command_input, "read holding-registers");
 
     sim.stop().await;
 }

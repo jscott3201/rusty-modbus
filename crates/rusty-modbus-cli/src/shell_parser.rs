@@ -8,6 +8,16 @@ pub const HELP_LINES: &[&str] = &[
     "set unit-id <id> | status | help | exit",
 ];
 
+const COMMANDS: &[&str] = &["exit", "help", "quit", "read", "set", "status", "write"];
+const READ_TYPES: &[&str] = &[
+    "coils",
+    "discrete-inputs",
+    "holding-registers",
+    "input-registers",
+];
+const WRITE_TYPES: &[&str] = &["coil", "coils", "register", "registers"];
+const SET_KEYS: &[&str] = &["unit-id"];
+
 /// Parsed shell command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShellCommand {
@@ -73,6 +83,62 @@ pub fn parse_command(line: &str) -> Result<ShellCommand, ParseError> {
             "unknown command: '{other}'. Type 'help' for available commands"
         ))),
     }
+}
+
+/// Return a useful command completion for a partial shell input line.
+#[must_use]
+pub fn complete_command(line: &str) -> Option<String> {
+    let trailing_space = line.chars().last().is_some_and(char::is_whitespace);
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let (prefix, candidates, token_index) = match tokens.as_slice() {
+        [] => ("", COMMANDS, 0),
+        [partial] if !trailing_space => (*partial, COMMANDS, 0),
+        ["read"] if trailing_space => ("", READ_TYPES, 1),
+        ["read", partial] if !trailing_space => (*partial, READ_TYPES, 1),
+        ["write"] if trailing_space => ("", WRITE_TYPES, 1),
+        ["write", partial] if !trailing_space => (*partial, WRITE_TYPES, 1),
+        ["set"] if trailing_space => ("", SET_KEYS, 1),
+        ["set", partial] if !trailing_space => (*partial, SET_KEYS, 1),
+        _ => return None,
+    };
+    let completion = complete_token(prefix, candidates)?;
+    Some(replace_token(&tokens, token_index, &completion))
+}
+
+fn complete_token(prefix: &str, candidates: &[&str]) -> Option<String> {
+    let matches = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.starts_with(prefix))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => None,
+        [completion] => Some((*completion).to_string()),
+        matches => {
+            let completion = common_prefix(matches);
+            (completion.len() > prefix.len()).then_some(completion)
+        }
+    }
+}
+
+fn common_prefix(matches: &[&str]) -> String {
+    let mut prefix = matches[0].to_string();
+    for candidate in &matches[1..] {
+        while !candidate.starts_with(&prefix) {
+            prefix.pop();
+        }
+    }
+    prefix
+}
+
+fn replace_token(tokens: &[&str], index: usize, completion: &str) -> String {
+    let mut completed = tokens.to_vec();
+    if index == completed.len() {
+        completed.push(completion);
+    } else {
+        completed[index] = completion;
+    }
+    completed.join(" ")
 }
 
 fn parse_set(tokens: &[&str]) -> Result<ShellCommand, ParseError> {
@@ -316,6 +382,44 @@ mod tests {
     fn parse_unknown_register_type() {
         assert!(parse_command("read foobar 0 1").is_err());
         assert!(parse_command("write foobar 0 1").is_err());
+    }
+
+    #[test]
+    fn complete_top_level_commands() {
+        assert_eq!(complete_command("sta").as_deref(), Some("status"));
+        assert_eq!(complete_command("he").as_deref(), Some("help"));
+        assert_eq!(complete_command("w").as_deref(), Some("write"));
+    }
+
+    #[test]
+    fn complete_read_and_write_types() {
+        assert_eq!(
+            complete_command("read h").as_deref(),
+            Some("read holding-registers")
+        );
+        assert_eq!(
+            complete_command("read ").as_deref(),
+            None,
+            "empty read type is ambiguous"
+        );
+        assert_eq!(
+            complete_command("write regi").as_deref(),
+            Some("write register")
+        );
+        assert_eq!(complete_command("write co").as_deref(), Some("write coil"));
+    }
+
+    #[test]
+    fn complete_set_unit_id_key() {
+        assert_eq!(complete_command("set u").as_deref(), Some("set unit-id"));
+        assert_eq!(complete_command("set ").as_deref(), Some("set unit-id"));
+    }
+
+    #[test]
+    fn complete_ignores_ambiguous_or_argument_positions() {
+        assert_eq!(complete_command("s").as_deref(), None);
+        assert_eq!(complete_command("write ").as_deref(), None);
+        assert_eq!(complete_command("read coils 0").as_deref(), None);
     }
 
     #[test]
