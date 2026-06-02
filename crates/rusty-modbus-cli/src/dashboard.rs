@@ -462,13 +462,8 @@ impl DashboardApp {
                 )));
             }
             ShellCommand::Help => {
-                for line in [
-                    "read holding-registers <address> <quantity>",
-                    "read coils <address> <quantity>",
-                    "write register <address> <value>",
-                    "write coil <address> <on|off>",
-                ] {
-                    self.push_log(CommandLogEntry::info(line));
+                for line in shell_parser::HELP_LINES {
+                    self.push_log(CommandLogEntry::info(*line));
                 }
             }
             ShellCommand::Exit => {

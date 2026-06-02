@@ -226,8 +226,9 @@ fn render_command_panel(frame: &mut Frame, area: Rect, view: &DashboardView) {
         ])
     };
 
-    let mut lines = vec![prompt, Line::from("")];
-    for entry in view.command_log.iter().rev().take(3).rev() {
+    let visible_entries = usize::from(area.height.saturating_sub(3));
+    let mut lines = vec![prompt];
+    for entry in view.command_log.iter().rev().take(visible_entries).rev() {
         lines.push(Line::from(Span::styled(
             &entry.text,
             command_log_style(entry.status),
