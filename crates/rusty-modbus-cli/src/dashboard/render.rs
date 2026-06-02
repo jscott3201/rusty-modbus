@@ -7,8 +7,22 @@ use ratatui::widgets::{
 };
 
 use super::{
-    CommandLogStatus, CommandMode, DashboardData, DashboardTarget, DashboardView, palette,
+    CommandLogStatus, CommandMode, DashboardData, DashboardStatus, DashboardTarget, DashboardView,
 };
+
+pub(super) mod palette {
+    use ratatui::style::Color;
+
+    pub const BACKGROUND: Color = Color::Rgb(8, 20, 31);
+    pub const PANEL: Color = Color::Rgb(13, 35, 52);
+    pub const STEEL: Color = Color::Rgb(48, 103, 145);
+    pub const CYAN: Color = Color::Rgb(91, 192, 222);
+    pub const TEXT: Color = Color::Rgb(219, 232, 240);
+    pub const MUTED: Color = Color::Rgb(126, 153, 169);
+    pub const AMBER: Color = Color::Rgb(226, 170, 62);
+    pub const GREEN: Color = Color::Rgb(70, 180, 130);
+    pub const RED: Color = Color::Rgb(219, 96, 96);
+}
 
 pub(super) fn render_dashboard(frame: &mut Frame, view: &DashboardView) {
     let area = frame.area();
@@ -72,7 +86,7 @@ fn render_header(frame: &mut Frame, area: Rect, view: &DashboardView) {
         ),
         Span::styled(" dashboard", Style::new().fg(palette::TEXT)),
         Span::styled("  |  ", Style::new().fg(palette::MUTED)),
-        Span::styled(view.status.label(), view.status.style()),
+        Span::styled(view.status.label(), status_style(&view.status)),
     ]);
     let metadata = Line::from(vec![
         Span::styled("Endpoint ", Style::new().fg(palette::MUTED)),
@@ -234,6 +248,8 @@ fn render_footer(frame: &mut Frame, area: Rect) {
         Span::raw(" quit  "),
         Span::styled(":", Style::new().fg(palette::CYAN)),
         Span::raw(" command  "),
+        Span::styled("Up/Down", Style::new().fg(palette::CYAN)),
+        Span::raw(" history  "),
         Span::styled("r", Style::new().fg(palette::CYAN)),
         Span::raw(" refresh  "),
         Span::styled("1-4/Tab", Style::new().fg(palette::CYAN)),
@@ -300,6 +316,13 @@ fn command_log_style(status: CommandLogStatus) -> Style {
         CommandLogStatus::Info => Style::new().fg(palette::MUTED),
         CommandLogStatus::Success => Style::new().fg(palette::GREEN),
         CommandLogStatus::Error => Style::new().fg(palette::RED),
+    }
+}
+
+fn status_style(status: &DashboardStatus) -> Style {
+    match status {
+        DashboardStatus::Connected => Style::new().fg(palette::GREEN).add_modifier(Modifier::BOLD),
+        DashboardStatus::Error => Style::new().fg(palette::RED).add_modifier(Modifier::BOLD),
     }
 }
 

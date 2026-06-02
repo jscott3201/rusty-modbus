@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::DefaultTerminal;
-use ratatui::style::{Modifier, Style};
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient};
 use rusty_modbus_types::UnitId;
 
@@ -15,22 +14,9 @@ use crate::shell_parser::{self, ShellCommand};
 
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_COMMAND_LOG: usize = 8;
+const MAX_COMMAND_HISTORY: usize = 32;
 
 mod render;
-
-mod palette {
-    use ratatui::style::Color;
-
-    pub const BACKGROUND: Color = Color::Rgb(8, 20, 31);
-    pub const PANEL: Color = Color::Rgb(13, 35, 52);
-    pub const STEEL: Color = Color::Rgb(48, 103, 145);
-    pub const CYAN: Color = Color::Rgb(91, 192, 222);
-    pub const TEXT: Color = Color::Rgb(219, 232, 240);
-    pub const MUTED: Color = Color::Rgb(126, 153, 169);
-    pub const AMBER: Color = Color::Rgb(226, 170, 62);
-    pub const GREEN: Color = Color::Rgb(70, 180, 130);
-    pub const RED: Color = Color::Rgb(219, 96, 96);
-}
 
 /// Arguments for the `dashboard` subcommand.
 #[derive(clap::Args, Debug)]
@@ -54,19 +40,12 @@ pub struct DashboardArgs {
 
 /// Runtime configuration for the dashboard.
 pub struct DashboardConfig {
-    /// Target address.
     pub addr: SocketAddr,
-    /// Initial unit ID.
     pub unit_id: u8,
-    /// Request timeout in seconds.
     pub timeout: u64,
-    /// Initial starting address.
     pub address: u16,
-    /// Initial quantity.
     pub quantity: u16,
-    /// Initial data area.
     pub target: DashboardTarget,
-    /// Auto-refresh interval.
     pub refresh_interval: Duration,
 }
 
@@ -227,6 +206,8 @@ struct DashboardApp {
     view: DashboardView,
     refresh_interval: Duration,
     last_refresh: Option<Instant>,
+    command_history: VecDeque<String>,
+    command_history_cursor: Option<usize>,
     should_quit: bool,
 }
 
@@ -257,6 +238,8 @@ impl DashboardApp {
             view,
             refresh_interval: config.refresh_interval,
             last_refresh: None,
+            command_history: VecDeque::new(),
+            command_history_cursor: None,
             should_quit: false,
         }
     }
@@ -377,17 +360,23 @@ impl DashboardApp {
             KeyCode::Esc => {
                 self.view.command_mode = CommandMode::Idle;
                 self.view.command_input.clear();
+                self.command_history_cursor = None;
             }
             KeyCode::Enter => {
                 let command = std::mem::take(&mut self.view.command_input);
                 self.view.command_mode = CommandMode::Idle;
+                self.command_history_cursor = None;
                 self.execute_command_line(command).await;
             }
+            KeyCode::Up => self.recall_previous_command(),
+            KeyCode::Down => self.recall_next_command(),
             KeyCode::Backspace => {
                 self.view.command_input.pop();
+                self.command_history_cursor = None;
             }
             KeyCode::Char(c) => {
                 self.view.command_input.push(c);
+                self.command_history_cursor = None;
             }
             _ => {}
         }
@@ -398,6 +387,7 @@ impl DashboardApp {
         if trimmed.is_empty() {
             return;
         }
+        self.push_history(trimmed);
         self.push_log(CommandLogEntry::info(format!("> {trimmed}")));
 
         match shell_parser::parse_command(trimmed) {
@@ -539,6 +529,50 @@ impl DashboardApp {
         self.view.command_log.push_back(entry);
     }
 
+    fn push_history(&mut self, command: &str) {
+        if self
+            .command_history
+            .back()
+            .is_some_and(|last| last == command)
+        {
+            return;
+        }
+        if self.command_history.len() == MAX_COMMAND_HISTORY {
+            self.command_history.pop_front();
+        }
+        self.command_history.push_back(command.to_string());
+    }
+
+    fn recall_previous_command(&mut self) {
+        if self.command_history.is_empty() {
+            return;
+        }
+
+        let index = self
+            .command_history_cursor
+            .map_or(self.command_history.len() - 1, |index| {
+                index.saturating_sub(1)
+            });
+        self.command_history_cursor = Some(index);
+        self.view.command_input = self.command_history[index].clone();
+    }
+
+    fn recall_next_command(&mut self) {
+        let Some(index) = self.command_history_cursor else {
+            return;
+        };
+
+        if index + 1 == self.command_history.len() {
+            self.command_history_cursor = None;
+            self.view.command_input.clear();
+            return;
+        }
+
+        let next = index + 1;
+        self.command_history_cursor = Some(next);
+        self.view.command_input = self.command_history[next].clone();
+    }
+
     fn set_target(&mut self, target: DashboardTarget) -> bool {
         if self.view.target == target {
             return false;
@@ -570,22 +604,20 @@ struct CommandLogEntry {
 
 impl CommandLogEntry {
     fn info(text: impl Into<String>) -> Self {
-        Self {
-            status: CommandLogStatus::Info,
-            text: text.into(),
-        }
+        Self::new(CommandLogStatus::Info, text)
     }
 
     fn success(text: impl Into<String>) -> Self {
-        Self {
-            status: CommandLogStatus::Success,
-            text: text.into(),
-        }
+        Self::new(CommandLogStatus::Success, text)
     }
 
     fn error(text: impl Into<String>) -> Self {
+        Self::new(CommandLogStatus::Error, text)
+    }
+
+    fn new(status: CommandLogStatus, text: impl Into<String>) -> Self {
         Self {
-            status: CommandLogStatus::Error,
+            status,
             text: text.into(),
         }
     }
@@ -626,13 +658,6 @@ impl DashboardStatus {
         match self {
             Self::Connected => "CONNECTED",
             Self::Error => "ERROR",
-        }
-    }
-
-    const fn style(&self) -> Style {
-        match self {
-            Self::Connected => Style::new().fg(palette::GREEN).add_modifier(Modifier::BOLD),
-            Self::Error => Style::new().fg(palette::RED).add_modifier(Modifier::BOLD),
         }
     }
 }
