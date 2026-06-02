@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -65,6 +66,7 @@ fn render_dashboard_shows_endpoint_mode_and_registers() {
     assert!(text.contains("0x1234"));
     assert!(text.contains("4660"));
     assert!(text.contains("PageUp/PageDown"));
+    assert!(text.contains("Up/Down"));
     assert!(text.contains("COMMAND"));
 }
 
@@ -208,6 +210,47 @@ async fn dashboard_command_reports_parse_errors() {
             .iter()
             .any(|entry| entry.status == CommandLogStatus::Error)
     );
+
+    sim.stop().await;
+}
+
+#[tokio::test]
+async fn dashboard_command_history_navigates_previous_and_next() {
+    let (mut sim, addr) = start_sim().await;
+    let mut app = app_for(addr).await;
+
+    app.execute_command_line("status".to_string()).await;
+    app.execute_command_line("help".to_string()).await;
+    app.view.command_mode = CommandMode::Editing;
+
+    app.handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.view.command_input, "help");
+
+    app.handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.view.command_input, "status");
+
+    app.handle_command_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.view.command_input, "help");
+
+    app.handle_command_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await;
+    assert!(app.view.command_input.is_empty());
+
+    sim.stop().await;
+}
+
+#[tokio::test]
+async fn dashboard_command_history_skips_consecutive_duplicates() {
+    let (mut sim, addr) = start_sim().await;
+    let mut app = app_for(addr).await;
+
+    app.execute_command_line("status".to_string()).await;
+    app.execute_command_line("status".to_string()).await;
+
+    assert_eq!(app.command_history.len(), 1);
 
     sim.stop().await;
 }
