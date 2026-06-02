@@ -3,21 +3,23 @@
 Last updated: 2026-06-02
 
 This document records the current local performance baseline for the Modbus/TCP
-client/server path. The focus of this run is single-connection pipelining: one
-TCP client connection, multiple concurrent in-flight requests, and a local
-loopback server backed by the in-memory store. This refresh includes the server
-read-response direct encoding change in `4e88718`.
+client/server path. The focus is single-connection pipelining: one TCP client
+connection, multiple concurrent in-flight requests, and a local loopback server
+backed by the in-memory store. This refresh was run after the codec strict
+fixed-length PDU validation change in `d5f2681`.
 
 ## Environment
 
 | Item | Value |
 |---|---|
-| Git commit | `4e88718` |
-| Host | Apple M5, 10 cores, 16 GiB memory |
+| Git commit | `d5f2681` |
+| Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
 | Cargo | `cargo 1.95.0 (f2d3ce0bd 2026-03-21)` |
-| Build mode | `--release` |
+| Docker | `Docker version 29.5.2, build 79eb04c` |
+| Local build mode | `cargo run --release` |
+| Docker image | Alpine 3.22 runtime, Rust 1.95.0 Alpine builder |
 | Transport | Modbus/TCP over loopback |
 | Server | Spawned benchmark server, `InMemoryStore` |
 | Workload duration | 1s warmup + 5s measured per row |
@@ -26,12 +28,12 @@ read-response direct encoding change in `4e88718`.
 
 ## Commands
 
-The benchmark matrix was run with:
+The local benchmark matrix was run with:
 
 ```bash
 for op in read mixed; do
   for depth in 1 2 4 8 16; do
-    cargo run --release -p rusty-modbus-benchmarks --bin stress-test -- \
+    scripts/bench-local.sh stress \
       --duration 5 \
       --warmup 1 \
       --clients 1 \
@@ -42,10 +44,22 @@ for op in read mixed; do
 done
 ```
 
-The benchmark wiring was also smoke-tested with:
+The Docker benchmark target was run with:
 
 ```bash
-scripts/bench-local.sh smoke
+scripts/docker-bench.sh \
+  --duration 5 \
+  --warmup 1 \
+  --clients 1 \
+  --in-flight 8 \
+  --operation mixed \
+  --json
+```
+
+The local stress script now runs the stress binary in release mode by default:
+
+```bash
+cargo run --release -p rusty-modbus-benchmarks --bin stress-test -- ...
 ```
 
 ## Results
@@ -56,11 +70,11 @@ Workload: repeated FC 0x03 reads of 10 holding registers.
 
 | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 58,106 | 290,531 | 0.016 | 0.021 | 0.031 | 0.038 | 0.102 | 0 | 0 |
-| 2 | 104,185 | 520,925 | 0.017 | 0.028 | 0.034 | 0.042 | 0.103 | 0 | 1 |
-| 4 | 167,351 | 836,757 | 0.023 | 0.032 | 0.039 | 0.058 | 0.132 | 0 | 1 |
-| 8 | 248,483 | 1,242,414 | 0.031 | 0.044 | 0.052 | 0.067 | 0.141 | 0 | 1 |
-| 16 | 289,045 | 1,445,225 | 0.055 | 0.079 | 0.090 | 0.107 | 0.382 | 0 | 1 |
+| 1 | 58,025 | 290,125 | 0.016 | 0.021 | 0.031 | 0.041 | 0.121 | 0 | 0 |
+| 2 | 103,923 | 519,613 | 0.018 | 0.028 | 0.034 | 0.049 | 0.104 | 0 | 1 |
+| 4 | 167,587 | 837,934 | 0.023 | 0.032 | 0.039 | 0.053 | 0.124 | 0 | 1 |
+| 8 | 246,526 | 1,232,628 | 0.031 | 0.045 | 0.053 | 0.069 | 0.133 | 0 | 1 |
+| 16 | 287,869 | 1,439,344 | 0.055 | 0.080 | 0.092 | 0.118 | 0.203 | 0 | 1 |
 
 ### Mixed Read/Write
 
@@ -68,25 +82,36 @@ Workload: alternating FC 0x03 reads and FC 0x06 write-single-register requests.
 
 | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 58,412 | 292,058 | 0.016 | 0.020 | 0.031 | 0.038 | 0.123 | 0 | 0 |
-| 2 | 106,182 | 530,909 | 0.017 | 0.028 | 0.033 | 0.043 | 0.136 | 0 | 1 |
-| 4 | 171,518 | 857,589 | 0.022 | 0.031 | 0.037 | 0.049 | 0.131 | 0 | 0 |
-| 8 | 245,922 | 1,229,610 | 0.031 | 0.045 | 0.052 | 0.066 | 0.134 | 0 | 1 |
-| 16 | 289,753 | 1,448,766 | 0.055 | 0.079 | 0.089 | 0.105 | 0.185 | 0 | 1 |
+| 1 | 59,099 | 295,494 | 0.016 | 0.021 | 0.031 | 0.040 | 0.220 | 0 | 0 |
+| 2 | 106,730 | 533,648 | 0.017 | 0.028 | 0.034 | 0.043 | 0.117 | 0 | 1 |
+| 4 | 170,655 | 853,273 | 0.022 | 0.031 | 0.038 | 0.050 | 0.132 | 0 | 1 |
+| 8 | 244,123 | 1,220,614 | 0.031 | 0.046 | 0.059 | 0.095 | 0.183 | 0 | 1 |
+| 16 | 290,026 | 1,450,130 | 0.055 | 0.079 | 0.091 | 0.115 | 0.301 | 0 | 1 |
+
+### Docker Benchmark Target
+
+Workload: the benchmark image running the mixed workload at in-flight depth 8.
+
+| Runtime | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Alpine container | 8 | 253,392 | 1,266,958 | 0.030 | 0.045 | 0.051 | 0.061 | 0.104 | 0 | 0 |
 
 ## Findings
 
-- Single-connection pipelining scales materially on loopback. Depth 16 delivered
-  about 4.98x the depth-1 read throughput and about 4.96x the depth-1 mixed
-  throughput.
-- All rows completed with zero request errors.
-- Tail latency increased as expected with deeper queues, but p99 stayed below
-  0.1 ms for both workloads in this local loopback run.
-- RSS stayed effectively flat, with the measured delta at 0-1 MiB across the
+- Single-connection pipelining still scales materially on loopback. Depth 16
+  delivered about 4.96x the depth-1 read throughput and about 4.91x the depth-1
+  mixed throughput.
+- All local and Docker rows completed with zero request errors.
+- Tail latency rose as expected with deeper queues, but local p99 stayed below
+  0.1 ms for both workloads. Local p99.9 stayed at or below 0.118 ms.
+- RSS stayed effectively flat, with local measured deltas at 0-1 MiB across the
   matrix.
-- Throughput gains flatten between depth 8 and 16. That is the first area to
-  inspect when optimizing the client hot path, especially sink serialization,
-  transaction registration, response matching, and server handler overhead.
+- The Docker benchmark target is in the same range as the local release run. The
+  depth-8 mixed Docker row measured about 3.8% above the local depth-8 mixed row,
+  which should be treated as local-run variance rather than a container
+  advantage.
+- No throughput regression is visible from the recent strict codec validation
+  changes; the refreshed numbers are close to the previous `4e88718` baseline.
 
 ## Caveats
 
@@ -99,12 +124,16 @@ Workload: alternating FC 0x03 reads and FC 0x06 write-single-register requests.
   workloads need separate baselines.
 - The run uses 5-second measurement windows for timely iteration. Release-facing
   comparisons should use longer windows and Criterion baselines where practical.
+- The stress benchmark spawns a loopback server; restricted sandboxes may need
+  explicit permission to bind local sockets.
 
 ## Next Benchmarks
 
-- TCP/TLS comparison for read, write, and mixed workloads.
+- TCP/TLS/RTU-over-TCP comparison for read, write, and mixed workloads.
 - Multi-client plus per-client in-flight matrix to separate connection scaling
   from single-connection pipelining.
 - Python binding throughput against a Python baseline.
 - Codec-only Criterion baselines for owned response decoding and MBAP frame
   encode/decode before touching hot-path internals.
+- Machine-readable benchmark history so future PRs can compare against this
+  baseline automatically.
