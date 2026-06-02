@@ -133,8 +133,10 @@ impl std::fmt::Debug for InMemoryStore {
     }
 }
 
-fn check_range(address: u16, quantity: u16, max: usize) -> Result<(), ExceptionCode> {
-    let end = usize::from(address) + usize::from(quantity);
+fn check_range(address: u16, quantity: usize, max: usize) -> Result<(), ExceptionCode> {
+    let end = usize::from(address)
+        .checked_add(quantity)
+        .ok_or(ExceptionCode::IllegalDataAddress)?;
     if end > max {
         return Err(ExceptionCode::IllegalDataAddress);
     }
@@ -149,7 +151,7 @@ impl DataStore for InMemoryStore {
         buf: &mut [bool],
     ) -> Result<usize, ExceptionCode> {
         let coils = self.coils.read();
-        check_range(address, quantity, coils.len())?;
+        check_range(address, usize::from(quantity), coils.len())?;
         let start = address as usize;
         let qty = quantity as usize;
         buf[..qty].copy_from_slice(&coils[start..start + qty]);
@@ -165,8 +167,7 @@ impl DataStore for InMemoryStore {
 
     async fn write_coils(&self, address: u16, values: &[bool]) -> Result<(), ExceptionCode> {
         let mut coils = self.coils.write();
-        let qty = u16::try_from(values.len()).unwrap_or(u16::MAX);
-        check_range(address, qty, coils.len())?;
+        check_range(address, values.len(), coils.len())?;
         let start = address as usize;
         coils[start..start + values.len()].copy_from_slice(values);
         Ok(())
@@ -179,7 +180,7 @@ impl DataStore for InMemoryStore {
         buf: &mut [bool],
     ) -> Result<usize, ExceptionCode> {
         let inputs = self.discrete_inputs.read();
-        check_range(address, quantity, inputs.len())?;
+        check_range(address, usize::from(quantity), inputs.len())?;
         let start = address as usize;
         let qty = quantity as usize;
         buf[..qty].copy_from_slice(&inputs[start..start + qty]);
@@ -193,7 +194,7 @@ impl DataStore for InMemoryStore {
         buf: &mut [u16],
     ) -> Result<usize, ExceptionCode> {
         let regs = self.holding_registers.read();
-        check_range(address, quantity, regs.len())?;
+        check_range(address, usize::from(quantity), regs.len())?;
         let start = address as usize;
         let qty = quantity as usize;
         buf[..qty].copy_from_slice(&regs[start..start + qty]);
@@ -209,8 +210,7 @@ impl DataStore for InMemoryStore {
 
     async fn write_registers(&self, address: u16, values: &[u16]) -> Result<(), ExceptionCode> {
         let mut regs = self.holding_registers.write();
-        let qty = u16::try_from(values.len()).unwrap_or(u16::MAX);
-        check_range(address, qty, regs.len())?;
+        check_range(address, values.len(), regs.len())?;
         let start = address as usize;
         regs[start..start + values.len()].copy_from_slice(values);
         Ok(())
@@ -223,7 +223,7 @@ impl DataStore for InMemoryStore {
         buf: &mut [u16],
     ) -> Result<usize, ExceptionCode> {
         let regs = self.input_registers.read();
-        check_range(address, quantity, regs.len())?;
+        check_range(address, usize::from(quantity), regs.len())?;
         let start = address as usize;
         let qty = quantity as usize;
         buf[..qty].copy_from_slice(&regs[start..start + qty]);
