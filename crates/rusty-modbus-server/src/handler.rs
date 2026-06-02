@@ -1,6 +1,6 @@
 //! Request dispatch and response building.
 
-use rusty_modbus_codec::request::{Encode, ReadFileRecordRequest, WriteFileRecordRequest};
+use rusty_modbus_codec::request::{ReadFileRecordRequest, WriteFileRecordRequest};
 use rusty_modbus_codec::response::{
     DiagnosticsResponse, GetCommEventCounterResponse, GetCommEventLogResponse,
     MaskWriteRegisterResponse, ReadCoilsResponse, ReadDiscreteInputsResponse,
@@ -17,6 +17,7 @@ use rusty_modbus_types::{
 
 use crate::config::DeviceIdentification;
 use crate::device_id::build_device_id_response;
+use crate::response_encode::encode_response;
 use crate::store::DataStore;
 
 const MAX_DIAGNOSTIC_DATA_LEN: usize = MAX_PDU_SIZE - 3;
@@ -645,12 +646,6 @@ async fn handle_read_fifo_queue<S: DataStore>(address: Address, store: &S) -> Ve
         }
         Err(ec) => encode_exception(FunctionCode::ReadFifoQueue.exception_code(), ec),
     }
-}
-
-fn encode_response(resp: &dyn Encode) -> Vec<u8> {
-    let mut buf = vec![0u8; resp.encoded_len()];
-    let _ = resp.encode_into(&mut buf);
-    buf
 }
 
 fn validate_store_count(
