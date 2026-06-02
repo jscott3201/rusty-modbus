@@ -7,7 +7,7 @@ use std::future::Future;
 
 use rusty_modbus_types::{
     DiagnosticSubFunction, ExceptionCode, MAX_READ_COILS, MAX_READ_DISCRETE_INPUTS,
-    MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
+    MAX_READ_REGISTERS, MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
 };
 
 /// Snapshot of the communications event log returned by Get Comm Event Log
@@ -104,6 +104,17 @@ pub(crate) fn pack_coils(bits: &[bool], out: &mut [u8]) -> Result<(), ExceptionC
         if value {
             out[index / 8] |= 1 << (index % 8);
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn pack_registers_be(registers: &[u16], out: &mut [u8]) -> Result<(), ExceptionCode> {
+    let byte_count = registers.len() * 2;
+    if out.len() < byte_count {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    for (chunk, &value) in out[..byte_count].chunks_exact_mut(2).zip(registers) {
+        chunk.copy_from_slice(&value.to_be_bytes());
     }
     Ok(())
 }
@@ -235,6 +246,31 @@ pub trait DataStore: Send + Sync {
         buf: &mut [u16],
     ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send;
 
+    /// Read holding registers directly into big-endian Modbus wire bytes.
+    ///
+    /// The default implementation delegates to [`Self::read_holding_registers`]
+    /// through a bounded scratch buffer. Stores with direct table access can
+    /// override this method to avoid the intermediate register slice and
+    /// response encoding pass.
+    fn read_holding_registers_be(
+        &self,
+        address: u16,
+        quantity: u16,
+        out: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let mut values = [0u16; MAX_READ_REGISTERS as usize];
+            let count = self
+                .read_holding_registers(address, quantity, &mut values)
+                .await?;
+            if count > values.len() {
+                return Err(ExceptionCode::ServerDeviceFailure);
+            }
+            pack_registers_be(&values[..count], out)?;
+            Ok(count)
+        }
+    }
+
     /// Write a single holding register.
     fn write_register(
         &self,
@@ -276,6 +312,30 @@ pub trait DataStore: Send + Sync {
         quantity: u16,
         buf: &mut [u16],
     ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send;
+
+    /// Read input registers directly into big-endian Modbus wire bytes.
+    ///
+    /// The default implementation delegates to [`Self::read_input_registers`]
+    /// through a bounded scratch buffer. Stores with direct table access can
+    /// override this method to avoid the intermediate register slice.
+    fn read_input_registers_be(
+        &self,
+        address: u16,
+        quantity: u16,
+        out: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let mut values = [0u16; MAX_READ_REGISTERS as usize];
+            let count = self
+                .read_input_registers(address, quantity, &mut values)
+                .await?;
+            if count > values.len() {
+                return Err(ExceptionCode::ServerDeviceFailure);
+            }
+            pack_registers_be(&values[..count], out)?;
+            Ok(count)
+        }
+    }
 
     // ── File Records (FC 0x14 / 0x15) — optional capability ────────
 

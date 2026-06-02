@@ -123,6 +123,14 @@ async fn register_read_partial_count_is_server_device_failure() {
 }
 
 #[tokio::test]
+async fn input_register_read_partial_count_is_server_device_failure() {
+    assert_eq!(
+        respond(&BadCountStore::new(1), &[0x04, 0x00, 0x00, 0x00, 0x02]).await,
+        vec![0x84, 0x04]
+    );
+}
+
+#[tokio::test]
 async fn register_read_overreported_count_is_server_device_failure() {
     assert_eq!(
         respond(&BadCountStore::new(126), &[0x03, 0x00, 0x00, 0x00, 0x02]).await,

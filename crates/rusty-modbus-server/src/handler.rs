@@ -416,33 +416,35 @@ async fn handle_read_registers<S: DataStore>(
         return encode_exception(fc.exception_code(), ec);
     }
 
-    let mut buf = [0u16; MAX_READ_REGISTERS as usize];
+    let byte_count = match checked_response_u8(usize::from(quantity.0) * 2, fc) {
+        Ok(byte_count) => byte_count,
+        Err(resp) => return resp,
+    };
+    let response_fc = if is_holding {
+        FunctionCode::ReadHoldingRegisters
+    } else {
+        FunctionCode::ReadInputRegisters
+    };
+    let mut response = vec![0u8; 2 + usize::from(byte_count)];
+    response[0] = response_fc.code();
+    response[1] = byte_count;
+
     let result = if is_holding {
         store
-            .read_holding_registers(address.0, quantity.0, &mut buf)
+            .read_holding_registers_be(address.0, quantity.0, &mut response[2..])
             .await
     } else {
         store
-            .read_input_registers(address.0, quantity.0, &mut buf)
+            .read_input_registers_be(address.0, quantity.0, &mut response[2..])
             .await
     };
 
     match result {
         Ok(count) => {
-            let count = match validate_store_count(count, quantity.0, buf.len()) {
-                Ok(count) => count,
-                Err(ec) => return encode_exception(fc.exception_code(), ec),
-            };
-            let byte_count = match checked_response_u8(count * 2, fc) {
-                Ok(byte_count) => byte_count,
-                Err(resp) => return resp,
-            };
-            let fc = if is_holding {
-                FunctionCode::ReadHoldingRegisters
-            } else {
-                FunctionCode::ReadInputRegisters
-            };
-            encode_register_read_response(fc, byte_count, &buf[..count])
+            if let Err(ec) = validate_store_count(count, quantity.0, usize::from(quantity.0)) {
+                return encode_exception(fc.exception_code(), ec);
+            }
+            response
         }
         Err(ec) => encode_exception(fc.exception_code(), ec),
     }

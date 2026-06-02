@@ -8,7 +8,8 @@ use rusty_modbus_types::ExceptionCode;
 use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT};
 
 use super::{
-    DataStore, pack_coils, packed_coil_value, validate_packed_coils, validate_register_values_be,
+    DataStore, pack_coils, pack_registers_be, packed_coil_value, validate_packed_coils,
+    validate_register_values_be,
 };
 
 /// Maximum number of entries in any Modbus data table.
@@ -395,6 +396,20 @@ impl DataStore for InMemoryStore {
         Ok(qty)
     }
 
+    async fn read_holding_registers_be(
+        &self,
+        address: u16,
+        quantity: u16,
+        out: &mut [u8],
+    ) -> Result<usize, ExceptionCode> {
+        let regs = self.holding_registers.read();
+        check_range(address, usize::from(quantity), regs.len())?;
+        let start = address as usize;
+        let qty = quantity as usize;
+        pack_registers_be(&regs[start..start + qty], out)?;
+        Ok(qty)
+    }
+
     async fn write_register(&self, address: u16, value: u16) -> Result<(), ExceptionCode> {
         let mut regs = self.holding_registers.write();
         check_range(address, 1, regs.len())?;
@@ -440,6 +455,20 @@ impl DataStore for InMemoryStore {
         let start = address as usize;
         let qty = quantity as usize;
         buf[..qty].copy_from_slice(&regs[start..start + qty]);
+        Ok(qty)
+    }
+
+    async fn read_input_registers_be(
+        &self,
+        address: u16,
+        quantity: u16,
+        out: &mut [u8],
+    ) -> Result<usize, ExceptionCode> {
+        let regs = self.input_registers.read();
+        check_range(address, usize::from(quantity), regs.len())?;
+        let start = address as usize;
+        let qty = quantity as usize;
+        pack_registers_be(&regs[start..start + qty], out)?;
         Ok(qty)
     }
 
