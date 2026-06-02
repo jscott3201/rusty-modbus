@@ -112,7 +112,9 @@ The `rusty-modbus` facade crate re-exports subcrates behind feature flags:
 
 ## Supported Function Codes
 
-The client exposes **14** typed function codes; the server handles **11**.
+The client exposes **14** typed function codes. The server dispatches all 19
+standard codes: the built-in `InMemoryStore` serves **17**, and the `DataStore`
+trait exposes hooks for the remaining two.
 
 | Function Code | Name | Client | Server |
 |---------------|------|--------|--------|
@@ -122,19 +124,26 @@ The client exposes **14** typed function codes; the server handles **11**.
 | 0x04 | Read Input Registers | yes | yes |
 | 0x05 | Write Single Coil | yes | yes |
 | 0x06 | Write Single Register | yes | yes |
+| 0x07 | Read Exception Status | no | yes |
+| 0x08 | Diagnostics | no | yes |
+| 0x0B | Get Comm Event Counter | no | hook † |
+| 0x0C | Get Comm Event Log | no | hook † |
 | 0x0F | Write Multiple Coils | yes | yes |
 | 0x10 | Write Multiple Registers | yes | yes |
-| 0x14 | Read File Record | yes | no |
-| 0x15 | Write File Record | yes | no |
+| 0x11 | Report Server ID | no | yes |
+| 0x14 | Read File Record | yes | yes |
+| 0x15 | Write File Record | yes | yes |
 | 0x16 | Mask Write Register | yes | yes |
 | 0x17 | Read/Write Multiple Registers | yes | yes |
-| 0x18 | Read FIFO Queue | yes | no |
+| 0x18 | Read FIFO Queue | yes | yes |
 | 0x2B/0x0E | Read Device Identification (MEI) | yes | yes |
 
-File Record (0x14/0x15) and FIFO Queue (0x18) are currently client-only.
+† Dispatched to a `DataStore` method; the built-in `InMemoryStore` returns
+`IllegalFunction`. Implement the trait method to serve device-specific counters.
 
-**Not yet implemented:** Read Exception Status (0x07), Diagnostics (0x08),
-Get Comm Event Counter/Log (0x0B/0x0C), Report Server ID (0x11).
+The serial-line diagnostics codes (0x07/0x08/0x0B/0x0C/0x11) are accepted over
+Modbus/TCP through `DataStore` methods with conformant defaults — override them
+for device-specific behavior.
 
 ## Development
 

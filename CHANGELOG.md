@@ -19,8 +19,13 @@ stack for Rust.
 - **Pipelined client** — generic `ModbusClient<S>` over any transport, with a
   16-slot transaction ring, background reader, and timeout sweep. 14 typed
   function codes.
-- **Server** — `DataStore`-backed async server handling 11 function codes,
-  including Read Device Identification (MEI).
+- **Server** — `DataStore`-backed async server dispatching all 19 standard
+  function codes. The built-in `InMemoryStore` serves register/coil access,
+  Read Device Identification (MEI), File Record (0x14/0x15), FIFO Queue (0x18),
+  Read Exception Status (0x07), Diagnostics loopback (0x08), and Report Server
+  ID (0x11); Get Comm Event Counter/Log (0x0B/0x0C) are exposed as `DataStore`
+  hooks with conformant defaults. The new capability methods are default-bodied,
+  so existing `DataStore` implementations keep compiling unchanged.
 - **Gateway** — Modbus/TCP ↔ RTU translation.
 - **Connection pool** — two-pool model (priority devices + LRU non-priority)
   per the Modbus/TCP Implementation Guide §4.2.1.
@@ -39,6 +44,9 @@ stack for Rust.
   request (previously every RTU request timed out).
 - **Gateway**: relayed responses are validated to come from the addressed unit
   with the expected function code before forwarding.
+- **Server**: an unrecognized Diagnostics (0x08) sub-function now returns
+  IllegalFunction (0x01) rather than IllegalDataValue (0x03), per V1.1b3 §6.8
+  (Figure 18).
 - **Pool**: genuine separate budgets for the priority and non-priority pools so
   idle priority connections can no longer starve non-priority requests; wired
   the per-device connection cap and exponential reconnect backoff; pre-connect
