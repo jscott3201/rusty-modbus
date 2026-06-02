@@ -9,8 +9,7 @@ use rusty_modbus_codec::response::{
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
-    Address, ExceptionCode, FunctionCode, MAX_FIFO_VALUES, MAX_PDU_SIZE, MAX_READ_REGISTERS,
-    MeiType, Quantity, UnitId,
+    Address, ExceptionCode, FunctionCode, MAX_FIFO_VALUES, MAX_PDU_SIZE, MeiType, Quantity, UnitId,
 };
 use tracing::debug;
 
@@ -545,31 +544,31 @@ async fn handle_read_write_multiple<S: DataStore>(
         );
     }
 
-    let mut buf = [0u16; MAX_READ_REGISTERS as usize];
+    let byte_count = match checked_response_u8(
+        usize::from(req.read_quantity.0) * 2,
+        FunctionCode::ReadWriteMultipleRegisters,
+    ) {
+        Ok(byte_count) => byte_count,
+        Err(resp) => return resp,
+    };
+    let mut response = vec![0u8; 2 + usize::from(byte_count)];
+    response[0] = FunctionCode::ReadWriteMultipleRegisters.code();
+    response[1] = byte_count;
+
     match store
-        .read_holding_registers(req.read_address.0, req.read_quantity.0, &mut buf)
+        .read_holding_registers_be(req.read_address.0, req.read_quantity.0, &mut response[2..])
         .await
     {
         Ok(count) => {
-            let count = match validate_store_count(count, req.read_quantity.0, buf.len()) {
-                Ok(count) => count,
-                Err(ec) => {
-                    return encode_exception(
-                        FunctionCode::ReadWriteMultipleRegisters.exception_code(),
-                        ec,
-                    );
-                }
-            };
-            let byte_count =
-                match checked_response_u8(count * 2, FunctionCode::ReadWriteMultipleRegisters) {
-                    Ok(byte_count) => byte_count,
-                    Err(resp) => return resp,
-                };
-            encode_register_read_response(
-                FunctionCode::ReadWriteMultipleRegisters,
-                byte_count,
-                &buf[..count],
-            )
+            if let Err(ec) =
+                validate_store_count(count, req.read_quantity.0, usize::from(req.read_quantity.0))
+            {
+                return encode_exception(
+                    FunctionCode::ReadWriteMultipleRegisters.exception_code(),
+                    ec,
+                );
+            }
+            response
         }
         Err(ec) => encode_exception(
             FunctionCode::ReadWriteMultipleRegisters.exception_code(),
@@ -751,17 +750,6 @@ fn checked_response_u8(value: usize, fc: FunctionCode) -> Result<u8, Vec<u8>> {
 fn checked_response_u16(value: usize, fc: FunctionCode) -> Result<u16, Vec<u8>> {
     u16::try_from(value)
         .map_err(|_| encode_exception(fc.exception_code(), ExceptionCode::ServerDeviceFailure))
-}
-
-fn encode_register_read_response(fc: FunctionCode, byte_count: u8, registers: &[u16]) -> Vec<u8> {
-    let data_len = usize::from(byte_count);
-    let mut pdu = vec![0u8; 2 + data_len];
-    pdu[0] = fc.code();
-    pdu[1] = byte_count;
-    for (i, &value) in registers.iter().enumerate() {
-        pdu[2 + i * 2..2 + i * 2 + 2].copy_from_slice(&value.to_be_bytes());
-    }
-    pdu
 }
 
 fn validate_store_count(
