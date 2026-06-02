@@ -38,7 +38,7 @@ impl Decoder for MbapCodec {
         }
 
         // Step 2: peek at the header fields via zero-copy overlay.
-        let header = MbapHeader::ref_from_bytes(&src[..MBAP_HEADER_LEN])
+        let header = *MbapHeader::ref_from_bytes(&src[..MBAP_HEADER_LEN])
             .map_err(|_| FrameError::Truncated)?;
 
         // Step 3: validate protocol identifier.
@@ -77,14 +77,10 @@ impl Decoder for MbapCodec {
         // Step 7: split the complete ADU from the buffer — O(1), no copy.
         let adu = src.split_to(total).freeze();
 
-        // Step 8: copy the 7-byte header (MbapHeader is Copy).
-        let header =
-            *MbapHeader::ref_from_bytes(&adu[..MBAP_HEADER_LEN]).expect("header already validated");
-
-        // Step 9: slice the PDU (function code + data) — zero-copy via Bytes::slice.
+        // Step 8: slice the PDU (function code + data) — zero-copy via Bytes::slice.
         let pdu = adu.slice(MBAP_HEADER_LEN..);
 
-        // Step 10: return the decoded frame.
+        // Step 9: return the decoded frame.
         Ok(Some(Frame {
             header: FrameHeader::Mbap(header),
             pdu,
