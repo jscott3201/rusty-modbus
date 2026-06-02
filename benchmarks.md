@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `6fd41df` base plus this Docker benchmark-suite refresh |
+| Git commit | `a874c19` base plus this codec benchmark-baseline refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -50,6 +50,12 @@ The local stress script now runs the stress binary in release mode by default:
 
 ```bash
 cargo run --release -p rusty-modbus-benchmarks --bin stress-test -- ...
+```
+
+Codec/framing microbenchmarks are run with:
+
+```bash
+scripts/bench-local.sh codec --quick --noplot
 ```
 
 ## Results
@@ -131,6 +137,56 @@ These image sizes were collected with `docker inspect` after local arm64 builds.
 - No throughput regression is visible from the recent strict codec validation
   changes; the refreshed numbers are close to the previous `4e88718` baseline.
 
+## Codec and Zero-Copy Direction
+
+The current codec already uses the most important zero-copy pattern for Modbus:
+decode operates over caller-owned `&[u8]`, variable-length response payloads
+borrow from that buffer, and owned response types slice `bytes::Bytes` instead of
+copying payloads.
+
+`zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
+header is represented as a packed, network-endian wire-format type and the frame
+decoder overlays it onto the read buffer before slicing the PDU. The benchmark
+suite now includes MBAP decode with per-iteration allocation and MBAP decode
+with a reused receive buffer so future changes can distinguish parser cost from
+buffer allocation cost.
+
+The PDU codec remains hand-written for now. Most PDU decode paths read a few
+big-endian `u16` fields and then borrow the remaining payload. Extending
+`zerocopy` into every small request/response body would add layout types and
+derive requirements without an obvious copy to remove. `rkyv` is not a fit for
+the Modbus wire path: it is designed for data serialized into rkyv's archived
+layout, while Modbus is an external big-endian protocol format with per-function
+validation rules.
+
+The codec quick smoke was run with `scripts/bench-local.sh codec --quick --noplot`.
+Treat these as hotspot-shape indicators, not release-grade Criterion baselines:
+
+| Path | Quick-mode timing | Signal |
+|---|---:|---|
+| Max FC 0x10 request decode | 1.58 ns | Decode validates the envelope and borrows payload bytes. |
+| Max FC 0x03 response decode | 1.53 ns | Response decode borrows register payload bytes. |
+| Max FC 0x03 response decode + register iteration | 44.6 ns | Register value access, not decode, is the first payload-sized cost. |
+| Owned `Bytes` FC 0x03 dispatch | 12.3 ns | Owned slicing/refcount path is still small. |
+| MBAP decode, fresh buffer per iteration | 31.6 ns | Includes receive-buffer allocation/copy shape. |
+| MBAP decode, reused buffer | 13.9 ns | Isolates framing/parser work more closely. |
+| Max register write unpack to `Vec<u16>` | 63.1 ns | Server write materialization is larger than decode. |
+| Max coil write unpack to `Vec<bool>` | 377.5 ns | Packed-bit expansion is the strongest current allocation/copy candidate. |
+
+The most likely next performance wins are adjacent to, not inside, raw PDU
+parsing:
+
+- Keep Criterion baselines around maximum-size request decode, response
+  dispatch, owned `Bytes` dispatch, register iteration, and write-payload
+  unpacking before changing parser internals.
+- Evaluate write-path datastore APIs that can consume packed register/coil
+  payloads without first materializing temporary `Vec<u16>` or `Vec<bool>`
+  values in the server handler.
+- Add multi-client stress matrices to separate protocol overhead from Tokio task
+  scheduling and connection scaling.
+- Add allocation profiling for server handlers and Python bindings so zero-copy
+  decisions target measured heap churn instead of parser aesthetics.
+
 ## Caveats
 
 - These numbers are local loopback measurements on one developer machine. They
@@ -151,7 +207,7 @@ These image sizes were collected with `docker inspect` after local arm64 builds.
 - Multi-client plus per-client in-flight matrix to separate connection scaling
   from single-connection pipelining.
 - Python binding throughput against a Python baseline.
-- Codec-only Criterion baselines for owned response decoding and MBAP frame
-  encode/decode before touching hot-path internals.
+- Allocation profiling for server write handlers that currently unpack request
+  payloads into temporary vectors before calling the datastore.
 - Machine-readable benchmark history so future PRs can compare against this
   baseline automatically.
