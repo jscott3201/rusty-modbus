@@ -7,11 +7,12 @@ use rusty_modbus_codec::request::{
 };
 use rusty_modbus_codec::response::{ReadCoilsResponse, ReadHoldingRegistersResponse};
 use rusty_modbus_codec::{RequestPdu, ResponsePdu, decode_request, decode_response};
-use rusty_modbus_frame::crc::crc16;
+use rusty_modbus_frame::crc::{crc16, verify_crc};
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_frame::mbap::MbapCodec;
 use rusty_modbus_frame::owned::OwnedResponsePdu;
-use rusty_modbus_types::{Address, MbapHeader, Quantity};
+use rusty_modbus_frame::rtu_tcp::RtuOverTcpCodec;
+use rusty_modbus_types::{Address, MAX_RTU_ADU_SIZE, MbapHeader, Quantity};
 use tokio_util::codec::{Decoder, Encoder};
 
 // ── Encode benchmarks ────────────────────────────────────────────
@@ -345,6 +346,69 @@ fn bench_mbap_decode_frame_reused_buffer(c: &mut Criterion) {
     });
 }
 
+// ── RTU-over-TCP framing benchmarks ──────────────────────────────
+
+fn bench_rtu_tcp_decode_frame(c: &mut Criterion) {
+    let read_request = rtu_wire_frame(1, &[0x03, 0x00, 0x6B, 0x00, 0x03]);
+    let max_frame = rtu_wire_frame_without_early_crc_match(1, 253);
+    let corrupt_full = corrupt_rtu_buffer_without_crc_match(MAX_RTU_ADU_SIZE);
+
+    let mut group = c.benchmark_group("rtu_tcp_decode_frame");
+    group.bench_with_input(
+        BenchmarkId::from_parameter("read_request"),
+        &read_request[..],
+        |b, wire| {
+            b.iter(|| {
+                let mut buf = BytesMut::from(black_box(wire));
+                let mut codec = RtuOverTcpCodec;
+                black_box(codec.decode(&mut buf).unwrap().unwrap());
+            });
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::from_parameter("max_pdu"),
+        &max_frame[..],
+        |b, wire| {
+            b.iter(|| {
+                let mut buf = BytesMut::from(black_box(wire));
+                let mut codec = RtuOverTcpCodec;
+                black_box(codec.decode(&mut buf).unwrap().unwrap());
+            });
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::from_parameter("corrupt_full_buffer"),
+        &corrupt_full[..],
+        |b, wire| {
+            b.iter(|| {
+                let mut buf = BytesMut::from(black_box(wire));
+                let mut codec = RtuOverTcpCodec;
+                black_box(codec.decode(&mut buf).unwrap().is_none());
+            });
+        },
+    );
+    group.finish();
+}
+
+fn bench_rtu_tcp_crc_scan_strategy(c: &mut Criterion) {
+    let corrupt_full = corrupt_rtu_buffer_without_crc_match(MAX_RTU_ADU_SIZE);
+
+    let mut group = c.benchmark_group("rtu_tcp_crc_scan_strategy");
+    group.bench_function("prefix_rescan_corrupt_full_buffer", |b| {
+        b.iter(|| {
+            black_box(prefix_rescan_crc_boundary(black_box(&corrupt_full)).is_none());
+        });
+    });
+    group.bench_function("codec_incremental_corrupt_full_buffer", |b| {
+        b.iter(|| {
+            let mut buf = BytesMut::from(black_box(&corrupt_full[..]));
+            let mut codec = RtuOverTcpCodec;
+            black_box(codec.decode(&mut buf).unwrap().is_none());
+        });
+    });
+    group.finish();
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn read_holding_registers_response_data(register_count: usize) -> Vec<u8> {
     let byte_count = register_count * 2;
@@ -390,6 +454,55 @@ fn register_value_bytes(register_count: usize) -> Vec<u8> {
     bytes
 }
 
+fn rtu_wire_frame(unit_id: u8, pdu: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(1 + pdu.len() + 2);
+    frame.push(unit_id);
+    frame.extend_from_slice(pdu);
+    let crc = crc16(&frame);
+    frame.extend_from_slice(&crc.to_le_bytes());
+    frame
+}
+
+fn rtu_wire_frame_without_early_crc_match(unit_id: u8, pdu_len: usize) -> Vec<u8> {
+    for salt in 0u8..=u8::MAX {
+        let pdu: Vec<u8> = (0..pdu_len)
+            .map(|i| {
+                let byte = u8::try_from(i % 251).expect("modulo 251 fits u8");
+                byte.wrapping_mul(29).wrapping_add(0x3D ^ salt)
+            })
+            .collect();
+        let frame = rtu_wire_frame(unit_id, &pdu);
+        if (4..frame.len()).all(|candidate_len| !verify_crc(&frame[..candidate_len])) {
+            return frame;
+        }
+    }
+    unreachable!("salted deterministic frames should produce a no-early-match case");
+}
+
+fn corrupt_rtu_buffer_without_crc_match(len: usize) -> Vec<u8> {
+    for salt in 0u8..=u8::MAX {
+        let candidate: Vec<u8> = (0..len)
+            .map(|i| {
+                let byte = u8::try_from(i % 251).expect("modulo 251 fits u8");
+                byte.wrapping_mul(37).wrapping_add(0xA5 ^ salt)
+            })
+            .collect();
+        if (4..=len).all(|candidate_len| !verify_crc(&candidate[..candidate_len])) {
+            return candidate;
+        }
+    }
+    unreachable!("salted deterministic buffers should produce a CRC-miss case");
+}
+
+fn prefix_rescan_crc_boundary(src: &[u8]) -> Option<usize> {
+    for candidate_len in 4..=src.len().min(MAX_RTU_ADU_SIZE) {
+        if verify_crc(&src[..candidate_len]) {
+            return Some(candidate_len);
+        }
+    }
+    None
+}
+
 criterion_group!(
     encode,
     bench_encode_read_holding_registers,
@@ -417,4 +530,9 @@ criterion_group!(
     bench_mbap_decode_frame,
     bench_mbap_decode_frame_reused_buffer
 );
-criterion_main!(encode, decode, crc, mbap);
+criterion_group!(
+    rtu_tcp,
+    bench_rtu_tcp_decode_frame,
+    bench_rtu_tcp_crc_scan_strategy
+);
+criterion_main!(encode, decode, crc, mbap, rtu_tcp);

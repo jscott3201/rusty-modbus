@@ -187,6 +187,17 @@ write paths to the in-memory store:
 | Max coil write from packed wire bytes | 691 ns | Direct packed path avoids the previous temporary `Vec<bool>`. |
 | Max coil packed bytes via `Vec<bool>` | 746 ns | Approximate old handler shape; packed-bit expansion dominates. |
 
+The RTU-over-TCP CRC scan quick smoke was run with
+`scripts/bench-local.sh codec rtu_tcp --quick --noplot` after changing the
+frame-boundary scan to update CRC state incrementally:
+
+| Path | Quick-mode timing | Signal |
+|---|---:|---|
+| RTU/TCP FC 0x03 read request decode | 30.2 ns | Short-frame happy path remains tiny. |
+| RTU/TCP max-size valid frame decode | 430 ns | Full-frame scan stays sub-microsecond. |
+| RTU/TCP full corrupt buffer decode | 382 ns | No-match path now scans once instead of rehashing every prefix. |
+| Old-style prefix rescan, full corrupt buffer | 40.0 us | Benchmark-only comparator for the previous scan strategy. |
+
 The most likely next performance wins are adjacent to, not inside, raw PDU
 parsing:
 
