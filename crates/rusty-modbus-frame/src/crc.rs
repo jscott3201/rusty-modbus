@@ -29,10 +29,14 @@ const CRC_TABLE: [u16; 256] = {
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
     for &byte in data {
-        let index = (crc ^ u16::from(byte)) & 0xFF;
-        crc = (crc >> 8) ^ CRC_TABLE[index as usize];
+        crc = crc16_update(crc, byte);
     }
     crc
+}
+
+pub(crate) fn crc16_update(crc: u16, byte: u8) -> u16 {
+    let index = (crc ^ u16::from(byte)) & 0xFF;
+    (crc >> 8) ^ CRC_TABLE[index as usize]
 }
 
 /// Verify that the last 2 bytes of `frame` are a valid CRC of the preceding bytes.
