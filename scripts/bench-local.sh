@@ -5,6 +5,7 @@
 #   scripts/bench-local.sh smoke
 #   scripts/bench-local.sh codec --quick
 #   scripts/bench-local.sh store --quick
+#   scripts/bench-local.sh handler --quick
 #   scripts/bench-local.sh tcp --quick --noplot
 #   scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --json
 set -euo pipefail
@@ -35,6 +36,9 @@ case "$mode" in
   store)
     run cargo bench -p rusty-modbus-benchmarks --bench server_store -- "$@"
     ;;
+  handler)
+    run cargo bench -p rusty-modbus-benchmarks --bench server_handler -- "$@"
+    ;;
   tcp)
     run cargo bench -p rusty-modbus-benchmarks --bench tcp_throughput -- "$@"
     ;;
@@ -49,12 +53,13 @@ case "$mode" in
     ;;
   *)
     cat >&2 <<'USAGE'
-Usage: scripts/bench-local.sh [smoke|codec|store|tcp|tcp-pipelined|stress|all] [args...]
+Usage: scripts/bench-local.sh [smoke|codec|store|handler|tcp|tcp-pipelined|stress|all] [args...]
 
 Examples:
   scripts/bench-local.sh smoke
   scripts/bench-local.sh codec --quick --noplot
   scripts/bench-local.sh store --quick --noplot
+  scripts/bench-local.sh handler --quick --noplot
   scripts/bench-local.sh tcp-pipelined --quick --noplot
   scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --json
 USAGE

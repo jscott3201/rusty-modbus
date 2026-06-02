@@ -57,6 +57,7 @@ Codec/framing microbenchmarks are run with:
 ```bash
 scripts/bench-local.sh codec --quick --noplot
 scripts/bench-local.sh store --quick --noplot
+scripts/bench-local.sh handler --quick --noplot
 ```
 
 ## Results
@@ -216,12 +217,28 @@ frame-boundary scan to update CRC state incrementally:
 | RTU/TCP full corrupt buffer decode | 382 ns | No-match path now scans once instead of rehashing every prefix. |
 | Old-style prefix rescan, full corrupt buffer | 40.0 us | Benchmark-only comparator for the previous scan strategy. |
 
+The server handler quick smoke was run with
+`scripts/bench-local.sh handler --quick --noplot` after adding direct
+`process_request` baselines. These rows include request decode, protocol
+validation, in-memory store access, and response construction, but exclude TCP,
+TLS, RTU framing, and client-side work:
+
+| Path | Quick-mode timing | Signal |
+|---|---:|---|
+| FC01 max coil read | 799 ns | Packed-bit response generation remains the largest measured handler path. |
+| FC03 max holding-register read | 29.4 ns | Direct BE register response path keeps full-size reads small. |
+| FC10 max register write | 28.3 ns | Direct BE write path avoids the old request-payload `Vec<u16>`. |
+| FC14 two-group file read | 68.6 ns | Direct file-record response writes keep multi-group reads sub-100 ns. |
+| FC17 max read/write registers | 43.7 ns | Read half now writes directly into the final response bytes. |
+| FC18 FIFO two-value read | 26.5 ns | Direct FIFO response path is comparable to simple register handlers. |
+| FC2B basic device identification | 116 ns | Device ID response construction is now a visible handler-level allocation target. |
+
 The most likely next performance wins are adjacent to, not inside, raw PDU
 parsing:
 
 - Keep Criterion baselines around maximum-size request decode, response
-  dispatch, owned `Bytes` dispatch, register iteration, and packed write paths
-  before changing parser internals.
+  dispatch, owned `Bytes` dispatch, register iteration, packed write paths, and
+  server handler dispatch before changing parser internals.
 - Continue evaluating diagnostics and device-identification paths where
   temporary vectors or store cloning still dominate more than borrowed decode.
 - Add multi-client stress matrices to separate protocol overhead from Tokio task
