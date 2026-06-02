@@ -102,6 +102,25 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
     }
 
+    /// Create a client over an RTU transport (RTU-over-TCP or serial).
+    ///
+    /// RTU is half-duplex: exactly one request may be outstanding at a time, and
+    /// RTU frames carry no transaction ID. This constructor therefore forces
+    /// `max_in_flight = 1`, and the reader matches each RTU response to the
+    /// single outstanding request. Use [`from_transport`](Self::from_transport)
+    /// for Modbus/TCP, which supports full 16-slot pipelining.
+    ///
+    /// This fixes RTU request/response correlation. Serial-line framing timing
+    /// (t3.5/t1.5) is a separate concern handled by the serial transport.
+    pub fn from_rtu_transport<R: TransportStream + Send + 'static>(
+        sink: S,
+        stream: R,
+        mut config: ClientConfig,
+    ) -> Self {
+        config.max_in_flight = 1;
+        Self::from_transport(sink, stream, config)
+    }
+
     /// Whether the client is currently connected.
     ///
     /// Reflects graceful close (peer FIN) and transport errors surfaced by the
