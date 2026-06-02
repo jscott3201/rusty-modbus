@@ -4,6 +4,22 @@ use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
 use rusty_modbus_types::{DiagnosticSubFunction, FunctionCode};
 
+fn check_diagnostic_data_len_decode(data: &[u8]) -> Result<(), DecodeError> {
+    if data.len().is_multiple_of(2) {
+        Ok(())
+    } else {
+        Err(DecodeError::InvalidDiagnosticDataLength { length: data.len() })
+    }
+}
+
+fn check_diagnostic_data_len_encode(data: &[u8]) -> Result<(), EncodeError> {
+    if data.len().is_multiple_of(2) {
+        Ok(())
+    } else {
+        Err(EncodeError::InvalidDiagnosticDataLength { length: data.len() })
+    }
+}
+
 /// Response to a Read Exception Status request (FC 0x07).
 #[derive(Debug)]
 pub struct ReadExceptionStatusResponse {
@@ -61,7 +77,8 @@ impl<'buf> DiagnosticsResponse<'buf> {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
-    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
+    /// Returns `DecodeError::InvalidDiagnosticDataLength` if the payload is not
+    /// an even number of bytes.
     pub fn decode(data: &'buf [u8]) -> Result<Self, DecodeError> {
         if data.len() < 2 {
             return Err(DecodeError::Truncated {
@@ -72,9 +89,11 @@ impl<'buf> DiagnosticsResponse<'buf> {
         let raw_sub = u16::from_be_bytes([data[0], data[1]]);
         let sub_function = DiagnosticSubFunction::from_raw(raw_sub)
             .ok_or(DecodeError::UnknownDiagnosticSubFunction(raw_sub))?;
+        let payload = &data[2..];
+        check_diagnostic_data_len_decode(payload)?;
         Ok(Self {
             sub_function,
-            data: &data[2..],
+            data: payload,
         })
     }
 }
@@ -88,6 +107,7 @@ impl Encode for DiagnosticsResponse<'_> {
                 available: buf.len(),
             });
         }
+        check_diagnostic_data_len_encode(self.data)?;
         EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::Diagnostics.code();
         let sf = self.sub_function.code().to_be_bytes();

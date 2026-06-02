@@ -1,6 +1,6 @@
 //! Spec V1.1b3 §6.8 — FC 08 (0x08) Diagnostics conformance tests.
 
-use rusty_modbus_codec::{decode_request, decode_response};
+use rusty_modbus_codec::{DecodeError, decode_request, decode_response};
 use rusty_modbus_types::DiagnosticSubFunction;
 
 // Spec example p.24: Return Query Data, sub-function 0x0000, data 0xA537
@@ -37,6 +37,22 @@ fn truncated() {
     // FC08 needs at least sub-function (2 bytes)
     assert!(matches!(
         decode_request(&[0x08, 0x00]),
-        Err(rusty_modbus_codec::DecodeError::Truncated { .. })
+        Err(DecodeError::Truncated { .. })
     ));
+}
+
+#[test]
+fn odd_request_data_length_is_malformed() {
+    assert_eq!(
+        decode_request(&[0x08, 0x00, 0x00, 0xA5]).unwrap_err(),
+        DecodeError::InvalidDiagnosticDataLength { length: 1 }
+    );
+}
+
+#[test]
+fn odd_response_data_length_is_malformed() {
+    assert_eq!(
+        decode_response(&[0x08, 0x00, 0x00, 0xA5]).unwrap_err(),
+        DecodeError::InvalidDiagnosticDataLength { length: 1 }
+    );
 }

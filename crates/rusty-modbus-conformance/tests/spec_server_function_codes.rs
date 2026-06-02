@@ -597,12 +597,29 @@ async fn fc08_return_query_data_empty_payload() {
 }
 
 #[tokio::test]
+async fn fc08_odd_request_payload_is_illegal_data_value() {
+    let s = store();
+    assert_eq!(
+        respond(&s, &[0x08, 0x00, 0x00, 0x12]).await,
+        vec![0x88, 0x03]
+    );
+}
+
+#[tokio::test]
 async fn fc08_diagnostic_response_payload_at_pdu_cap_is_ok() {
     let resp = respond(&SizedDiagnosticStore { len: 250 }, &[0x08, 0x00, 0x00]).await;
 
     assert_eq!(resp.len(), MAX_PDU_SIZE);
     assert_eq!(&resp[..3], &[0x08, 0x00, 0x00]);
     assert!(resp[3..].iter().all(|&b| b == 0x5A));
+}
+
+#[tokio::test]
+async fn fc08_odd_response_payload_is_server_device_failure() {
+    assert_eq!(
+        respond(&SizedDiagnosticStore { len: 249 }, &[0x08, 0x00, 0x00]).await,
+        vec![0x88, 0x04]
+    );
 }
 
 #[tokio::test]
