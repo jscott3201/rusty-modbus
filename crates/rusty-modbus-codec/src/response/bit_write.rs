@@ -47,6 +47,7 @@ impl Encode for WriteSingleCoilResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteSingleCoil.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -100,6 +101,7 @@ impl Encode for WriteMultipleCoilsResponse {
             });
         }
         EncodeError::check_quantity(self.quantity.0, MAX_WRITE_COILS)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteMultipleCoils.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];

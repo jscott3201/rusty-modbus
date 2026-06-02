@@ -55,6 +55,7 @@ impl Encode for ExceptionResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = self.function_code.exception_code();
         buf[1] = self.exception_code.code();
         Ok(len)

@@ -45,6 +45,7 @@ impl Encode for EncapsulatedInterfaceResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::EncapsulatedInterfaceTransport.code();
         buf[1] = self.mei_type.code();
         buf[2..2 + self.data.len()].copy_from_slice(self.data);

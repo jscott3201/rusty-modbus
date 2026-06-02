@@ -55,6 +55,7 @@ impl Encode for ReadHoldingRegistersRequest {
             });
         }
         EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadHoldingRegisters.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());
@@ -116,6 +117,7 @@ impl Encode for ReadInputRegistersRequest {
             });
         }
         EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadInputRegisters.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());

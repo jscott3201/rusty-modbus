@@ -1,6 +1,6 @@
 //! Top-level PDU decode dispatchers.
 
-use rusty_modbus_types::FunctionCode;
+use rusty_modbus_types::{FunctionCode, MAX_PDU_SIZE};
 
 use crate::error::DecodeError;
 use crate::pdu::{PduRef, RequestPdu, ResponsePdu};
@@ -27,8 +27,15 @@ use crate::response::{
 ///
 /// # Errors
 ///
-/// Returns [`DecodeError::Truncated`] if the slice is empty.
+/// Returns [`DecodeError::PduTooLarge`] if `pdu` exceeds the Modbus 253-byte
+/// PDU ceiling. Returns [`DecodeError::Truncated`] if the slice is empty.
 pub fn decode_pdu_ref(pdu: &[u8]) -> Result<PduRef<'_>, DecodeError> {
+    if pdu.len() > MAX_PDU_SIZE {
+        return Err(DecodeError::PduTooLarge {
+            length: pdu.len(),
+            maximum: MAX_PDU_SIZE,
+        });
+    }
     if pdu.is_empty() {
         return Err(DecodeError::Truncated {
             expected: 1,

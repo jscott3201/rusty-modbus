@@ -75,6 +75,7 @@ impl Encode for ReadFileRecordResponse<'_> {
             FILE_RECORD_MAX_BYTE_COUNT,
         )?;
         EncodeError::check_byte_count(usize::from(self.byte_count), self.data.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadFileRecord.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.data);
@@ -141,6 +142,7 @@ impl Encode for WriteFileRecordResponse<'_> {
             FILE_RECORD_MAX_BYTE_COUNT,
         )?;
         EncodeError::check_byte_count(usize::from(self.byte_count), self.data.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteFileRecord.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.data);

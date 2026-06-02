@@ -43,6 +43,7 @@ impl Encode for ReadFifoQueueRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadFifoQueue.code();
         buf[1..3].copy_from_slice(&self.fifo_pointer_address.0.to_be_bytes());
         Ok(len)

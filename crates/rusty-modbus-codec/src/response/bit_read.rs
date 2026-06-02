@@ -67,6 +67,7 @@ impl Encode for ReadCoilsResponse<'_> {
             });
         }
         EncodeError::check_byte_count(usize::from(self.byte_count), self.coil_status.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadCoils.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.coil_status);
@@ -141,6 +142,7 @@ impl Encode for ReadDiscreteInputsResponse<'_> {
             });
         }
         EncodeError::check_byte_count(usize::from(self.byte_count), self.coil_status.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadDiscreteInputs.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.coil_status);

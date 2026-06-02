@@ -55,6 +55,7 @@ impl Encode for ReadDeviceIdentificationRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::EncapsulatedInterfaceTransport.code();
         buf[1] = MeiType::ReadDeviceIdentification.code();
         buf[2] = self.device_id_code.code();

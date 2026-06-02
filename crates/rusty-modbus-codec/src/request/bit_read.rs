@@ -55,6 +55,7 @@ impl Encode for ReadCoilsRequest {
             });
         }
         EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadCoils.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());
@@ -116,6 +117,7 @@ impl Encode for ReadDiscreteInputsRequest {
             });
         }
         EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadDiscreteInputs.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());

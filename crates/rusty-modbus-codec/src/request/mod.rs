@@ -34,7 +34,8 @@ pub trait Encode {
     /// # Errors
     ///
     /// Returns [`EncodeError::BufferTooSmall`] if `buf` is shorter than
-    /// [`encoded_len`](Self::encoded_len).
+    /// [`encoded_len`](Self::encoded_len). Returns [`EncodeError::PduTooLarge`]
+    /// if the encoded PDU would exceed the Modbus 253-byte ceiling.
     fn encode_into(&self, buf: &mut [u8]) -> Result<usize, EncodeError>;
 
     /// Total encoded length in bytes (including the function code byte).
