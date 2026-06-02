@@ -5,13 +5,14 @@ Last updated: 2026-06-02
 This document records the current local performance baseline for the Modbus/TCP
 client/server path. The focus of this run is single-connection pipelining: one
 TCP client connection, multiple concurrent in-flight requests, and a local
-loopback server backed by the in-memory store.
+loopback server backed by the in-memory store. This refresh includes the server
+read-response direct encoding change in `4e88718`.
 
 ## Environment
 
 | Item | Value |
 |---|---|
-| Git commit | `7a49383` |
+| Git commit | `4e88718` |
 | Host | Apple M5, 10 cores, 16 GiB memory |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -55,11 +56,11 @@ Workload: repeated FC 0x03 reads of 10 holding registers.
 
 | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 57,483 | 287,417 | 0.016 | 0.023 | 0.032 | 0.052 | 1.605 | 0 | 0 |
-| 2 | 99,567 | 497,837 | 0.018 | 0.030 | 0.047 | 0.084 | 1.607 | 0 | 1 |
-| 4 | 165,006 | 825,031 | 0.023 | 0.032 | 0.040 | 0.066 | 0.180 | 0 | 1 |
-| 8 | 239,180 | 1,195,900 | 0.031 | 0.048 | 0.067 | 0.111 | 0.329 | 0 | 1 |
-| 16 | 284,508 | 1,422,538 | 0.055 | 0.081 | 0.095 | 0.135 | 0.261 | 0 | 1 |
+| 1 | 58,106 | 290,531 | 0.016 | 0.021 | 0.031 | 0.038 | 0.102 | 0 | 0 |
+| 2 | 104,185 | 520,925 | 0.017 | 0.028 | 0.034 | 0.042 | 0.103 | 0 | 1 |
+| 4 | 167,351 | 836,757 | 0.023 | 0.032 | 0.039 | 0.058 | 0.132 | 0 | 1 |
+| 8 | 248,483 | 1,242,414 | 0.031 | 0.044 | 0.052 | 0.067 | 0.141 | 0 | 1 |
+| 16 | 289,045 | 1,445,225 | 0.055 | 0.079 | 0.090 | 0.107 | 0.382 | 0 | 1 |
 
 ### Mixed Read/Write
 
@@ -67,16 +68,16 @@ Workload: alternating FC 0x03 reads and FC 0x06 write-single-register requests.
 
 | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 58,630 | 293,151 | 0.016 | 0.022 | 0.031 | 0.043 | 0.099 | 0 | 0 |
-| 2 | 105,098 | 525,489 | 0.017 | 0.028 | 0.036 | 0.064 | 0.444 | 0 | 1 |
-| 4 | 170,311 | 851,554 | 0.022 | 0.031 | 0.038 | 0.060 | 0.139 | 0 | 1 |
-| 8 | 247,621 | 1,238,104 | 0.031 | 0.044 | 0.052 | 0.068 | 0.152 | 0 | 1 |
-| 16 | 289,059 | 1,445,295 | 0.055 | 0.079 | 0.091 | 0.116 | 0.199 | 0 | 1 |
+| 1 | 58,412 | 292,058 | 0.016 | 0.020 | 0.031 | 0.038 | 0.123 | 0 | 0 |
+| 2 | 106,182 | 530,909 | 0.017 | 0.028 | 0.033 | 0.043 | 0.136 | 0 | 1 |
+| 4 | 171,518 | 857,589 | 0.022 | 0.031 | 0.037 | 0.049 | 0.131 | 0 | 0 |
+| 8 | 245,922 | 1,229,610 | 0.031 | 0.045 | 0.052 | 0.066 | 0.134 | 0 | 1 |
+| 16 | 289,753 | 1,448,766 | 0.055 | 0.079 | 0.089 | 0.105 | 0.185 | 0 | 1 |
 
 ## Findings
 
 - Single-connection pipelining scales materially on loopback. Depth 16 delivered
-  about 4.95x the depth-1 read throughput and about 4.93x the depth-1 mixed
+  about 4.98x the depth-1 read throughput and about 4.96x the depth-1 mixed
   throughput.
 - All rows completed with zero request errors.
 - Tail latency increased as expected with deeper queues, but p99 stayed below
