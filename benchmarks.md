@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `9baacb6` base plus this FIFO-read benchmark refresh |
+| Git commit | `9c840bf` base plus this file-record wire-byte benchmark refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -145,11 +145,12 @@ decode operates over caller-owned `&[u8]`, variable-length response payloads
 borrow from that buffer, and owned response types slice `bytes::Bytes` instead of
 copying payloads.
 
-On the server side, the in-memory store now exposes direct wire-byte read hooks
-for FC 0x01/0x02 bit tables, FC 0x03/0x04 register tables, and FC 0x18 FIFO
-queues. The handler allocates the final response PDU once and lets the store
-write directly into the wire payload bytes, avoiding the previous scratch
-buffers, queue clone, and second response-encoding pass on common read paths.
+On the server side, the in-memory store now exposes direct wire-byte hooks for
+FC 0x01/0x02 bit tables, FC 0x03/0x04 register tables, FC 0x14/0x15 file
+records, and FC 0x18 FIFO queues. The handler allocates the final response PDU
+once and lets the store write directly into the wire payload bytes, avoiding the
+previous scratch buffers, queue clone, per-group `Vec<u16>` materialization, and
+second response-encoding pass on common paths.
 
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
@@ -186,18 +187,23 @@ paths to the in-memory store:
 
 | Path | Quick-mode timing | Signal |
 |---|---:|---|
-| Max register write from `&[u16]` | 6.60 ns | Slice baseline for existing store API. |
-| Max register write from wire bytes | 6.49 ns | Direct packed path avoids the previous temporary `Vec<u16>`. |
-| Max register wire bytes via `Vec<u16>` | 67.9 ns | Approximate old handler shape. |
-| Max register read to BE wire bytes | 27.6 ns | Store writes directly into the response payload buffer. |
-| Max register read via `u16` buffer then pack | 36.9 ns | Approximate old handler shape; extra scratch copy/encode pass costs ~25%. |
-| Max coil write from `&[bool]` | 23.4 ns | Slice baseline for existing store API. |
-| Max coil write from packed wire bytes | 691 ns | Direct packed path avoids the previous temporary `Vec<bool>`. |
-| Max coil packed bytes via `Vec<bool>` | 746 ns | Approximate old handler shape; packed-bit expansion dominates. |
-| Max coil read to packed wire bytes | 809 ns | Store writes directly into the response payload buffer. |
-| Max coil read via bool buffer then pack | 980 ns | Approximate old handler shape; extra scratch fill/copy/pack pass costs ~17%. |
-| Max FIFO read to BE wire bytes | 14.3 ns | Store writes the queue snapshot directly into the response payload buffer. |
-| Max FIFO read via cloned `Vec<u16>` then pack | 27.0 ns | Approximate old handler shape; queue clone and second pack pass roughly double this microbench. |
+| Max register write from `&[u16]` | 11.9 ns | Slice baseline for existing store API. |
+| Max register write from wire bytes | 12.3 ns | Direct packed path avoids the previous temporary `Vec<u16>`. |
+| Max register wire bytes via `Vec<u16>` | 112 ns | Approximate old handler shape. |
+| Max register read to BE wire bytes | 51.2 ns | Store writes directly into the response payload buffer. |
+| Max register read via `u16` buffer then pack | 65.8 ns | Approximate old handler shape; extra scratch copy/encode pass costs ~22%. |
+| Max coil write from `&[bool]` | 43.3 ns | Slice baseline for existing store API. |
+| Max coil write from packed wire bytes | 1.24 us | Direct packed path avoids the previous temporary `Vec<bool>`. |
+| Max coil packed bytes via `Vec<bool>` | 1.27 us | Approximate old handler shape; packed-bit expansion dominates. |
+| Max coil read to packed wire bytes | 1.42 us | Store writes directly into the response payload buffer. |
+| Max coil read via bool buffer then pack | 1.53 us | Approximate old handler shape; extra scratch fill/copy/pack pass costs ~7%. |
+| Max FIFO read to BE wire bytes | 26.3 ns | Store writes the queue snapshot directly into the response payload buffer. |
+| Max FIFO read via cloned `Vec<u16>` then pack | 50.9 ns | Approximate old handler shape; queue clone and second pack pass roughly double this microbench. |
+| Max file-record read to BE wire bytes | 59.1 ns | Store writes a 122-register file sub-record directly into the response payload buffer. |
+| Max file-record read via `u16` buffer then pack | 70.9 ns | Approximate old FC14 handler shape; extra scratch copy/encode pass costs ~17%. |
+| Max file-record write from `&[u16]` | 22.2 ns | Slice baseline for existing store API. |
+| Max file-record write from wire bytes | 19.0 ns | Direct FC15 path keeps borrowed request bytes through validation and avoids per-group allocation. |
+| Max file-record wire bytes via `Vec<u16>` | 117 ns | Approximate old FC15 handler shape; per-group vector materialization dominates. |
 
 The RTU-over-TCP CRC scan quick smoke was run with
 `scripts/bench-local.sh codec rtu_tcp --quick --noplot` after changing the
@@ -216,9 +222,8 @@ parsing:
 - Keep Criterion baselines around maximum-size request decode, response
   dispatch, owned `Bytes` dispatch, register iteration, and packed write paths
   before changing parser internals.
-- Continue evaluating server file-record, diagnostics, and device-identification
-  paths where temporary vectors or store cloning still dominate more than
-  borrowed decode.
+- Continue evaluating diagnostics and device-identification paths where
+  temporary vectors or store cloning still dominate more than borrowed decode.
 - Add multi-client stress matrices to separate protocol overhead from Tokio task
   scheduling and connection scaling.
 - Add allocation profiling for server handlers and Python bindings so zero-copy

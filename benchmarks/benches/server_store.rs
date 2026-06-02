@@ -11,6 +11,10 @@ const MAX_READ_REGISTER_COUNT: usize = MAX_READ_REGISTERS as usize;
 const MAX_READ_REGISTER_BYTES: usize = MAX_READ_REGISTER_COUNT * 2;
 const MAX_FIFO_VALUE_COUNT: usize = MAX_FIFO_VALUES as usize;
 const MAX_FIFO_VALUE_BYTES: usize = MAX_FIFO_VALUE_COUNT * 2;
+const MAX_FILE_RECORD_REGISTER_COUNT: usize = 122;
+const MAX_FILE_RECORD_REGISTER_COUNT_U16: u16 = 122;
+const MAX_FILE_RECORD_BYTES: usize = MAX_FILE_RECORD_REGISTER_COUNT * 2;
+const BENCH_FILE_NUMBER: u16 = 4;
 
 fn bench_in_memory_store_register_writes(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
@@ -190,6 +194,102 @@ fn bench_in_memory_store_fifo_reads(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_in_memory_store_file_record_reads(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let store = InMemoryStore::new(StoreConfig::default());
+    seed_file_record(&store, BENCH_FILE_NUMBER, MAX_FILE_RECORD_REGISTER_COUNT);
+
+    let mut group = c.benchmark_group("in_memory_store_file_record_reads");
+    group.bench_function("wire_be_max", |b| {
+        b.to_async(&rt).iter(|| async {
+            let mut bytes = [0u8; MAX_FILE_RECORD_BYTES];
+            store
+                .read_file_record_be(
+                    BENCH_FILE_NUMBER,
+                    0,
+                    MAX_FILE_RECORD_REGISTER_COUNT_U16,
+                    black_box(&mut bytes),
+                )
+                .await
+                .unwrap();
+            black_box(bytes);
+        });
+    });
+    group.bench_function("slice_u16_then_pack_max", |b| {
+        b.to_async(&rt).iter(|| async {
+            let mut values = [0u16; MAX_FILE_RECORD_REGISTER_COUNT];
+            let mut bytes = [0u8; MAX_FILE_RECORD_BYTES];
+            store
+                .read_file_record(
+                    BENCH_FILE_NUMBER,
+                    0,
+                    MAX_FILE_RECORD_REGISTER_COUNT_U16,
+                    black_box(&mut values),
+                )
+                .await
+                .unwrap();
+            pack_register_slice(black_box(&values), &mut bytes);
+            black_box(bytes);
+        });
+    });
+    group.finish();
+}
+
+fn bench_in_memory_store_file_record_writes(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let store = InMemoryStore::new(StoreConfig::default());
+    let values: Vec<u16> = (0..MAX_FILE_RECORD_REGISTER_COUNT_U16).collect();
+    let value_bytes = register_value_bytes(MAX_FILE_RECORD_REGISTER_COUNT);
+
+    let mut group = c.benchmark_group("in_memory_store_file_record_writes");
+    group.bench_with_input(
+        BenchmarkId::from_parameter("slice_u16_max"),
+        &values[..],
+        |b, values| {
+            b.to_async(&rt).iter(|| async {
+                store
+                    .write_file_record(BENCH_FILE_NUMBER, 0, black_box(values))
+                    .await
+                    .unwrap();
+            });
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::from_parameter("wire_be_max"),
+        &value_bytes[..],
+        |b, value_bytes| {
+            b.to_async(&rt).iter(|| async {
+                store
+                    .write_file_record_be(
+                        BENCH_FILE_NUMBER,
+                        0,
+                        MAX_FILE_RECORD_REGISTER_COUNT_U16,
+                        black_box(value_bytes),
+                    )
+                    .await
+                    .unwrap();
+            });
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::from_parameter("wire_be_via_vec_u16_max"),
+        &value_bytes[..],
+        |b, value_bytes| {
+            b.to_async(&rt).iter(|| async {
+                let values: Vec<u16> = black_box(value_bytes)
+                    .chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
+                store
+                    .write_file_record(BENCH_FILE_NUMBER, 0, black_box(&values))
+                    .await
+                    .unwrap();
+            });
+        },
+    );
+    group.finish();
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn register_value_bytes(register_count: usize) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(register_count * 2);
@@ -223,6 +323,16 @@ fn seed_fifo_queue(store: &InMemoryStore, value_count: usize) {
     store.set_fifo_queue(0, values);
 }
 
+fn seed_file_record(store: &InMemoryStore, file_number: u16, record_count: usize) {
+    for index in 0..record_count {
+        let record_number = u16::try_from(index).expect("benchmark file record number fits u16");
+        let value = u16::try_from(index).expect("benchmark file record value fits u16");
+        store
+            .set_file_record(file_number, record_number, value)
+            .unwrap();
+    }
+}
+
 fn packed_coil_values(coil_count: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; coil_count.div_ceil(8)];
     for index in 0..coil_count {
@@ -254,6 +364,8 @@ criterion_group!(
     bench_in_memory_store_register_reads,
     bench_in_memory_store_coil_writes,
     bench_in_memory_store_coil_reads,
-    bench_in_memory_store_fifo_reads
+    bench_in_memory_store_fifo_reads,
+    bench_in_memory_store_file_record_reads,
+    bench_in_memory_store_file_record_writes
 );
 criterion_main!(benches);

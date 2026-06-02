@@ -207,6 +207,73 @@ async fn direct_packed_fifo_read_unknown_address_is_illegal_data_address() {
 }
 
 #[tokio::test]
+async fn direct_packed_file_record_read_writes_wire_bytes() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_file_record(4, 1, 0x0DFE).unwrap();
+    store.set_file_record(4, 2, 0x0020).unwrap();
+
+    let mut bytes = [0u8; 4];
+    let count = store
+        .read_file_record_be(4, 1, 2, &mut bytes)
+        .await
+        .unwrap();
+
+    assert_eq!(count, 2);
+    assert_eq!(bytes, [0x0D, 0xFE, 0x00, 0x20]);
+}
+
+#[tokio::test]
+async fn direct_packed_file_record_read_bad_output_len_is_illegal_data_value() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_file_record(4, 1, 0x0DFE).unwrap();
+    store.set_file_record(4, 2, 0x0020).unwrap();
+    let mut bytes = [0u8; 3];
+
+    let result = store.read_file_record_be(4, 1, 2, &mut bytes).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataValue));
+}
+
+#[tokio::test]
+async fn direct_packed_file_record_read_over_wire_group_cap_is_illegal_data_address() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    for record in 0..123 {
+        store.set_file_record(4, record, record).unwrap();
+    }
+    let mut bytes = [0u8; 246];
+
+    let result = store.read_file_record_be(4, 0, 123, &mut bytes).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataAddress));
+}
+
+#[tokio::test]
+async fn direct_packed_file_record_write_reads_back() {
+    let store = InMemoryStore::new(StoreConfig::default());
+
+    store
+        .write_file_record_be(4, 7, 3, &[0x06, 0xAF, 0x04, 0xBE, 0x10, 0x0D])
+        .await
+        .unwrap();
+
+    let mut values = [0u16; 3];
+    let count = store.read_file_record(4, 7, 3, &mut values).await.unwrap();
+    assert_eq!(count, 3);
+    assert_eq!(values, [0x06AF, 0x04BE, 0x100D]);
+}
+
+#[tokio::test]
+async fn direct_packed_file_record_write_bad_byte_count_is_illegal_data_value() {
+    let store = InMemoryStore::new(StoreConfig::default());
+
+    let result = store
+        .write_file_record_be(4, 7, 3, &[0x06, 0xAF, 0x04, 0xBE])
+        .await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataValue));
+}
+
+#[tokio::test]
 async fn direct_packed_register_write_bad_byte_count_is_illegal_data_value() {
     let store = InMemoryStore::new(StoreConfig::default());
 

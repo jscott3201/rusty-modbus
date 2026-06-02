@@ -10,6 +10,8 @@ use rusty_modbus_types::{
     MAX_READ_DISCRETE_INPUTS, MAX_READ_REGISTERS, MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
 };
 
+pub(crate) const MAX_FILE_RECORD_REGISTERS: usize = 122;
+
 /// Snapshot of the communications event log returned by Get Comm Event Log
 /// (FC 0x0C, Spec V1.1b3 §6.10).
 ///
@@ -358,6 +360,32 @@ pub trait DataStore: Send + Sync {
         }
     }
 
+    /// Read one file sub-record directly into big-endian Modbus wire bytes.
+    ///
+    /// The default implementation delegates to [`Self::read_file_record`] with
+    /// a bounded scratch buffer and then packs that scratch into `out`. Stores
+    /// with direct file access can override this method to avoid the
+    /// intermediate register slice.
+    fn read_file_record_be(
+        &self,
+        file_number: u16,
+        record_number: u16,
+        record_length: u16,
+        out: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let mut values = [0u16; MAX_FILE_RECORD_REGISTERS];
+            let count = self
+                .read_file_record(file_number, record_number, record_length, &mut values)
+                .await?;
+            if count > values.len() || count > usize::from(record_length) {
+                return Err(ExceptionCode::ServerDeviceFailure);
+            }
+            pack_registers_be(&values[..count], out)?;
+            Ok(count)
+        }
+    }
+
     /// Write `values` to `record_number` in file `file_number` (Spec V1.1b3 §6.15).
     ///
     /// The default returns [`ExceptionCode::IllegalFunction`].
@@ -370,6 +398,32 @@ pub trait DataStore: Send + Sync {
         async move {
             let _ = (file_number, record_number, values);
             Err(ExceptionCode::IllegalFunction)
+        }
+    }
+
+    /// Write one file sub-record from big-endian Modbus wire bytes.
+    ///
+    /// The default implementation unpacks the wire bytes and delegates to
+    /// [`Self::write_file_record`]. Stores with direct file access can override
+    /// this method to avoid the intermediate register vector.
+    fn write_file_record_be(
+        &self,
+        file_number: u16,
+        record_number: u16,
+        record_length: u16,
+        value_bytes: &[u8],
+    ) -> impl Future<Output = Result<(), ExceptionCode>> + Send {
+        async move {
+            let expected = usize::from(record_length) * 2;
+            if value_bytes.len() != expected {
+                return Err(ExceptionCode::IllegalDataValue);
+            }
+            let values: Vec<u16> = value_bytes
+                .chunks_exact(2)
+                .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+                .collect();
+            self.write_file_record(file_number, record_number, &values)
+                .await
         }
     }
 
