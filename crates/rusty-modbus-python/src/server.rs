@@ -221,9 +221,10 @@ impl InMemoryStore {
 
     /// Set one file-record register.
     #[pyo3(signature = (file_number, record_number, value))]
-    fn set_file_record(&self, file_number: u16, record_number: u16, value: u16) {
+    fn set_file_record(&self, file_number: u16, record_number: u16, value: u16) -> PyResult<()> {
         self.inner
-            .set_file_record(file_number, record_number, value);
+            .set_file_record(file_number, record_number, value)
+            .map_err(store_error_to_pyerr)
     }
 
     /// Set the FIFO queue at `address`.

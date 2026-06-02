@@ -17,6 +17,7 @@ use rusty_modbus_types::{
 
 use crate::config::DeviceIdentification;
 use crate::device_id::build_device_id_response;
+use crate::file_record;
 use crate::response_encode::encode_response;
 use crate::store::DataStore;
 
@@ -560,6 +561,9 @@ async fn handle_read_file_record<S: DataStore>(
         let file = u16::from_be_bytes([chunk[1], chunk[2]]);
         let record = u16::from_be_bytes([chunk[3], chunk[4]]);
         let length = u16::from_be_bytes([chunk[5], chunk[6]]);
+        if let Err(ec) = file_record::validate_range(file, record, usize::from(length)) {
+            return encode_exception(FunctionCode::ReadFileRecord.exception_code(), ec);
+        }
         match store
             .read_file_record(file, record, length, &mut scratch)
             .await
@@ -633,6 +637,7 @@ async fn apply_write_file_record<S: DataStore>(
         if subs.len() < data_end {
             return Err(ExceptionCode::IllegalDataValue);
         }
+        file_record::validate_range(file, record, length)?;
         let values: Vec<u16> = subs[7..data_end]
             .chunks_exact(2)
             .map(|c| u16::from_be_bytes([c[0], c[1]]))

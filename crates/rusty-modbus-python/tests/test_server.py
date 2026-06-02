@@ -36,6 +36,16 @@ def test_in_memory_store_setup_rejects_address_outside_configured_table():
         store.set_holding_register(1, 123)
 
 
+def test_in_memory_store_setup_rejects_invalid_file_record_reference():
+    store = InMemoryStore(StoreConfig())
+
+    with pytest.raises(ValueError, match="file number"):
+        store.set_file_record(0, 0, 123)
+
+    with pytest.raises(ValueError, match="file record"):
+        store.set_file_record(1, 0x2710, 123)
+
+
 class PythonStore:
     def __init__(self):
         self.coils = [False] * 16
