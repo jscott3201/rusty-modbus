@@ -114,6 +114,32 @@ impl TransactionManager {
         }
     }
 
+    /// Complete the single outstanding transaction, regardless of its ID.
+    ///
+    /// RTU responses carry no transaction ID, so they cannot be matched by ID.
+    /// Under the RTU half-duplex single-in-flight invariant (enforced by
+    /// [`ModbusClient::from_rtu_transport`](crate::ModbusClient::from_rtu_transport))
+    /// there is at most one outstanding transaction; if more than one is somehow
+    /// present, the oldest (earliest `sent_at`) is completed to preserve FIFO
+    /// ordering. Returns `true` if a transaction was found and completed.
+    pub fn complete_oldest(&self, response: Result<OwnedResponsePdu, ClientError>) -> bool {
+        let mut oldest: Option<(usize, Instant)> = None;
+        for (idx, slot) in self.slots.iter().enumerate() {
+            if let Some(p) = slot.lock().as_ref()
+                && oldest.is_none_or(|(_, t)| p.sent_at < t)
+            {
+                oldest = Some((idx, p.sent_at));
+            }
+        }
+        if let Some((idx, _)) = oldest
+            && let Some(pending) = self.slots[idx].lock().take()
+        {
+            let _ = pending.sender.send(response);
+            return true;
+        }
+        false
+    }
+
     /// Cancel all pending transactions with the given error.
     pub fn cancel_all(&self, make_error: impl Fn() -> ClientError) {
         for slot in &self.slots {

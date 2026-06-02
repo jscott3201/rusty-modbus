@@ -33,21 +33,22 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                 result = stream.recv() => {
                     match result {
                         Ok(frame) => {
-                            let txn_id = match frame.header {
-                                FrameHeader::Mbap(h) => TransactionId(h.transaction_id.get()),
+                            let header = frame.header;
+                            let result = OwnedResponsePdu::from_pdu(frame.pdu)
+                                .map_err(ClientError::Codec);
+                            match header {
+                                FrameHeader::Mbap(h) => {
+                                    txn_mgr.complete(
+                                        TransactionId(h.transaction_id.get()),
+                                        result,
+                                    );
+                                }
                                 FrameHeader::Rtu { .. } => {
-                                    // RTU doesn't have transaction IDs; use slot 0.
-                                    TransactionId(0)
-                                }
-                            };
-
-                            // Decode into owned response.
-                            match OwnedResponsePdu::from_pdu(frame.pdu) {
-                                Ok(response) => {
-                                    txn_mgr.complete(txn_id, Ok(response));
-                                }
-                                Err(e) => {
-                                    txn_mgr.complete(txn_id, Err(ClientError::Codec(e)));
+                                    // RTU frames carry no transaction ID. The
+                                    // client is single-in-flight for RTU (see
+                                    // ModbusClient::from_rtu_transport), so match
+                                    // the response to the one outstanding request.
+                                    txn_mgr.complete_oldest(result);
                                 }
                             }
                         }
