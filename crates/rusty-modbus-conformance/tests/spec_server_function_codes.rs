@@ -116,10 +116,10 @@ async fn fifo_broadcast_produces_no_response() {
 async fn file_read_two_groups_matches_spec_example() {
     // Spec §6.14 p.33: read file 4 record 1 (len 2) and file 3 record 9 (len 2).
     let s = store();
-    s.set_file_record(4, 1, 0x0DFE);
-    s.set_file_record(4, 2, 0x0020);
-    s.set_file_record(3, 9, 0x33CD);
-    s.set_file_record(3, 10, 0x0040);
+    s.set_file_record(4, 1, 0x0DFE).unwrap();
+    s.set_file_record(4, 2, 0x0020).unwrap();
+    s.set_file_record(3, 9, 0x33CD).unwrap();
+    s.set_file_record(3, 10, 0x0040).unwrap();
     let req = [
         0x14, 0x0E, // FC, byte count
         0x06, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, // group 1
@@ -140,7 +140,7 @@ async fn file_read_two_groups_matches_spec_example() {
 #[tokio::test]
 async fn file_read_bad_reference_type_is_illegal_data_address() {
     let s = store();
-    s.set_file_record(4, 1, 0x1111);
+    s.set_file_record(4, 1, 0x1111).unwrap();
     // reference type 0x07 instead of the required 0x06
     let req = [0x14, 0x07, 0x07, 0x00, 0x04, 0x00, 0x01, 0x00, 0x01];
     assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
@@ -157,9 +157,30 @@ async fn file_read_bad_byte_count_is_illegal_data_value() {
 #[tokio::test]
 async fn file_read_out_of_range_record_is_illegal_data_address() {
     let s = store();
-    s.set_file_record(4, 1, 0x1111); // file 4 holds records 0..=1
+    s.set_file_record(4, 1, 0x1111).unwrap(); // file 4 holds records 0..=1
     // start record 5, length 2 — beyond the file
     let req = [0x14, 0x07, 0x06, 0x00, 0x04, 0x00, 0x05, 0x00, 0x02];
+    assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
+}
+
+#[tokio::test]
+async fn file_read_file_zero_is_illegal_data_address() {
+    let s = store();
+    let req = [0x14, 0x07, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+    assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
+}
+
+#[tokio::test]
+async fn file_read_record_above_spec_max_is_illegal_data_address() {
+    let s = store();
+    let req = [0x14, 0x07, 0x06, 0x00, 0x01, 0x27, 0x10, 0x00, 0x01];
+    assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
+}
+
+#[tokio::test]
+async fn file_read_record_range_crossing_spec_max_is_illegal_data_address() {
+    let s = store();
+    let req = [0x14, 0x07, 0x06, 0x00, 0x01, 0x27, 0x0F, 0x00, 0x02];
     assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
 }
 
@@ -197,6 +218,40 @@ async fn file_write_broadcast_produces_no_response() {
         0x06, 0xAF, 0x04, 0xBE, 0x10, 0x0D,
     ];
     assert!(respond_opt(&s, &req, UnitId(0)).await.is_none());
+}
+
+#[tokio::test]
+async fn file_write_file_zero_is_illegal_data_address() {
+    let s = store();
+    let req = [
+        0x15, 0x09, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x12, 0x34,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
+}
+
+#[tokio::test]
+async fn file_write_record_above_spec_max_is_illegal_data_address() {
+    let s = store();
+    let req = [
+        0x15, 0x09, 0x06, 0x00, 0x01, 0x27, 0x10, 0x00, 0x01, 0x12, 0x34,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
+}
+
+#[tokio::test]
+async fn file_write_record_range_crossing_spec_max_is_illegal_data_address() {
+    let s = store();
+    let req = [
+        0x15, 0x0B, 0x06, 0x00, 0x01, 0x27, 0x0F, 0x00, 0x02, 0x12, 0x34, 0x56, 0x78,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
+}
+
+#[tokio::test]
+async fn file_write_zero_record_length_is_illegal_data_address() {
+    let s = store();
+    let req = [0x15, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
 }
 
 // ── Diagnostics family (FC 0x07, 0x08, 0x0B, 0x0C, 0x11) ───────────
@@ -468,7 +523,7 @@ async fn fifo_boundary_31_values_payload_matches() {
 async fn file_read_accumulated_over_pdu_cap_is_illegal_data_value() {
     let s = store();
     for r in 0..4 {
-        s.set_file_record(1, r, 0x1111);
+        s.set_file_record(1, r, 0x1111).unwrap();
     }
     // 30 sub-requests × 4 registers each → ~10 response bytes apiece, past the cap.
     let mut req = vec![0x14, 30 * 7];
@@ -481,7 +536,7 @@ async fn file_read_accumulated_over_pdu_cap_is_illegal_data_value() {
 #[tokio::test]
 async fn file_read_length_over_scratch_is_illegal_data_address() {
     let s = store();
-    s.set_file_record(1, 199, 0x2222); // file 1 spans records 0..=199
+    s.set_file_record(1, 199, 0x2222).unwrap(); // file 1 spans records 0..=199
     // length 200 (0xC8) exceeds the handler's 122-register scratch buffer
     let req = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0xC8];
     assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
@@ -498,8 +553,8 @@ async fn file_read_lying_store_count_is_server_device_failure() {
 #[tokio::test]
 async fn file_write_grows_existing_file_preserving_records() {
     let s = store();
-    s.set_file_record(1, 0, 0xAAAA);
-    s.set_file_record(1, 1, 0xBBBB);
+    s.set_file_record(1, 0, 0xAAAA).unwrap();
+    s.set_file_record(1, 1, 0xBBBB).unwrap();
     // write records 5..=6, leaving a 2..4 gap
     let write = [
         0x15, 0x0B, 0x06, 0x00, 0x01, 0x00, 0x05, 0x00, 0x02, 0xCC, 0xCC, 0xDD, 0xDD,

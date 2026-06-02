@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use parking_lot::RwLock;
 use rusty_modbus_types::ExceptionCode;
 
+use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT};
+
 use super::DataStore;
 
 /// Maximum number of entries in any Modbus data table.
@@ -72,6 +74,22 @@ pub enum StoreError {
         address: u16,
         /// Configured table length.
         len: usize,
+    },
+    /// A setup helper used file number 0, which is outside the Modbus range.
+    #[error("file number {file_number} is outside Modbus file range ({minimum}..=65535)")]
+    FileNumberOutOfRange {
+        /// Requested file number.
+        file_number: u16,
+        /// Minimum valid file number.
+        minimum: u16,
+    },
+    /// A setup helper used a file record outside the 10,000-record file range.
+    #[error("file record {record_number} is outside Modbus file record range (0..={maximum})")]
+    FileRecordOutOfRange {
+        /// Requested record number.
+        record_number: u16,
+        /// Maximum valid record number.
+        maximum: u16,
     },
 }
 
@@ -177,7 +195,18 @@ impl InMemoryStore {
 
     /// Seed a single file-record register (for test/app setup). The file and
     /// record grow lazily so sparse records can be set in any order.
-    pub fn set_file_record(&self, file_number: u16, record_number: u16, value: u16) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the file or record number is outside the
+    /// Modbus file-record address space.
+    pub fn set_file_record(
+        &self,
+        file_number: u16,
+        record_number: u16,
+        value: u16,
+    ) -> Result<(), StoreError> {
+        check_setup_file_record(file_number, record_number)?;
         let mut files = self.files.write();
         let file = files.entry(file_number).or_default();
         let idx = usize::from(record_number);
@@ -185,6 +214,7 @@ impl InMemoryStore {
             file.resize(idx + 1, 0);
         }
         file[idx] = value;
+        Ok(())
     }
 
     /// Seed a FIFO queue at `address` with `values` (for test/app setup).
@@ -243,6 +273,22 @@ fn check_setup_address(table: &'static str, address: u16, len: usize) -> Result<
         });
     }
     Ok(index)
+}
+
+fn check_setup_file_record(file_number: u16, record_number: u16) -> Result<(), StoreError> {
+    if file_number < MIN_FILE_NUMBER {
+        return Err(StoreError::FileNumberOutOfRange {
+            file_number,
+            minimum: MIN_FILE_NUMBER,
+        });
+    }
+    if usize::from(record_number) >= RECORD_COUNT {
+        return Err(StoreError::FileRecordOutOfRange {
+            record_number,
+            maximum: MAX_RECORD_NUMBER,
+        });
+    }
+    Ok(())
 }
 
 impl DataStore for InMemoryStore {
@@ -339,6 +385,7 @@ impl DataStore for InMemoryStore {
         record_length: u16,
         buf: &mut [u16],
     ) -> Result<usize, ExceptionCode> {
+        file_record::validate_range(file_number, record_number, usize::from(record_length))?;
         let files = self.files.read();
         let file = files
             .get(&file_number)
@@ -363,6 +410,7 @@ impl DataStore for InMemoryStore {
         record_number: u16,
         values: &[u16],
     ) -> Result<(), ExceptionCode> {
+        file_record::validate_range(file_number, record_number, values.len())?;
         let mut files = self.files.write();
         let file = files.entry(file_number).or_default();
         let start = usize::from(record_number);

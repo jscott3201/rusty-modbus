@@ -223,6 +223,32 @@ fn setup_write_outside_configured_table_returns_error() {
     );
 }
 
+#[test]
+fn file_setup_rejects_file_zero() {
+    let store = InMemoryStore::new(StoreConfig::default());
+
+    assert_eq!(
+        store.set_file_record(0, 0, 0xBEEF),
+        Err(StoreError::FileNumberOutOfRange {
+            file_number: 0,
+            minimum: 1,
+        })
+    );
+}
+
+#[test]
+fn file_setup_rejects_record_outside_spec_range() {
+    let store = InMemoryStore::new(StoreConfig::default());
+
+    assert_eq!(
+        store.set_file_record(1, 0x2710, 0xBEEF),
+        Err(StoreError::FileRecordOutOfRange {
+            record_number: 0x2710,
+            maximum: 0x270F,
+        })
+    );
+}
+
 #[tokio::test]
 async fn server_stop_rejects_new_connections() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
