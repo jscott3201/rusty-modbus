@@ -9,6 +9,7 @@ use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient};
 use rusty_modbus_types::UnitId;
 
 mod commands;
+mod dashboard;
 mod discover;
 mod output;
 mod shell;
@@ -50,6 +51,8 @@ enum Commands {
     Write(commands::WriteArgs),
     /// Interactive Modbus shell.
     Shell,
+    /// Interactive terminal dashboard.
+    Dashboard(dashboard::DashboardArgs),
     /// Discover Modbus devices on the network.
     Discover(DiscoverArgs),
 }
@@ -173,6 +176,28 @@ async fn main() -> ExitCode {
                 }
             }
         }
+        Commands::Dashboard(args) => {
+            let addr = match resolve_addr(&cli.host, cli.port) {
+                Ok(a) => a,
+                Err(code) => return code,
+            };
+            let dashboard_config = dashboard::DashboardConfig {
+                addr,
+                unit_id: cli.unit_id,
+                timeout: cli.timeout,
+                address: args.address,
+                quantity: args.quantity,
+                target: args.target,
+                refresh_interval: Duration::from_secs(args.refresh_secs),
+            };
+            match dashboard::run(dashboard_config).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Commands::Discover(args) => {
             let discover_config = discover::DiscoverConfig {
                 range: args.range,
@@ -191,5 +216,40 @@ async fn main() -> ExitCode {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn parses_dashboard_command_args() {
+        let cli = Cli::try_parse_from([
+            "modbus",
+            "--host",
+            "127.0.0.1",
+            "dashboard",
+            "--target",
+            "coils",
+            "--address",
+            "10",
+            "--quantity",
+            "8",
+            "--refresh-secs",
+            "0",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.host.as_deref(), Some("127.0.0.1"));
+        let Commands::Dashboard(args) = cli.command else {
+            panic!("expected dashboard command");
+        };
+        assert_eq!(args.target, dashboard::DashboardTarget::Coils);
+        assert_eq!(args.address, 10);
+        assert_eq!(args.quantity, 8);
+        assert_eq!(args.refresh_secs, 0);
     }
 }
