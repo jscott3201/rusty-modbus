@@ -432,14 +432,20 @@ fn error_empty_pdu_response_truncated() {
 }
 
 #[test]
-fn error_unknown_function_code_becomes_custom() {
-    // FC 0x00 is now decoded as Custom(0x00) with empty data
+fn error_zero_function_code_is_rejected() {
     let wire: &[u8] = &[0x00];
-    let result = decode_request(wire).unwrap();
-    assert!(matches!(
-        result,
-        rusty_modbus_codec::RequestPdu::Custom(0x00, &[])
-    ));
+    assert_eq!(
+        decode_request(wire).unwrap_err(),
+        DecodeError::UnknownFunctionCode(0x00)
+    );
+    assert_eq!(
+        decode_response(wire).unwrap_err(),
+        DecodeError::UnknownFunctionCode(0x00)
+    );
+    assert_eq!(
+        decode_response(&[0x80, 0x01]).unwrap_err(),
+        DecodeError::UnknownFunctionCode(0x00)
+    );
 }
 
 #[test]

@@ -46,18 +46,19 @@ pub enum FunctionCode {
     ReadFifoQueue,
     /// Encapsulated interface transport (MEI). §6.19.
     EncapsulatedInterfaceTransport,
-    /// Non-standard / vendor-specific function code.
+    /// Non-standard / vendor-specific nonzero function code.
     Custom(u8),
 }
 
 impl FunctionCode {
-    /// Parse from a raw byte. Returns `None` for exception-flagged bytes (0x80+).
+    /// Parse from a raw byte. Returns `None` for invalid code 0x00 and
+    /// exception-flagged bytes (0x80+).
     ///
-    /// Unknown non-exception codes become [`Custom`](Self::Custom).
+    /// Unknown nonzero, non-exception codes become [`Custom`](Self::Custom).
     /// Use [`from_exception_raw`](Self::from_exception_raw) for exception-flagged bytes.
     #[must_use]
     pub fn from_raw(byte: u8) -> Option<Self> {
-        if byte & 0x80 != 0 {
+        if byte == 0 || byte & 0x80 != 0 {
             return None;
         }
         Some(Self::from_byte(byte))
@@ -263,10 +264,6 @@ mod tests {
     #[test]
     fn unknown_non_exception_codes_return_custom() {
         assert_eq!(
-            FunctionCode::from_raw(0x00),
-            Some(FunctionCode::Custom(0x00))
-        );
-        assert_eq!(
             FunctionCode::from_raw(0x09),
             Some(FunctionCode::Custom(0x09))
         );
@@ -278,6 +275,8 @@ mod tests {
             FunctionCode::from_raw(0x0D),
             Some(FunctionCode::Custom(0x0D))
         );
+        // Function code 0x00 is invalid per Modbus Application Protocol §4.1.
+        assert!(FunctionCode::from_raw(0x00).is_none());
         // Exception-flagged bytes still return None
         assert!(FunctionCode::from_raw(0xFF).is_none());
     }
