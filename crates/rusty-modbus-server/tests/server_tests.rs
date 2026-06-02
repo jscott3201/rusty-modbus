@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ModbusClient};
-use rusty_modbus_server::{DataStore, InMemoryStore, ModbusServer, ServerConfig, StoreConfig};
+use rusty_modbus_server::{
+    DataStore, InMemoryStore, ModbusServer, ServerConfig, StoreConfig, StoreError,
+};
 use rusty_modbus_types::{ExceptionCode, UnitId};
 
 async fn start_server_with_store(
@@ -30,8 +32,8 @@ fn client_config() -> ClientConfig {
 #[tokio::test]
 async fn read_holding_registers() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(0, 0x1234);
-    store.set_holding_register(1, 0x5678);
+    store.set_holding_register(0, 0x1234).unwrap();
+    store.set_holding_register(1, 0x5678).unwrap();
 
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
@@ -46,7 +48,7 @@ async fn read_holding_registers() {
 #[tokio::test]
 async fn read_input_registers() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_input_register(10, 0xAAAA);
+    store.set_input_register(10, 0xAAAA).unwrap();
 
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
@@ -102,9 +104,9 @@ async fn direct_bulk_register_write_over_store_capacity_returns_error() {
 #[tokio::test]
 async fn read_coils() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_coil(0, true);
-    store.set_coil(1, false);
-    store.set_coil(2, true);
+    store.set_coil(0, true).unwrap();
+    store.set_coil(1, false).unwrap();
+    store.set_coil(2, true).unwrap();
 
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
@@ -137,7 +139,7 @@ async fn direct_bulk_coil_write_over_store_capacity_returns_error() {
 #[tokio::test]
 async fn concurrent_clients() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(0, 0x42);
+    store.set_holding_register(0, 0x42).unwrap();
 
     let (_server, addr) = start_server_with_store(store).await;
 
@@ -167,7 +169,7 @@ async fn concurrent_clients() {
 #[tokio::test]
 async fn mask_write_register() {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
-    store.set_holding_register(4, 0x00FF);
+    store.set_holding_register(4, 0x00FF).unwrap();
 
     let (_server, addr) = start_server_with_store(store).await;
     let client = ModbusClient::connect(addr, client_config()).await.unwrap();
@@ -184,6 +186,41 @@ async fn mask_write_register() {
         .await
         .unwrap();
     assert_eq!(regs, vec![0x00F7]);
+}
+
+#[test]
+fn oversized_store_config_is_rejected_before_allocation() {
+    let config = StoreConfig {
+        holding_register_count: 65_537,
+        ..StoreConfig::default()
+    };
+
+    let err = InMemoryStore::try_new(config).unwrap_err();
+    assert_eq!(
+        err,
+        StoreError::TableTooLarge {
+            table: "holding_registers",
+            count: 65_537,
+            max: 65_536,
+        }
+    );
+}
+
+#[test]
+fn setup_write_outside_configured_table_returns_error() {
+    let store = InMemoryStore::new(StoreConfig {
+        holding_register_count: 1,
+        ..StoreConfig::default()
+    });
+
+    assert_eq!(
+        store.set_holding_register(1, 0xBEEF),
+        Err(StoreError::AddressOutOfRange {
+            table: "holding_registers",
+            address: 1,
+            len: 1,
+        })
+    );
 }
 
 #[tokio::test]

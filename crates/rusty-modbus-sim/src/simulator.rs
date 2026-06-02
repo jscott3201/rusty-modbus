@@ -41,7 +41,7 @@ impl ModbusSimulator {
     pub fn from_config(config: SimConfig) -> Result<Self, SimError> {
         validate_register_config(&config.registers)?;
 
-        let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
+        let store = Arc::new(InMemoryStore::try_new(StoreConfig::default())?);
         apply_register_config(&store, &config.registers);
 
         Ok(Self {
@@ -94,18 +94,22 @@ impl ModbusSimulator {
     }
 
     /// Update a holding register at runtime.
-    pub fn set_holding_register(&self, address: u16, value: u16) {
-        self.store.set_holding_register(address, value);
+    pub fn set_holding_register(&self, address: u16, value: u16) -> Result<(), SimError> {
+        self.store
+            .set_holding_register(address, value)
+            .map_err(SimError::Store)
     }
 
     /// Update an input register at runtime.
-    pub fn set_input_register(&self, address: u16, value: u16) {
-        self.store.set_input_register(address, value);
+    pub fn set_input_register(&self, address: u16, value: u16) -> Result<(), SimError> {
+        self.store
+            .set_input_register(address, value)
+            .map_err(SimError::Store)
     }
 
     /// Update a coil at runtime.
-    pub fn set_coil(&self, address: u16, value: bool) {
-        self.store.set_coil(address, value);
+    pub fn set_coil(&self, address: u16, value: bool) -> Result<(), SimError> {
+        self.store.set_coil(address, value).map_err(SimError::Store)
     }
 
     /// Get the bound address (only valid after `start()`).
@@ -161,16 +165,24 @@ fn check_block_range(kind: &str, address: u16, count: u16) -> Result<(), SimErro
 /// Apply register configuration to the in-memory store.
 fn apply_register_config(store: &InMemoryStore, config: &RegisterConfig) {
     apply_register_blocks(&config.holding, |address, value| {
-        store.set_holding_register(address, value);
+        store
+            .set_holding_register(address, value)
+            .expect("validated holding register config should fit store");
     });
     apply_register_blocks(&config.input, |address, value| {
-        store.set_input_register(address, value);
+        store
+            .set_input_register(address, value)
+            .expect("validated input register config should fit store");
     });
     apply_coil_blocks(&config.coils, |address, value| {
-        store.set_coil(address, value);
+        store
+            .set_coil(address, value)
+            .expect("validated coil config should fit store");
     });
     apply_coil_blocks(&config.discrete_inputs, |address, value| {
-        store.set_discrete_input(address, value);
+        store
+            .set_discrete_input(address, value)
+            .expect("validated discrete input config should fit store");
     });
 }
 

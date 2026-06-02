@@ -7,6 +7,9 @@ use rusty_modbus_types::ExceptionCode;
 
 use super::DataStore;
 
+/// Maximum number of entries in any Modbus data table.
+pub const MAX_TABLE_SIZE: usize = 65_536;
+
 /// Configuration for the in-memory data store.
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
@@ -31,6 +34,47 @@ impl Default for StoreConfig {
     }
 }
 
+impl StoreConfig {
+    /// Validate configured table sizes before allocating backing vectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::TableTooLarge`] if any table exceeds the 16-bit
+    /// Modbus address space.
+    pub fn validate(&self) -> Result<(), StoreError> {
+        validate_table_size("coils", self.coil_count)?;
+        validate_table_size("discrete_inputs", self.discrete_input_count)?;
+        validate_table_size("holding_registers", self.holding_register_count)?;
+        validate_table_size("input_registers", self.input_register_count)?;
+        Ok(())
+    }
+}
+
+/// Errors produced by in-memory store configuration and setup helpers.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StoreError {
+    /// A configured table has more entries than Modbus can address.
+    #[error("{table} table size {count} exceeds Modbus address space ({max})")]
+    TableTooLarge {
+        /// Table name.
+        table: &'static str,
+        /// Requested item count.
+        count: usize,
+        /// Maximum supported item count.
+        max: usize,
+    },
+    /// A setup helper addressed outside the configured table.
+    #[error("{table} address {address} is outside configured table size {len}")]
+    AddressOutOfRange {
+        /// Table name.
+        table: &'static str,
+        /// Requested Modbus address.
+        address: u16,
+        /// Configured table length.
+        len: usize,
+    },
+}
+
 /// In-memory data store using flat `Vec`s with `RwLock` protection.
 pub struct InMemoryStore {
     coils: RwLock<Vec<bool>>,
@@ -50,9 +94,24 @@ pub struct InMemoryStore {
 
 impl InMemoryStore {
     /// Create a new in-memory store with the given address space sizes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any table size exceeds the 16-bit Modbus address space. Use
+    /// [`Self::try_new`] to handle invalid configuration without panicking.
     #[must_use]
     pub fn new(config: StoreConfig) -> Self {
-        Self {
+        Self::try_new(config).expect("StoreConfig should fit the Modbus address space")
+    }
+
+    /// Create a new in-memory store with checked address-space sizes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::TableTooLarge`] if any table size exceeds 65,536.
+    pub fn try_new(config: StoreConfig) -> Result<Self, StoreError> {
+        config.validate()?;
+        Ok(Self {
             coils: RwLock::new(vec![false; config.coil_count]),
             discrete_inputs: RwLock::new(vec![false; config.discrete_input_count]),
             holding_registers: RwLock::new(vec![0u16; config.holding_register_count]),
@@ -61,39 +120,59 @@ impl InMemoryStore {
             fifo_queues: RwLock::new(HashMap::new()),
             exception_status: RwLock::new(0),
             server_id: RwLock::new(b"rusty-modbus\xFF".to_vec()),
-        }
+        })
     }
 
     /// Direct write to an input register (for application-level updates).
-    pub fn set_input_register(&self, address: u16, value: u16) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::AddressOutOfRange`] if `address` is outside the
+    /// configured input-register table.
+    pub fn set_input_register(&self, address: u16, value: u16) -> Result<(), StoreError> {
         let mut regs = self.input_registers.write();
-        if (address as usize) < regs.len() {
-            regs[address as usize] = value;
-        }
+        let index = check_setup_address("input_registers", address, regs.len())?;
+        regs[index] = value;
+        Ok(())
     }
 
     /// Direct write to a discrete input (for application-level updates).
-    pub fn set_discrete_input(&self, address: u16, value: bool) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::AddressOutOfRange`] if `address` is outside the
+    /// configured discrete-input table.
+    pub fn set_discrete_input(&self, address: u16, value: bool) -> Result<(), StoreError> {
         let mut inputs = self.discrete_inputs.write();
-        if (address as usize) < inputs.len() {
-            inputs[address as usize] = value;
-        }
+        let index = check_setup_address("discrete_inputs", address, inputs.len())?;
+        inputs[index] = value;
+        Ok(())
     }
 
     /// Direct write to a holding register (for test setup).
-    pub fn set_holding_register(&self, address: u16, value: u16) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::AddressOutOfRange`] if `address` is outside the
+    /// configured holding-register table.
+    pub fn set_holding_register(&self, address: u16, value: u16) -> Result<(), StoreError> {
         let mut regs = self.holding_registers.write();
-        if (address as usize) < regs.len() {
-            regs[address as usize] = value;
-        }
+        let index = check_setup_address("holding_registers", address, regs.len())?;
+        regs[index] = value;
+        Ok(())
     }
 
     /// Direct write to a coil (for test setup).
-    pub fn set_coil(&self, address: u16, value: bool) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::AddressOutOfRange`] if `address` is outside the
+    /// configured coil table.
+    pub fn set_coil(&self, address: u16, value: bool) -> Result<(), StoreError> {
         let mut coils = self.coils.write();
-        if (address as usize) < coils.len() {
-            coils[address as usize] = value;
-        }
+        let index = check_setup_address("coils", address, coils.len())?;
+        coils[index] = value;
+        Ok(())
     }
 
     /// Seed a single file-record register (for test/app setup). The file and
@@ -141,6 +220,29 @@ fn check_range(address: u16, quantity: usize, max: usize) -> Result<(), Exceptio
         return Err(ExceptionCode::IllegalDataAddress);
     }
     Ok(())
+}
+
+fn validate_table_size(table: &'static str, count: usize) -> Result<(), StoreError> {
+    if count > MAX_TABLE_SIZE {
+        return Err(StoreError::TableTooLarge {
+            table,
+            count,
+            max: MAX_TABLE_SIZE,
+        });
+    }
+    Ok(())
+}
+
+fn check_setup_address(table: &'static str, address: u16, len: usize) -> Result<usize, StoreError> {
+    let index = usize::from(address);
+    if index >= len {
+        return Err(StoreError::AddressOutOfRange {
+            table,
+            address,
+            len,
+        });
+    }
+    Ok(index)
 }
 
 impl DataStore for InMemoryStore {

@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
 
     for i in 0u16..10 {
-        store.set_holding_register(i, i * 100);
+        store.set_holding_register(i, i * 100)?;
     }
 
     let config = ServerConfig {
