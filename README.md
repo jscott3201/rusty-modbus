@@ -176,10 +176,16 @@ cargo check -p rusty-modbus --features full --examples
 # License/advisory checks
 cargo deny check
 
-# Benchmarks
-cargo bench -p rusty-modbus-benchmarks --bench codec
-cargo bench -p rusty-modbus-benchmarks --bench tcp_latency
-cargo run -p rusty-modbus-benchmarks --bin stress-test -- --help
+# Fast benchmark smoke: codec microbenches + single-connection pipelined TCP
+scripts/bench-local.sh smoke
+
+# Focused benchmark runs
+scripts/bench-local.sh codec --quick --noplot
+scripts/bench-local.sh tcp-pipelined --quick --noplot
+scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --operation mixed --json
+
+# Full benchmark suite
+scripts/bench-local.sh all --quick --noplot
 ```
 
 Minimum Rust version: 1.95 (pinned in `rust-toolchain.toml`)

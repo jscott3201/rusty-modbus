@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use hdrhistogram::Histogram;
 use rusty_modbus_benchmarks::frame_builders;
 use rusty_modbus_benchmarks::helpers::{
@@ -13,6 +14,7 @@ use rusty_modbus_benchmarks::helpers::{
 };
 use rusty_modbus_benchmarks::rtu_helpers::{make_rtu_tcp_client, make_rtu_tcp_server};
 use rusty_modbus_benchmarks::tls_helpers::{generate_test_certs, make_tls_client, make_tls_server};
+use rusty_modbus_client::{ClientError, ModbusClient};
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_types::UnitId;
 use serde::Serialize;
@@ -45,6 +47,10 @@ struct Args {
     #[arg(long, default_value = "10")]
     registers: u16,
 
+    /// Concurrent in-flight requests per TCP client connection (1..16)
+    #[arg(long, default_value_t = 1, value_parser = parse_in_flight)]
+    in_flight: usize,
+
     /// Output as JSON
     #[arg(long)]
     json: bool,
@@ -58,6 +64,7 @@ struct Args {
 struct StressResult {
     transport: String,
     clients: usize,
+    in_flight: usize,
     duration_secs: u64,
     operation: String,
     total_ops: u64,
@@ -136,6 +143,7 @@ async fn main() {
             server_addr,
             &args.operation,
             args.registers,
+            args.in_flight,
             Arc::clone(&wr),
         )
         .await;
@@ -159,6 +167,7 @@ async fn main() {
             server_addr,
             &args.operation,
             args.registers,
+            args.in_flight,
             Arc::clone(&running),
         )
         .await;
@@ -185,6 +194,7 @@ async fn main() {
     let result = StressResult {
         transport: args.transport.clone(),
         clients: args.clients,
+        in_flight: args.in_flight,
         duration_secs: args.duration,
         operation: args.operation.clone(),
         total_ops,
@@ -219,6 +229,10 @@ async fn main() {
             result.transport, result.clients, result.duration_secs, result.operation
         );
         println!(
+            "In-flight:   {} request(s) per TCP client connection",
+            result.in_flight
+        );
+        println!(
             "Throughput:  {:.0} ops/sec (total)  |  {:.0} ops/sec (per client)",
             result.throughput_ops_sec, result.per_client_ops_sec
         );
@@ -246,6 +260,7 @@ async fn spawn_client_task(
     addr: SocketAddr,
     operation: &str,
     registers: u16,
+    in_flight: usize,
     running: Arc<AtomicBool>,
 ) -> JoinHandle<(Histogram<u64>, u64, u64)> {
     let transport = transport.to_string();
@@ -260,36 +275,24 @@ async fn spawn_client_task(
         match transport.as_str() {
             "tcp" => {
                 let client = make_tcp_client(addr).await;
-                while running.load(Ordering::Relaxed) {
-                    let start = Instant::now();
-                    let result = match operation.as_str() {
-                        "read" => client
-                            .read_holding_registers(UnitId(1), 0, registers)
-                            .await
-                            .map(|_| ()),
-                        "write" => {
-                            client
-                                .write_single_register(UnitId(1), (op_index % 100) as u16, 0x1234)
-                                .await
-                        }
-                        _ => {
-                            if op_index.is_multiple_of(2) {
-                                client
-                                    .read_holding_registers(UnitId(1), 0, registers)
-                                    .await
-                                    .map(|_| ())
-                            } else {
-                                client
-                                    .write_single_register(
-                                        UnitId(1),
-                                        (op_index % 100) as u16,
-                                        0x1234,
-                                    )
-                                    .await
-                            }
-                        }
+                let mut pending = FuturesUnordered::new();
+                while running.load(Ordering::Relaxed) || !pending.is_empty() {
+                    while running.load(Ordering::Relaxed) && pending.len() < in_flight {
+                        let start = Instant::now();
+                        let index = op_index;
+                        let client = &client;
+                        let operation = operation.as_str();
+                        pending.push(async move {
+                            let result =
+                                run_tcp_operation(client, operation, registers, index).await;
+                            (start.elapsed().as_micros() as u64, result)
+                        });
+                        op_index += 1;
+                    }
+
+                    let Some((elapsed_us, result)) = pending.next().await else {
+                        break;
                     };
-                    let elapsed_us = start.elapsed().as_micros() as u64;
                     match result {
                         Ok(()) => {
                             let _ = hist.record(elapsed_us);
@@ -297,7 +300,6 @@ async fn spawn_client_task(
                         }
                         Err(_) => errors += 1,
                     }
-                    op_index += 1;
                 }
                 client.shutdown().await;
             }
@@ -389,4 +391,60 @@ async fn spawn_client_task(
 
         (hist, ops, errors)
     })
+}
+
+async fn run_tcp_operation(
+    client: &ModbusClient,
+    operation: &str,
+    registers: u16,
+    op_index: u64,
+) -> Result<(), ClientError> {
+    match operation {
+        "read" => client
+            .read_holding_registers(UnitId(1), 0, registers)
+            .await
+            .map(|_| ()),
+        "write" => {
+            client
+                .write_single_register(UnitId(1), (op_index % 100) as u16, 0x1234)
+                .await
+        }
+        _ if op_index.is_multiple_of(2) => client
+            .read_holding_registers(UnitId(1), 0, registers)
+            .await
+            .map(|_| ()),
+        _ => {
+            client
+                .write_single_register(UnitId(1), (op_index % 100) as u16, 0x1234)
+                .await
+        }
+    }
+}
+
+fn parse_in_flight(raw: &str) -> Result<usize, String> {
+    let value = raw
+        .parse::<usize>()
+        .map_err(|err| format!("invalid in-flight depth: {err}"))?;
+    if (1..=16).contains(&value) {
+        Ok(value)
+    } else {
+        Err(String::from("in-flight depth must be between 1 and 16"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_in_flight;
+
+    #[test]
+    fn in_flight_parser_accepts_transaction_ring_bounds() {
+        assert_eq!(parse_in_flight("1").unwrap(), 1);
+        assert_eq!(parse_in_flight("16").unwrap(), 16);
+    }
+
+    #[test]
+    fn in_flight_parser_rejects_out_of_range_values() {
+        assert!(parse_in_flight("0").is_err());
+        assert!(parse_in_flight("17").is_err());
+    }
 }
