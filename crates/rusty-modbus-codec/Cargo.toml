@@ -10,10 +10,14 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Modbus sans-IO encode/decode codec (no_std)"
+readme = "README.md"
 
 [dependencies]
-rusty-modbus-types = { path = "../rusty-modbus-types", default-features = false }
+rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0", default-features = false }
 
 [features]
 default = []
 std = ["rusty-modbus-types/std"]
+
+[package.metadata.docs.rs]
+all-features = true

@@ -7,7 +7,7 @@ use rusty_modbus_server::ServerError;
 pub enum SimError {
     /// YAML configuration parsing error.
     #[error("config parse error: {0}")]
-    ConfigParse(#[from] serde_yaml::Error),
+    ConfigParse(#[from] serde_yaml_ng::Error),
 
     /// Invalid configuration value.
     #[error("config error: {0}")]

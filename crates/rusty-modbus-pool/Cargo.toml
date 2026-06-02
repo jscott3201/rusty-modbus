@@ -10,10 +10,11 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Modbus connection pooling with health checks and backoff"
+readme = "README.md"
 
 [dependencies]
-rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
-rusty-modbus-frame = { path = "../rusty-modbus-frame" }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp", version = "0.1.0" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame", version = "0.1.0" }
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 parking_lot = "0.12"
 thiserror = "2"
@@ -22,3 +23,6 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 rusty-modbus-types = { path = "../rusty-modbus-types" }
+
+[package.metadata.docs.rs]
+all-features = true

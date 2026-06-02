@@ -33,23 +33,40 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                 result = stream.recv() => {
                     match result {
                         Ok(frame) => {
-                            let txn_id = match frame.header {
-                                FrameHeader::Mbap(h) => TransactionId(h.transaction_id.get()),
+                            let header = frame.header;
+                            let result = OwnedResponsePdu::from_pdu(frame.pdu)
+                                .map_err(ClientError::Codec);
+                            match header {
+                                FrameHeader::Mbap(h) => {
+                                    txn_mgr.complete(
+                                        TransactionId(h.transaction_id.get()),
+                                        result,
+                                    );
+                                }
                                 FrameHeader::Rtu { .. } => {
-                                    // RTU doesn't have transaction IDs; use slot 0.
-                                    TransactionId(0)
-                                }
-                            };
-
-                            // Decode into owned response.
-                            match OwnedResponsePdu::from_pdu(frame.pdu) {
-                                Ok(response) => {
-                                    txn_mgr.complete(txn_id, Ok(response));
-                                }
-                                Err(e) => {
-                                    txn_mgr.complete(txn_id, Err(ClientError::Codec(e)));
+                                    // RTU frames carry no transaction ID. The
+                                    // client is single-in-flight for RTU (see
+                                    // ModbusClient::from_rtu_transport), so match
+                                    // the response to the one outstanding request.
+                                    txn_mgr.complete_oldest(result);
                                 }
                             }
+                        }
+                        Err(rusty_modbus_tcp::TransportError::Timeout) => {
+                            // A benign idle read timeout is NOT a connection
+                            // failure for a long-lived pipelined reader: the
+                            // socket simply had no frame within `read_timeout`.
+                            // Per-request deadlines are enforced by the
+                            // transaction manager's timeout sweep; a genuinely
+                            // dead peer eventually surfaces as a transport error
+                            // once TCP keepalive probes fail (bounded by the
+                            // keepalive time + interval set in the transport).
+                            // Keep the reader alive and wait for the next frame
+                            // rather than tearing down a healthy idle connection.
+                            //
+                            // NOTE: `is_connected()` therefore stays true on an
+                            // idle — or silently half-open — socket until that
+                            // keepalive-driven error arrives.
                         }
                         Err(rusty_modbus_tcp::TransportError::Disconnected) => {
                             connected.store(false, Ordering::Relaxed);

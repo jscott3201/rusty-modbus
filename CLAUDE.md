@@ -10,9 +10,16 @@ cargo test --workspace               # Run all 537+ tests
 cargo test -p rusty-modbus-codec     # Test a single crate
 cargo test -p rusty-modbus-conformance -- spec_fc01  # Run specific conformance tests
 cargo clippy --workspace --all-targets  # Lint (must be zero warnings; CI uses -Dwarnings)
+cargo nextest run --workspace        # Faster test runner (used in CI); doctests via `cargo test --doc`
 cargo fmt --all --check              # Format check
-cargo deny check                     # License/advisory checks
+cargo deny check bans licenses sources  # Supply-chain policy (advisories handled by cargo-audit)
+cargo audit                          # Advisory / vulnerability scan
 cargo check -p rusty-modbus --features full  # Verify facade with all features
+```
+
+Install local git hooks once per clone (pre-commit fmt, pre-push clippy):
+```bash
+bash scripts/install-hooks.sh
 ```
 
 Benchmarks:
@@ -31,7 +38,7 @@ maturin develop                      # Build + install into venv
 pytest tests/ -v                     # Run Python tests (39 tests)
 ```
 
-MSRV: **Rust 1.94**, Edition 2024, Resolver 3.
+MSRV: **Rust 1.95**, Edition 2024, Resolver 3. The toolchain is pinned in `rust-toolchain.toml`.
 
 ## Architecture
 
@@ -85,11 +92,14 @@ PyO3 0.28 + maturin crate providing `rusty_modbus` Python package. Excluded from
 
 ## CI Pipeline
 
-GitHub Actions (`.github/workflows/ci.yml`):
-- **Tier 1** (every push/PR): fmt, clippy (`--locked`), test (`--locked`, Linux + macOS + Windows), cargo-deny
-- **Tier 2** (v* tags): validate version → publish crates sequentially → build CLI binaries for 5 targets → GitHub release
+Four GitHub Actions workflows model a `feature → dev → main` flow plus tag releases:
 
-All CI commands use `--locked` to enforce `Cargo.lock` and prevent MSRV-breaking dependency resolution.
+- **`ci.yml`** (PRs → `dev`): fmt, clippy (`-D warnings`), nextest + doctests on Linux, and cargo-deny (only when dependency manifests change). The everyday fast gate.
+- **`release.yml`** (PRs → `main`): the comprehensive pre-release gate — fmt, clippy + nextest/doctests across Linux/macOS/Windows, feature-flag combination checks (facade no-default/full/all-features + no_std foundation), cargo-deny (`bans licenses sources`), and cargo-audit.
+- **`nightly.yml`** (06:30 UTC daily + push to `main`): clippy + tests on macOS, and a cargo-audit advisory-db drift scan against the pinned `Cargo.lock`.
+- **`publish.yml`** (`v*` tags): validate tag matches version → publish crates sequentially → build CLI binaries for 5 targets → GitHub release.
+
+All CI commands use `--locked` to enforce `Cargo.lock`. The toolchain is pinned to 1.95.0 in both `rust-toolchain.toml` and each workflow. `cargo-deny` enforces supply-chain policy (bans/licenses/sources, incl. a rustls-only TLS posture); `cargo-audit` enforces advisories. Local hooks (`scripts/install-hooks.sh`) mirror the cheap gate.
 
 Crate publish order matters due to inter-crate dependencies: types → codec → frame → tcp → rtu → tls → pool → client → server → gateway → sim → facade.
 
@@ -100,4 +110,4 @@ Crate publish order matters due to inter-crate dependencies: types → codec →
 - Async tests use `#[tokio::test]`, not a custom runtime
 - Transport implementations must impl both `TransportSink` and `TransportStream` traits
 - Server backends impl the `DataStore` trait (8 async methods covering 4 Modbus data tables)
-- `deny.toml` ignores: RUSTSEC-2025-0134 (rustls-pemfile, awaiting upstream), RUSTSEC-2026-0009 (time crate DoS, transitive/low-risk)
+- `deny.toml` advisory ignore: RUSTSEC-2025-0134 (rustls-pemfile unmaintained, migration pending); `cargo-audit` in CI mirrors this via `--ignore`

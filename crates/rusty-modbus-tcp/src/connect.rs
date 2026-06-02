@@ -15,6 +15,11 @@ use crate::config::TcpConfig;
 use crate::error::TransportError;
 use crate::transport::{TransportConnect, TransportSink, TransportStream};
 
+/// Interval between TCP keepalive probes once the idle `keepalive` time
+/// elapses. Bounds dead-peer detection latency instead of inheriting the long
+/// OS default probe interval.
+const KEEPALIVE_PROBE_INTERVAL: Duration = Duration::from_secs(10);
+
 /// TCP client transport — connects to a Modbus/TCP server.
 pub struct TcpTransport;
 
@@ -49,7 +54,14 @@ fn configure_socket(stream: &TcpStream, config: &TcpConfig) -> Result<(), Transp
 
     let sock_ref = socket2::SockRef::from(stream);
     if let Some(keepalive_duration) = config.keepalive {
-        let keepalive = socket2::TcpKeepalive::new().with_time(keepalive_duration);
+        // Set an explicit probe interval as well as the idle time so that
+        // dead-peer detection has a bounded, predictable upper bound rather
+        // than relying on the (long) OS default probe interval. The reader no
+        // longer tears down idle connections on read-timeout, so keepalive is
+        // the mechanism that eventually surfaces a silently half-open socket.
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(keepalive_duration)
+            .with_interval(KEEPALIVE_PROBE_INTERVAL);
         sock_ref.set_tcp_keepalive(&keepalive)?;
     }
 

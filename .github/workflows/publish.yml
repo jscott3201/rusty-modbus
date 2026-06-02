@@ -1,0 +1,160 @@
+# Publish pipeline for rusty-modbus — runs only on `v*` tags.
+#
+# Fires after a release PR has merged to `main` (and passed release.yml). It
+# validates the tag matches the workspace version, publishes every crate to
+# crates.io in dependency order, builds CLI binaries for 5 targets, and cuts a
+# GitHub release. Crate publish order matters due to inter-crate path+version
+# deps: types -> codec -> frame -> tcp -> rtu -> tls -> pool -> client ->
+# server -> gateway -> sim -> facade.
+#
+# Security: the only `run:` interpolation is via the GITHUB_REF env var (a
+# trusted tag ref), never `${{ github.event.* }}`.
+
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  validate:
+    name: validate release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: extract and validate version
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+
+  publish-crates:
+    name: publish to crates.io
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: verify inter-crate version requirements
+        # Final guard before the publish loop: a single path-only dep would
+        # abort mid-loop and leave a half-published registry.
+        run: python3 scripts/check-publish-versions.py
+      - name: publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          for crate in \
+            rusty-modbus-types \
+            rusty-modbus-codec \
+            rusty-modbus-frame \
+            rusty-modbus-tcp \
+            rusty-modbus-rtu \
+            rusty-modbus-tls \
+            rusty-modbus-pool \
+            rusty-modbus-client \
+            rusty-modbus-server \
+            rusty-modbus-gateway \
+            rusty-modbus-sim \
+            rusty-modbus; do
+            echo "::group::publish $crate"
+            # Idempotent: treat an already-published version as success so a
+            # re-run after a partial failure resumes instead of aborting.
+            cargo publish -p "$crate" --no-verify 2>&1 | tee /tmp/publish.log
+            status="${PIPESTATUS[0]}"
+            if [ "$status" -eq 0 ]; then
+              echo "published $crate; waiting for the index to update"
+              sleep 30
+            elif grep -qiE 'already (exists|uploaded)' /tmp/publish.log; then
+              echo "$crate is already on crates.io — skipping"
+            else
+              echo "publish failed for $crate" >&2
+              exit "$status"
+            fi
+            echo "::endgroup::"
+          done
+
+  build-cli-binaries:
+    name: CLI binary (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: modbus-linux-amd64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: modbus-linux-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: modbus-macos-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: modbus-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: modbus-windows-amd64.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+      - name: build CLI
+        run: cargo build --release -p rusty-modbus-cli --target ${{ matrix.target }}
+      - name: rename binary
+        shell: bash
+        run: |
+          src="target/${{ matrix.target }}/release/modbus"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            src="${src}.exe"
+          fi
+          cp "$src" "${{ matrix.binary }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: ${{ matrix.binary }}
+
+  github-release:
+    name: GitHub release
+    needs: [publish-crates, build-cli-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: dist/cli
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/cli/modbus-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

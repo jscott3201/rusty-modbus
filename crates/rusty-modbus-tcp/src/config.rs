@@ -29,7 +29,7 @@ impl Default for TcpConfig {
             read_timeout: Some(Duration::from_secs(30)),
             write_timeout: Some(Duration::from_secs(30)),
             tcp_nodelay: true,
-            keepalive: Some(Duration::from_secs(60)),
+            keepalive: Some(Duration::from_mins(1)),
             port: 502,
         }
     }

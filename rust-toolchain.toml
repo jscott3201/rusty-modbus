@@ -1,0 +1,7 @@
+# Pinned toolchain for reproducible builds across local + CI.
+# Bumps are tracked in the repo (see CLAUDE.md / README MSRV). Keep this in
+# sync with `rust-version` in the workspace Cargo.toml and the CI workflows.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "default"

@@ -74,8 +74,9 @@ pub fn build_server_config(config: &TlsServerConfig) -> Result<ServerConfig, Tls
             .build()
             .map_err(|e| TlsError::Certificate(format!("client verifier failed: {e}")))?
     } else {
-        // R-06 mandates mutual authentication. Warn loudly when disabled.
-        #[cfg(debug_assertions)]
+        // R-06 mandates mutual authentication. Warn loudly when disabled — in
+        // ALL build profiles, since a release server silently skipping client
+        // auth is exactly the dangerous case operators need to see.
         eprintln!(
             "WARNING: TLS server running WITHOUT client certificate verification. \
              This violates Modbus/TCP Security spec R-06 (mutual authentication)."

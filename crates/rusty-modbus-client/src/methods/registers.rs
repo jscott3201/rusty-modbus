@@ -46,7 +46,16 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::ReadHoldingRegisters(rhr) => Ok(rhr.registers().collect()),
+            OwnedResponsePdu::ReadHoldingRegisters(rhr) => {
+                let needed = quantity as usize * 2;
+                if usize::from(rhr.byte_count) < needed {
+                    return Err(ClientError::ShortResponse {
+                        expected: needed,
+                        actual: usize::from(rhr.byte_count),
+                    });
+                }
+                Ok(rhr.registers().take(quantity as usize).collect())
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -86,7 +95,16 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::ReadHoldingRegisters(rhr) => Ok(Bytes::copy_from_slice(rhr.raw())),
+            OwnedResponsePdu::ReadHoldingRegisters(rhr) => {
+                let needed = quantity as usize * 2;
+                if usize::from(rhr.byte_count) < needed {
+                    return Err(ClientError::ShortResponse {
+                        expected: needed,
+                        actual: usize::from(rhr.byte_count),
+                    });
+                }
+                Ok(Bytes::copy_from_slice(rhr.raw()))
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -126,7 +144,16 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::ReadInputRegisters(rir) => Ok(rir.registers().collect()),
+            OwnedResponsePdu::ReadInputRegisters(rir) => {
+                let needed = quantity as usize * 2;
+                if usize::from(rir.byte_count) < needed {
+                    return Err(ClientError::ShortResponse {
+                        expected: needed,
+                        actual: usize::from(rir.byte_count),
+                    });
+                }
+                Ok(rir.registers().take(quantity as usize).collect())
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -316,7 +343,16 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::ReadWriteMultipleRegisters(rw) => Ok(rw.registers().collect()),
+            OwnedResponsePdu::ReadWriteMultipleRegisters(rw) => {
+                let needed = read_quantity as usize * 2;
+                if usize::from(rw.byte_count) < needed {
+                    return Err(ClientError::ShortResponse {
+                        expected: needed,
+                        actual: usize::from(rw.byte_count),
+                    });
+                }
+                Ok(rw.registers().take(read_quantity as usize).collect())
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),

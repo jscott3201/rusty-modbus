@@ -102,7 +102,33 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
     }
 
+    /// Create a client over an RTU transport (RTU-over-TCP or serial).
+    ///
+    /// RTU is half-duplex: exactly one request may be outstanding at a time, and
+    /// RTU frames carry no transaction ID. This constructor therefore forces
+    /// `max_in_flight = 1`, and the reader matches each RTU response to the
+    /// single outstanding request. Use [`from_transport`](Self::from_transport)
+    /// for Modbus/TCP, which supports full 16-slot pipelining.
+    ///
+    /// This fixes RTU request/response correlation. Serial-line framing timing
+    /// (t3.5/t1.5) is a separate concern handled by the serial transport.
+    pub fn from_rtu_transport<R: TransportStream + Send + 'static>(
+        sink: S,
+        stream: R,
+        mut config: ClientConfig,
+    ) -> Self {
+        config.max_in_flight = 1;
+        Self::from_transport(sink, stream, config)
+    }
+
     /// Whether the client is currently connected.
+    ///
+    /// Reflects graceful close (peer FIN) and transport errors surfaced by the
+    /// background reader — it is **not** an active liveness probe. A benign idle
+    /// read timeout does not flip this to `false`, so a silently half-open
+    /// socket (e.g. a peer crash without RST) may report connected until TCP
+    /// keepalive probes fail. In-flight requests still fail with
+    /// [`ClientError::Timeout`] via the transaction sweep regardless.
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
@@ -169,7 +195,8 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         {
             let mut sink = self.sink.lock().await;
             if let Err(e) = sink.send(frame).await {
-                self.txn_mgr.complete(txn_id, Err(ClientError::Transport(e)));
+                self.txn_mgr
+                    .complete(txn_id, Err(ClientError::Transport(e)));
                 return match rx.await {
                     Ok(result) => result,
                     Err(_) => Err(ClientError::ShuttingDown),
@@ -178,10 +205,23 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         // Await response via oneshot channel.
-        match rx.await {
-            Ok(result) => result,
-            Err(_) => Err(ClientError::ShuttingDown),
+        let response = match rx.await {
+            Ok(result) => result?,
+            Err(_) => return Err(ClientError::ShuttingDown),
+        };
+
+        // Verify the server echoed the requested function code (Modbus V1.1b3
+        // §4.4: a normal response repeats the FC; an error response sets
+        // `fc | 0x80`). Reject anything else so a stale or misrouted frame that
+        // happens to land on this transaction slot cannot be delivered as if it
+        // answered this request.
+        let expected = function_code.code();
+        let got = response.function_code();
+        if got != expected && got != (expected | 0x80) {
+            return Err(ClientError::UnexpectedResponse { expected, got });
         }
+
+        Ok(response)
     }
 
     /// Send a broadcast write (Unit ID 0x00) — no response expected.

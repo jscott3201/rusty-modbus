@@ -39,12 +39,15 @@ fn _start_test_server() -> PyResult<String> {
         runtime.block_on(async move {
             loop {
                 let accept_result = listener.accept().await;
-                let (mut sink, mut stream, _peer) = match accept_result {
+                let (mut sink, mut stream, _peer, guard) = match accept_result {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
 
                 tokio::spawn(async move {
+                    // Hold the connection guard for the lifetime of this task so
+                    // the server's connection counter stays accurate.
+                    let _guard = guard;
                     loop {
                         let frame = match stream.recv().await {
                             Ok(f) => f,

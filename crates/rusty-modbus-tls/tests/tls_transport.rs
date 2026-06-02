@@ -20,8 +20,23 @@ struct TestCerts {
     client_key_path: NamedTempFile,
 }
 
-/// Generate self-signed CA, server, and client certificates for testing.
+/// Generate the default test certs: a server cert with a `127.0.0.1` DNS SAN +
+/// IP SAN, and a plain client cert (no role extension).
 fn generate_test_certs() -> TestCerts {
+    generate_certs_custom(&["127.0.0.1"], true, None)
+}
+
+/// Flexible cert generator for the TLS hardening tests.
+///
+/// - `server_dns_sans` — DNS subject-alt-names placed on the server cert.
+/// - `include_server_ip` — also add a `127.0.0.1` IP SAN.
+/// - `client_role` — when set, embeds the Modbus role OID extension
+///   (`1.3.6.1.4.1.50316.802.1`) carrying this role in the client cert.
+fn generate_certs_custom(
+    server_dns_sans: &[&str],
+    include_server_ip: bool,
+    client_role: Option<&str>,
+) -> TestCerts {
     // Generate CA.
     let mut ca_params = CertificateParams::new(vec!["Test CA".to_string()]).unwrap();
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -29,17 +44,32 @@ fn generate_test_certs() -> TestCerts {
     let ca = CertifiedIssuer::self_signed(ca_params, ca_key).unwrap();
 
     // Generate server cert signed by CA.
-    let mut server_params = CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
-    server_params
-        .subject_alt_names
-        .push(rcgen::SanType::IpAddress(std::net::IpAddr::V4(
-            std::net::Ipv4Addr::LOCALHOST,
-        )));
+    let sans: Vec<String> = server_dns_sans.iter().map(|s| (*s).to_string()).collect();
+    let mut server_params = CertificateParams::new(sans).unwrap();
+    if include_server_ip {
+        server_params
+            .subject_alt_names
+            .push(rcgen::SanType::IpAddress(std::net::IpAddr::V4(
+                std::net::Ipv4Addr::LOCALHOST,
+            )));
+    }
     let server_key = KeyPair::generate().unwrap();
     let server_cert = server_params.signed_by(&server_key, &*ca).unwrap();
 
-    // Generate client cert signed by CA.
-    let client_params = CertificateParams::new(vec!["Test Client".to_string()]).unwrap();
+    // Generate client cert signed by CA, optionally with a Modbus role extension.
+    let mut client_params = CertificateParams::new(vec!["Test Client".to_string()]).unwrap();
+    if let Some(role) = client_role {
+        // DER-encode the role as an ASN.1 UTF8String (tag 0x0C) — the shape
+        // `role::extract_role` parses (Security Spec §8.4, R-22).
+        let mut content = vec![0x0C, u8::try_from(role.len()).unwrap()];
+        content.extend_from_slice(role.as_bytes());
+        client_params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 50316, 802, 1],
+                content,
+            ));
+    }
     let client_key = KeyPair::generate().unwrap();
     let client_cert = client_params.signed_by(&client_key, &*ca).unwrap();
 
@@ -102,7 +132,7 @@ async fn mutual_auth_roundtrip() {
 
     // Server: accept, echo one frame.
     let server = tokio::spawn(async move {
-        let (mut sink, mut stream, _) = listener.accept().await.unwrap();
+        let (mut sink, mut stream, _, _role) = listener.accept().await.unwrap();
         let frame = stream.recv().await.unwrap();
         sink.send(frame).await.unwrap();
     });
@@ -111,6 +141,7 @@ async fn mutual_auth_roundtrip() {
         ca_cert: certs.ca_cert_path.path().to_path_buf(),
         client_cert: certs.client_cert_path.path().to_path_buf(),
         client_key: certs.client_key_path.path().to_path_buf(),
+        server_name: None,
         connect_timeout: Duration::from_secs(5),
         read_timeout: Some(Duration::from_secs(5)),
         write_timeout: Some(Duration::from_secs(5)),
@@ -147,7 +178,7 @@ async fn full_modbus_over_tls() {
 
     // Server: accept, respond with ReadHoldingRegisters response.
     let server = tokio::spawn(async move {
-        let (mut sink, mut stream, _) = listener.accept().await.unwrap();
+        let (mut sink, mut stream, _, _role) = listener.accept().await.unwrap();
         let req = stream.recv().await.unwrap();
         let txn_id = match req.header {
             FrameHeader::Mbap(h) => h.transaction_id.get(),
@@ -166,6 +197,7 @@ async fn full_modbus_over_tls() {
         ca_cert: certs.ca_cert_path.path().to_path_buf(),
         client_cert: certs.client_cert_path.path().to_path_buf(),
         client_key: certs.client_key_path.path().to_path_buf(),
+        server_name: None,
         connect_timeout: Duration::from_secs(5),
         read_timeout: Some(Duration::from_secs(5)),
         write_timeout: Some(Duration::from_secs(5)),
@@ -250,4 +282,173 @@ async fn missing_client_cert_fails() {
     let _server_failed = server.await.unwrap();
     // At least one side should have failed.
     assert!(result.is_err() || _server_failed);
+}
+
+#[tokio::test]
+async fn hostname_verification_roundtrip() {
+    // Server cert carries a DNS SAN (no IP SAN); the client verifies by name.
+    let certs = generate_certs_custom(&["modbus.test"], false, None);
+
+    let server_config = TlsServerConfig {
+        server_cert: certs.server_cert_path.path().to_path_buf(),
+        server_key: certs.server_key_path.path().to_path_buf(),
+        ca_cert: certs.ca_cert_path.path().to_path_buf(),
+        require_client_cert: true,
+        ..TlsServerConfig::default()
+    };
+    let listener = TlsServerListener::bind("127.0.0.1:0".parse().unwrap(), &server_config)
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut sink, mut stream, _, _role) = listener.accept().await.unwrap();
+        let frame = stream.recv().await.unwrap();
+        sink.send(frame).await.unwrap();
+    });
+
+    let client_config = TlsClientConfig {
+        ca_cert: certs.ca_cert_path.path().to_path_buf(),
+        client_cert: certs.client_cert_path.path().to_path_buf(),
+        client_key: certs.client_key_path.path().to_path_buf(),
+        // Verify the cert against this hostname (sent as SNI), not the IP.
+        server_name: Some("modbus.test".to_string()),
+        connect_timeout: Duration::from_secs(5),
+        read_timeout: Some(Duration::from_secs(5)),
+        write_timeout: Some(Duration::from_secs(5)),
+    };
+
+    let (mut sink, mut stream) = TlsTransport::connect(addr, &client_config).await.unwrap();
+    let pdu = [0x03, 0x00, 0x00, 0x00, 0x01];
+    sink.send(make_frame(1, 0xFF, &pdu)).await.unwrap();
+    let resp = stream.recv().await.unwrap();
+    assert_eq!(&resp.pdu[..], &pdu);
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn hostname_verification_rejects_wrong_name() {
+    // The server cert is valid for BOTH "modbus.test" (DNS) and 127.0.0.1 (IP).
+    // This isolates the control under test: verifying against "wrong.example"
+    // must fail *because of hostname checking* — IP fallback would have
+    // succeeded (the cert carries the connection IP), so a pass here cannot be
+    // attributed to anything but the wrong name.
+    let certs = generate_certs_custom(&["modbus.test"], true, None);
+
+    let server_config = TlsServerConfig {
+        server_cert: certs.server_cert_path.path().to_path_buf(),
+        server_key: certs.server_key_path.path().to_path_buf(),
+        ca_cert: certs.ca_cert_path.path().to_path_buf(),
+        require_client_cert: true,
+        ..TlsServerConfig::default()
+    };
+    let listener = TlsServerListener::bind("127.0.0.1:0".parse().unwrap(), &server_config)
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Server side will fail the handshake (peer rejects the cert).
+    let server = tokio::spawn(async move { listener.accept().await.is_err() });
+
+    let client_config = TlsClientConfig {
+        ca_cert: certs.ca_cert_path.path().to_path_buf(),
+        client_cert: certs.client_cert_path.path().to_path_buf(),
+        client_key: certs.client_key_path.path().to_path_buf(),
+        // Verify against a name the cert does NOT carry → must be rejected.
+        server_name: Some("wrong.example".to_string()),
+        connect_timeout: Duration::from_secs(2),
+        read_timeout: Some(Duration::from_secs(2)),
+        write_timeout: Some(Duration::from_secs(2)),
+    };
+
+    let result = TlsTransport::connect(addr, &client_config).await;
+    assert!(
+        result.is_err(),
+        "hostname mismatch must fail certificate verification"
+    );
+    let _ = server.await;
+}
+
+#[tokio::test]
+async fn client_role_surfaced_from_handshake() {
+    // Client cert carries the Modbus role extension with role "operator".
+    let certs = generate_certs_custom(&["127.0.0.1"], true, Some("operator"));
+
+    let server_config = TlsServerConfig {
+        server_cert: certs.server_cert_path.path().to_path_buf(),
+        server_key: certs.server_key_path.path().to_path_buf(),
+        ca_cert: certs.ca_cert_path.path().to_path_buf(),
+        require_client_cert: true,
+        ..TlsServerConfig::default()
+    };
+    let listener = TlsServerListener::bind("127.0.0.1:0".parse().unwrap(), &server_config)
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // The server surfaces the extracted role from accept().
+    let server = tokio::spawn(async move {
+        let (_sink, _stream, _addr, role) = listener.accept().await.unwrap();
+        role
+    });
+
+    let client_config = TlsClientConfig {
+        ca_cert: certs.ca_cert_path.path().to_path_buf(),
+        client_cert: certs.client_cert_path.path().to_path_buf(),
+        client_key: certs.client_key_path.path().to_path_buf(),
+        server_name: None,
+        connect_timeout: Duration::from_secs(5),
+        read_timeout: Some(Duration::from_secs(5)),
+        write_timeout: Some(Duration::from_secs(5)),
+    };
+    let _client = TlsTransport::connect(addr, &client_config).await.unwrap();
+
+    let role = server.await.unwrap();
+    assert_eq!(
+        role.as_deref(),
+        Some("operator"),
+        "accept() must surface the client's Modbus role from its certificate"
+    );
+}
+
+#[tokio::test]
+async fn client_without_role_extension_yields_null_role() {
+    // R-23: a client cert with no Modbus role extension must surface the NULL
+    // role (None), not Some("") or an error.
+    let certs = generate_test_certs(); // default client cert has no role extension
+
+    let server_config = TlsServerConfig {
+        server_cert: certs.server_cert_path.path().to_path_buf(),
+        server_key: certs.server_key_path.path().to_path_buf(),
+        ca_cert: certs.ca_cert_path.path().to_path_buf(),
+        require_client_cert: true,
+        ..TlsServerConfig::default()
+    };
+    let listener = TlsServerListener::bind("127.0.0.1:0".parse().unwrap(), &server_config)
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (_sink, _stream, _addr, role) = listener.accept().await.unwrap();
+        role
+    });
+
+    let client_config = TlsClientConfig {
+        ca_cert: certs.ca_cert_path.path().to_path_buf(),
+        client_cert: certs.client_cert_path.path().to_path_buf(),
+        client_key: certs.client_key_path.path().to_path_buf(),
+        server_name: None,
+        connect_timeout: Duration::from_secs(5),
+        read_timeout: Some(Duration::from_secs(5)),
+        write_timeout: Some(Duration::from_secs(5)),
+    };
+    let _client = TlsTransport::connect(addr, &client_config).await.unwrap();
+
+    let role = server.await.unwrap();
+    assert_eq!(
+        role, None,
+        "R-23: cert without the role extension → NULL role"
+    );
 }

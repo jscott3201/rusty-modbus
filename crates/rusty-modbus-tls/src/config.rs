@@ -15,6 +15,16 @@ pub struct TlsClientConfig {
     pub client_cert: PathBuf,
     /// Client private key.
     pub client_key: PathBuf,
+    /// Server name to verify against the server certificate (SNI + hostname
+    /// verification).
+    ///
+    /// - `Some(hostname)` — send `hostname` as the TLS SNI and require it to
+    ///   match a DNS SAN in the server certificate. Use this when connecting to
+    ///   a device by name.
+    /// - `None` (default) — verify against the connection's **IP address**
+    ///   (the address passed to [`TlsTransport::connect`](crate::TlsTransport::connect)),
+    ///   which must appear as an IP SAN in the server certificate.
+    pub server_name: Option<String>,
     /// Connection timeout. Default: 5s.
     pub connect_timeout: Duration,
     /// Read timeout. Default: 30s.
@@ -29,6 +39,7 @@ impl Default for TlsClientConfig {
             ca_cert: PathBuf::new(),
             client_cert: PathBuf::new(),
             client_key: PathBuf::new(),
+            server_name: None,
             connect_timeout: Duration::from_secs(5),
             read_timeout: Some(Duration::from_secs(30)),
             write_timeout: Some(Duration::from_secs(30)),
@@ -78,6 +89,26 @@ impl Default for TlsServerConfig {
             require_client_cert: true,
             authz_callback: None,
             max_connections: 64,
+        }
+    }
+}
+
+impl TlsServerConfig {
+    /// Apply the configured authorization callback to a request (Security Spec
+    /// §8.4, R-24/R-31).
+    ///
+    /// Returns [`AuthzDecision::Authorized`] when no callback is configured
+    /// (allow-all default). A server enforcing per-request authorization builds
+    /// an [`AuthzRequest`] — using the client role surfaced by
+    /// [`TlsServerListener::accept`](crate::TlsServerListener::accept) — and
+    /// consults this before processing each request, returning
+    /// `IllegalFunction` (0x01) when the decision is
+    /// [`AuthzDecision::NotAuthorized`].
+    #[must_use]
+    pub fn authorize(&self, request: &AuthzRequest) -> AuthzDecision {
+        match &self.authz_callback {
+            Some(callback) => callback(request),
+            None => AuthzDecision::Authorized,
         }
     }
 }

@@ -46,6 +46,16 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         match response {
             OwnedResponsePdu::ReadCoils(rc) => {
+                // Guard against a server returning fewer bytes than the
+                // requested quantity needs: `coil(i)` indexes the bit buffer
+                // unchecked, so a short response would otherwise panic.
+                let needed = (quantity as usize).div_ceil(8);
+                if usize::from(rc.byte_count) < needed {
+                    return Err(ClientError::ShortResponse {
+                        expected: needed,
+                        actual: usize::from(rc.byte_count),
+                    });
+                }
                 let mut coils = Vec::with_capacity(quantity as usize);
                 for i in 0..quantity as usize {
                     coils.push(rc.coil(i));
@@ -92,6 +102,15 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         match response {
             OwnedResponsePdu::ReadDiscreteInputs(rd) => {
+                // Guard against a short response (see `read_coils`): `coil(i)`
+                // indexes the bit buffer unchecked.
+                let needed = (quantity as usize).div_ceil(8);
+                if usize::from(rd.byte_count) < needed {
+                    return Err(ClientError::ShortResponse {
+                        expected: needed,
+                        actual: usize::from(rd.byte_count),
+                    });
+                }
                 let mut inputs = Vec::with_capacity(quantity as usize);
                 for i in 0..quantity as usize {
                     inputs.push(rd.coil(i));

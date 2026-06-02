@@ -60,3 +60,6 @@ java/src/main/resources/win32-*/
 node_modules/
 pkg/
 *.tgz
+
+# Local agent/plugin scratch (not part of the published project)
+docs/superpowers/

@@ -10,18 +10,19 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Complete Modbus protocol stack — TCP, RTU, TLS"
+readme = "README.md"
 
 [dependencies]
-rusty-modbus-types = { path = "../rusty-modbus-types" }
-rusty-modbus-codec = { path = "../rusty-modbus-codec" }
-rusty-modbus-frame = { path = "../rusty-modbus-frame" }
-rusty-modbus-tcp = { path = "../rusty-modbus-tcp", optional = true }
-rusty-modbus-rtu = { path = "../rusty-modbus-rtu", default-features = false, optional = true }
-rusty-modbus-pool = { path = "../rusty-modbus-pool", optional = true }
-rusty-modbus-client = { path = "../rusty-modbus-client", optional = true }
-rusty-modbus-server = { path = "../rusty-modbus-server", optional = true }
-rusty-modbus-gateway = { path = "../rusty-modbus-gateway", optional = true }
-rusty-modbus-tls = { path = "../rusty-modbus-tls", optional = true }
+rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec", version = "0.1.0" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame", version = "0.1.0" }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp", version = "0.1.0", optional = true }
+rusty-modbus-rtu = { path = "../rusty-modbus-rtu", version = "0.1.0", default-features = false, optional = true }
+rusty-modbus-pool = { path = "../rusty-modbus-pool", version = "0.1.0", optional = true }
+rusty-modbus-client = { path = "../rusty-modbus-client", version = "0.1.0", optional = true }
+rusty-modbus-server = { path = "../rusty-modbus-server", version = "0.1.0", optional = true }
+rusty-modbus-gateway = { path = "../rusty-modbus-gateway", version = "0.1.0", optional = true }
+rusty-modbus-tls = { path = "../rusty-modbus-tls", version = "0.1.0", optional = true }
 
 [features]
 default = ["tcp"]
@@ -37,3 +38,6 @@ full = ["tcp", "rtu", "rtu-tcp", "tls", "server", "gateway", "pool"]
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
+
+[package.metadata.docs.rs]
+all-features = true

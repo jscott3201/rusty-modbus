@@ -1,260 +1,140 @@
-name: CI
+# Per-PR CI gate for rusty-modbus — runs on PRs into `dev`.
+#
+# Workflow model: feature branch -> PR -> `dev` (this gate) -> release PR -> `main`
+# (the comprehensive gate in release.yml). Nightly drift lives in nightly.yml,
+# and tag-triggered crates.io publishing lives in publish.yml.
+#
+# This gate compiles + lints + tests on Linux (the common case) and runs
+# cargo-deny only when dependency manifests change. The cross-platform matrix,
+# cargo-audit, and feature-combination checks run at the release gate to keep
+# everyday `dev` PRs fast. Install local hooks with `bash scripts/install-hooks.sh`.
+#
+# Security: no `${{ github.event.* }}` in any `run:` (confined to if:/with:).
+
+name: ci
 
 on:
-  push:
-    branches: [main, dev]
-    tags: ["v*"]
   pull_request:
-    branches: [main, dev]
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-Dwarnings"
+  RUST_BACKTRACE: short
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 permissions:
-  contents: write
-  id-token: write
-
-# =============================================================================
-# Tier 1 — CI (runs on every push and PR)
-# =============================================================================
+  contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    name: detect changes
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      deps: ${{ steps.filter.outputs.deps }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            deps:
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'crates/*/Cargo.toml'
+              - 'benchmarks/Cargo.toml'
+              - 'deny.toml'
+
   fmt:
-    name: Rustfmt
+    name: fmt
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94"
+          toolchain: "1.95.0"
           components: rustfmt
       - run: cargo fmt --all --check
 
   clippy:
-    name: Clippy
+    name: clippy
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94"
+          toolchain: "1.95.0"
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+    name: test
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      # Keep the test link step lean (avoids ubuntu `ld` mmap pressure).
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94"
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: cargo nextest + doctests
+        run: |
+          cargo nextest run --workspace --locked
+          cargo test --workspace --locked --doc
+
+  python:
+    name: python bindings
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}
-      - run: cargo test --workspace --locked
+          workspaces: crates/rusty-modbus-python
+      # The python crate is excluded from the workspace (it needs Python headers
+      # to build the cdylib), so none of the jobs above compile it. It is the
+      # only exhaustive consumer of ClientError, so a new ClientError variant
+      # silently breaks it. Compile it here to catch that class of regression.
+      # (Its Cargo.lock is gitignored, so no --locked.)
+      - name: clippy (python bindings)
+        working-directory: crates/rusty-modbus-python
+        run: cargo clippy --all-targets -- -D warnings
 
   deny:
-    name: Cargo Deny
+    name: cargo-deny
+    needs: changes
+    # Skip when no dependency manifests changed (the common case for source-only
+    # PRs). On a manual dispatch paths-filter has no base to diff, so run it
+    # unconditionally there to give maintainers on-demand full deny coverage.
+    if: |
+      (github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch')
+      && (needs.changes.outputs.deps == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
-
-  # ===========================================================================
-  # Tier 2 — Release (only on v* tags, after all CI passes)
-  # ===========================================================================
-
-  validate:
-    name: Validate Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [fmt, clippy, test, deny]
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Extract and validate version
-        id: version
-        run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
-            exit 1
-          fi
-          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
-
-  publish-crates:
-    name: Publish to crates.io
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: validate
-    runs-on: ubuntu-latest
-    environment: release
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94"
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Publish rusty-modbus-types
-        run: cargo publish -p rusty-modbus-types --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-codec
-        run: cargo publish -p rusty-modbus-codec --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-frame
-        run: cargo publish -p rusty-modbus-frame --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-tcp
-        run: cargo publish -p rusty-modbus-tcp --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-rtu
-        run: cargo publish -p rusty-modbus-rtu --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-tls
-        run: cargo publish -p rusty-modbus-tls --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-pool
-        run: cargo publish -p rusty-modbus-pool --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-client
-        run: cargo publish -p rusty-modbus-client --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-server
-        run: cargo publish -p rusty-modbus-server --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-gateway
-        run: cargo publish -p rusty-modbus-gateway --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus-sim
-        run: cargo publish -p rusty-modbus-sim --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: sleep 30
-
-      - name: Publish rusty-modbus
-        run: cargo publish -p rusty-modbus --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-  github-release:
-    name: GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [publish-crates, build-cli-binaries]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cli-*
-          path: dist/cli
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            dist/cli/modbus-*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ===========================================================================
-  # Tier 2b — CLI binary distribution
-  # ===========================================================================
-
-  build-cli-binaries:
-    name: CLI Binary (${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: validate
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: modbus-linux-amd64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            binary: modbus-linux-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: modbus-macos-amd64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: modbus-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: modbus-windows-amd64.exe
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.94"
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: cli-${{ matrix.target }}
-
-      - name: Build CLI
-        run: cargo build --release -p rusty-modbus-cli --target ${{ matrix.target }}
-
-      - name: Rename binary
-        shell: bash
-        run: |
-          src="target/${{ matrix.target }}/release/modbus"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            src="${src}.exe"
-          fi
-          cp "$src" "${{ matrix.binary }}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cli-${{ matrix.target }}
-          path: ${{ matrix.binary }}
+          command: check bans licenses sources
