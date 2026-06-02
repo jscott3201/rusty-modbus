@@ -122,17 +122,18 @@ jobs:
         with:
           toolchain: "1.95.0"
           components: clippy
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/rusty-modbus-python
-      # Excluded from the workspace, so the jobs above never compile it; it is
-      # the only exhaustive ClientError consumer. (Cargo.lock gitignored.)
+      # Excluded from the workspace, so the jobs above never compile it. The
+      # dedicated python.yml gate runs maturin/pytest/wheels/stubs; keep this
+      # release compile as an extra Rust API drift check.
       - name: clippy (python bindings)
         working-directory: crates/rusty-modbus-python
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
   deny:
     name: cargo-deny

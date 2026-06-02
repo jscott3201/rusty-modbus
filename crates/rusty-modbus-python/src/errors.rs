@@ -3,6 +3,8 @@
 use pyo3::create_exception;
 use pyo3::prelude::*;
 use rusty_modbus_client::ClientError;
+use rusty_modbus_server::ServerError;
+use rusty_modbus_types::ExceptionCode;
 
 // Base exception — all rusty_modbus errors subclass this.
 create_exception!(rusty_modbus, ModbusError, pyo3::exceptions::PyException);
@@ -12,6 +14,20 @@ create_exception!(rusty_modbus, TimeoutError, ModbusError);
 create_exception!(rusty_modbus, ConnectionError, ModbusError);
 create_exception!(rusty_modbus, ModbusExceptionError, ModbusError);
 create_exception!(rusty_modbus, RetryError, ModbusError);
+create_exception!(rusty_modbus, IllegalFunctionError, ModbusError);
+create_exception!(rusty_modbus, IllegalDataAddressError, ModbusError);
+create_exception!(rusty_modbus, IllegalDataValueError, ModbusError);
+create_exception!(rusty_modbus, ServerDeviceFailureError, ModbusError);
+create_exception!(rusty_modbus, AcknowledgeError, ModbusError);
+create_exception!(rusty_modbus, ServerDeviceBusyError, ModbusError);
+create_exception!(rusty_modbus, NegativeAcknowledgeError, ModbusError);
+create_exception!(rusty_modbus, MemoryParityError, ModbusError);
+create_exception!(rusty_modbus, GatewayPathUnavailableError, ModbusError);
+create_exception!(
+    rusty_modbus,
+    GatewayTargetDeviceFailedToRespondError,
+    ModbusError
+);
 
 /// Register all exception types on the module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -23,6 +39,40 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type::<ModbusExceptionError>(),
     )?;
     m.add("RetryError", m.py().get_type::<RetryError>())?;
+    m.add(
+        "IllegalFunctionError",
+        m.py().get_type::<IllegalFunctionError>(),
+    )?;
+    m.add(
+        "IllegalDataAddressError",
+        m.py().get_type::<IllegalDataAddressError>(),
+    )?;
+    m.add(
+        "IllegalDataValueError",
+        m.py().get_type::<IllegalDataValueError>(),
+    )?;
+    m.add(
+        "ServerDeviceFailureError",
+        m.py().get_type::<ServerDeviceFailureError>(),
+    )?;
+    m.add("AcknowledgeError", m.py().get_type::<AcknowledgeError>())?;
+    m.add(
+        "ServerDeviceBusyError",
+        m.py().get_type::<ServerDeviceBusyError>(),
+    )?;
+    m.add(
+        "NegativeAcknowledgeError",
+        m.py().get_type::<NegativeAcknowledgeError>(),
+    )?;
+    m.add("MemoryParityError", m.py().get_type::<MemoryParityError>())?;
+    m.add(
+        "GatewayPathUnavailableError",
+        m.py().get_type::<GatewayPathUnavailableError>(),
+    )?;
+    m.add(
+        "GatewayTargetDeviceFailedToRespondError",
+        m.py().get_type::<GatewayTargetDeviceFailedToRespondError>(),
+    )?;
     Ok(())
 }
 
@@ -40,9 +90,7 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
             );
             ModbusExceptionError::new_err((msg, code))
         }
-        ClientError::Transport(e) => {
-            ConnectionError::new_err(format!("transport error: {e}"))
-        }
+        ClientError::Transport(e) => ConnectionError::new_err(format!("transport error: {e}")),
         ClientError::NotConnected => ConnectionError::new_err("not connected"),
         ClientError::ShuttingDown => ConnectionError::new_err("client is shutting down"),
         ClientError::RetriesExhausted {
@@ -65,5 +113,42 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
         ClientError::ShortResponse { expected, actual } => ModbusError::new_err(format!(
             "short response: need {expected} data bytes for the request, got {actual}"
         )),
+    }
+}
+
+/// Convert a `ServerError` into the appropriate Python exception.
+pub fn server_error_to_pyerr(err: ServerError) -> PyErr {
+    match err {
+        ServerError::Bind(e) => ConnectionError::new_err(format!("bind failed: {e}")),
+        ServerError::Transport(e) => ConnectionError::new_err(format!("transport error: {e}")),
+        ServerError::AlreadyRunning => ModbusError::new_err("server is already running"),
+    }
+}
+
+/// Convert a Python data-store exception into the Modbus exception code sent on
+/// the wire. Unknown Python exceptions become ServerDeviceFailure.
+pub fn pyerr_to_exception_code(py: Python<'_>, err: PyErr) -> ExceptionCode {
+    if err.is_instance_of::<IllegalFunctionError>(py) {
+        ExceptionCode::IllegalFunction
+    } else if err.is_instance_of::<IllegalDataAddressError>(py) {
+        ExceptionCode::IllegalDataAddress
+    } else if err.is_instance_of::<IllegalDataValueError>(py) {
+        ExceptionCode::IllegalDataValue
+    } else if err.is_instance_of::<ServerDeviceFailureError>(py) {
+        ExceptionCode::ServerDeviceFailure
+    } else if err.is_instance_of::<AcknowledgeError>(py) {
+        ExceptionCode::Acknowledge
+    } else if err.is_instance_of::<ServerDeviceBusyError>(py) {
+        ExceptionCode::ServerDeviceBusy
+    } else if err.is_instance_of::<NegativeAcknowledgeError>(py) {
+        ExceptionCode::NegativeAcknowledge
+    } else if err.is_instance_of::<MemoryParityError>(py) {
+        ExceptionCode::MemoryParityError
+    } else if err.is_instance_of::<GatewayPathUnavailableError>(py) {
+        ExceptionCode::GatewayPathUnavailable
+    } else if err.is_instance_of::<GatewayTargetDeviceFailedToRespondError>(py) {
+        ExceptionCode::GatewayTargetDeviceFailedToRespond
+    } else {
+        ExceptionCode::ServerDeviceFailure
     }
 }

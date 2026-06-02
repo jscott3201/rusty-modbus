@@ -1,0 +1,191 @@
+# Dedicated gate for the workspace-excluded PyO3 bindings.
+
+name: python
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/python.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "deny.toml"
+      - "crates/rusty-modbus-client/**"
+      - "crates/rusty-modbus-codec/**"
+      - "crates/rusty-modbus-frame/**"
+      - "crates/rusty-modbus-python/**"
+      - "crates/rusty-modbus-server/**"
+      - "crates/rusty-modbus-tcp/**"
+      - "crates/rusty-modbus-tls/**"
+      - "crates/rusty-modbus-types/**"
+  workflow_dispatch:
+
+concurrency:
+  group: python-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  develop-test:
+    name: wheel install + pytest (${{ matrix.python-version }})
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.14", "3.14t"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: clippy
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rusty-modbus-python
+      - name: install python test tools
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install "maturin>=1.12,<2" pytest pytest-asyncio
+      - name: cargo clippy
+        working-directory: crates/rusty-modbus-python
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: build wheel
+        working-directory: crates/rusty-modbus-python
+        run: maturin build --release --locked -o dist -i "$(command -v python)"
+      - name: install wheel
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install --force-reinstall dist/*.whl
+      - name: pytest
+        if: matrix.python-version != '3.14t'
+        working-directory: crates/rusty-modbus-python
+        run: pytest tests/ -v
+      - name: pytest free-threaded
+        if: matrix.python-version == '3.14t'
+        working-directory: crates/rusty-modbus-python
+        env:
+          PYTHON_GIL: "0"
+        run: pytest tests/ -v
+
+  build-wheels:
+    name: build wheel (${{ matrix.python-version }})
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.14"
+            expected-tag: "cp314-"
+          - python-version: "3.14t"
+            expected-tag: "cp314t"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rusty-modbus-python
+      - name: install maturin
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install "maturin>=1.12,<2" pytest pytest-asyncio
+      - name: build wheel
+        working-directory: crates/rusty-modbus-python
+        run: maturin build --release --locked -o dist -i "$(command -v python)"
+      - name: assert wheel tag
+        working-directory: crates/rusty-modbus-python
+        env:
+          EXPECTED_TAG: ${{ matrix.expected-tag }}
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+
+          wheels = glob.glob("dist/*.whl")
+          expected = os.environ["EXPECTED_TAG"]
+          assert wheels, "no wheels were built"
+          assert any(expected in wheel for wheel in wheels), (expected, wheels)
+          PY
+      - name: install wheel
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install --force-reinstall dist/*.whl
+      - name: test installed wheel
+        if: matrix.python-version != '3.14t'
+        working-directory: crates/rusty-modbus-python
+        run: pytest tests/ -v
+      - name: test installed wheel free-threaded
+        if: matrix.python-version == '3.14t'
+        working-directory: crates/rusty-modbus-python
+        env:
+          PYTHON_GIL: "0"
+        run: pytest tests/ -v
+
+  stubs:
+    name: stubs
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rusty-modbus-python
+      - name: install typing tools
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install "maturin>=1.12,<2" mypy pyright
+      - name: build wheel
+        working-directory: crates/rusty-modbus-python
+        run: maturin build --release --locked -o dist -i "$(command -v python)"
+      - name: install wheel
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install --force-reinstall dist/*.whl
+      - name: stubtest
+        working-directory: crates/rusty-modbus-python
+        run: python -m mypy.stubtest rusty_modbus --allowlist stubtest-allowlist.txt --ignore-unused-allowlist
+      - name: pyright verifytypes
+        working-directory: crates/rusty-modbus-python
+        run: |
+          SITE_PACKAGES=$(python - <<'PY'
+          import site
+
+          print(site.getsitepackages()[0])
+          PY
+          )
+          PYTHONPATH="$SITE_PACKAGES" python -m pyright --verifytypes rusty_modbus
+
+  supply-chain:
+    name: python crate supply-chain
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+      - name: cargo-deny python crate
+        run: cargo deny --manifest-path crates/rusty-modbus-python/Cargo.toml check --config deny.toml bans licenses sources
+      - name: cargo-audit python crate
+        run: cargo audit --file crates/rusty-modbus-python/Cargo.lock --ignore RUSTSEC-2025-0134

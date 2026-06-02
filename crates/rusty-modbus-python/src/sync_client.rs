@@ -39,20 +39,17 @@ impl SyncModbusClient {
     /// Connect to a Modbus/TCP server (blocking).
     #[staticmethod]
     #[pyo3(signature = (address, config=None))]
-    fn connect(address: &str, config: Option<ClientConfig>) -> PyResult<Self> {
+    fn connect(py: Python<'_>, address: &str, config: Option<ClientConfig>) -> PyResult<Self> {
         let addr: SocketAddr = address
             .parse()
             .map_err(|e| errors::ConnectionError::new_err(format!("invalid address: {e}")))?;
-        let cfg = config.map_or_else(
-            rusty_modbus_client::ClientConfig::default,
-            |c| c.to_rust(),
-        );
+        let cfg = config.map_or_else(rusty_modbus_client::ClientConfig::default, |c| c.to_rust());
 
         let runtime = Runtime::new()
             .map_err(|e| errors::ConnectionError::new_err(format!("runtime error: {e}")))?;
 
-        let client = runtime
-            .block_on(RustClient::connect(addr, cfg))
+        let client = py
+            .detach(|| runtime.block_on(RustClient::connect(addr, cfg)))
             .map_err(errors::client_error_to_pyerr)?;
 
         Ok(Self {
@@ -64,21 +61,23 @@ impl SyncModbusClient {
     /// Connect to a Modbus/TCP Security (TLS) server (blocking).
     #[staticmethod]
     #[pyo3(signature = (address, tls, config=None))]
-    fn connect_tls(address: &str, tls: TlsConfig, config: Option<ClientConfig>) -> PyResult<Self> {
+    fn connect_tls(
+        py: Python<'_>,
+        address: &str,
+        tls: TlsConfig,
+        config: Option<ClientConfig>,
+    ) -> PyResult<Self> {
         let addr: SocketAddr = address
             .parse()
             .map_err(|e| errors::ConnectionError::new_err(format!("invalid address: {e}")))?;
-        let cfg = config.map_or_else(
-            rusty_modbus_client::ClientConfig::default,
-            |c| c.to_rust(),
-        );
+        let cfg = config.map_or_else(rusty_modbus_client::ClientConfig::default, |c| c.to_rust());
         let tls_cfg = tls.to_rust();
 
         let runtime = Runtime::new()
             .map_err(|e| errors::ConnectionError::new_err(format!("runtime error: {e}")))?;
 
-        let (sink, stream): (TlsSink, TlsRecvStream) = runtime
-            .block_on(TlsTransport::connect(addr, &tls_cfg))
+        let (sink, stream): (TlsSink, TlsRecvStream) = py
+            .detach(|| runtime.block_on(TlsTransport::connect(addr, &tls_cfg)))
             .map_err(|e| errors::ConnectionError::new_err(format!("TLS error: {e}")))?;
         let client = RustClient::from_transport(sink, stream, cfg);
 
@@ -100,11 +99,11 @@ impl SyncModbusClient {
     }
 
     /// Gracefully shut down the client.
-    fn shutdown(&self) {
-        match &self.inner {
+    fn shutdown(&self, py: Python<'_>) {
+        py.detach(|| match &self.inner {
             InnerClient::Tcp(c) => self.runtime.block_on(c.shutdown()),
             InnerClient::Tls(c) => self.runtime.block_on(c.shutdown()),
-        }
+        });
     }
 
     /// Sync context manager — enter.
@@ -115,11 +114,12 @@ impl SyncModbusClient {
     /// Sync context manager — exit (calls shutdown).
     fn __exit__(
         &self,
+        py: Python<'_>,
         _exc_type: &Bound<'_, PyAny>,
         _exc_val: &Bound<'_, PyAny>,
         _exc_tb: &Bound<'_, PyAny>,
     ) -> bool {
-        self.shutdown();
+        self.shutdown(py);
         false
     }
 
@@ -129,18 +129,21 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, quantity))]
     fn read_holding_registers(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         quantity: u16,
     ) -> PyResult<Vec<u16>> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self.runtime.block_on(
-                c.read_holding_registers(UnitId(unit_id), address, quantity),
-            ),
-            InnerClient::Tls(c) => self.runtime.block_on(
-                c.read_holding_registers(UnitId(unit_id), address, quantity),
-            ),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => {
+                self.runtime
+                    .block_on(c.read_holding_registers(UnitId(unit_id), address, quantity))
+            }
+            InnerClient::Tls(c) => {
+                self.runtime
+                    .block_on(c.read_holding_registers(UnitId(unit_id), address, quantity))
+            }
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -148,18 +151,21 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, quantity))]
     fn read_input_registers(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         quantity: u16,
     ) -> PyResult<Vec<u16>> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self
-                .runtime
-                .block_on(c.read_input_registers(UnitId(unit_id), address, quantity)),
-            InnerClient::Tls(c) => self
-                .runtime
-                .block_on(c.read_input_registers(UnitId(unit_id), address, quantity)),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => {
+                self.runtime
+                    .block_on(c.read_input_registers(UnitId(unit_id), address, quantity))
+            }
+            InnerClient::Tls(c) => {
+                self.runtime
+                    .block_on(c.read_input_registers(UnitId(unit_id), address, quantity))
+            }
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -167,18 +173,21 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, value))]
     fn write_single_register(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         value: u16,
     ) -> PyResult<()> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self
-                .runtime
-                .block_on(c.write_single_register(UnitId(unit_id), address, value)),
-            InnerClient::Tls(c) => self
-                .runtime
-                .block_on(c.write_single_register(UnitId(unit_id), address, value)),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => {
+                self.runtime
+                    .block_on(c.write_single_register(UnitId(unit_id), address, value))
+            }
+            InnerClient::Tls(c) => {
+                self.runtime
+                    .block_on(c.write_single_register(UnitId(unit_id), address, value))
+            }
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -186,18 +195,21 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, values))]
     fn write_multiple_registers(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         values: Vec<u16>,
     ) -> PyResult<()> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self
-                .runtime
-                .block_on(c.write_multiple_registers(UnitId(unit_id), address, &values)),
-            InnerClient::Tls(c) => self
-                .runtime
-                .block_on(c.write_multiple_registers(UnitId(unit_id), address, &values)),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => {
+                self.runtime
+                    .block_on(c.write_multiple_registers(UnitId(unit_id), address, &values))
+            }
+            InnerClient::Tls(c) => {
+                self.runtime
+                    .block_on(c.write_multiple_registers(UnitId(unit_id), address, &values))
+            }
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -205,19 +217,26 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, and_mask, or_mask))]
     fn mask_write_register(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         and_mask: u16,
         or_mask: u16,
     ) -> PyResult<()> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self.runtime.block_on(
-                c.mask_write_register(UnitId(unit_id), address, and_mask, or_mask),
-            ),
-            InnerClient::Tls(c) => self.runtime.block_on(
-                c.mask_write_register(UnitId(unit_id), address, and_mask, or_mask),
-            ),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => self.runtime.block_on(c.mask_write_register(
+                UnitId(unit_id),
+                address,
+                and_mask,
+                or_mask,
+            )),
+            InnerClient::Tls(c) => self.runtime.block_on(c.mask_write_register(
+                UnitId(unit_id),
+                address,
+                and_mask,
+                or_mask,
+            )),
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -225,13 +244,14 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, read_address, read_quantity, write_address, write_values))]
     fn read_write_multiple_registers(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         read_address: u16,
         read_quantity: u16,
         write_address: u16,
         write_values: Vec<u16>,
     ) -> PyResult<Vec<u16>> {
-        let result = match &self.inner {
+        let result = py.detach(|| match &self.inner {
             InnerClient::Tcp(c) => self.runtime.block_on(c.read_write_multiple_registers(
                 UnitId(unit_id),
                 read_address,
@@ -246,7 +266,7 @@ impl SyncModbusClient {
                 write_address,
                 &write_values,
             )),
-        };
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -256,18 +276,21 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, quantity))]
     fn read_coils(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         quantity: u16,
     ) -> PyResult<Vec<bool>> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self
-                .runtime
-                .block_on(c.read_coils(UnitId(unit_id), address, quantity)),
-            InnerClient::Tls(c) => self
-                .runtime
-                .block_on(c.read_coils(UnitId(unit_id), address, quantity)),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => {
+                self.runtime
+                    .block_on(c.read_coils(UnitId(unit_id), address, quantity))
+            }
+            InnerClient::Tls(c) => {
+                self.runtime
+                    .block_on(c.read_coils(UnitId(unit_id), address, quantity))
+            }
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -275,18 +298,21 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, quantity))]
     fn read_discrete_inputs(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         quantity: u16,
     ) -> PyResult<Vec<bool>> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self
-                .runtime
-                .block_on(c.read_discrete_inputs(UnitId(unit_id), address, quantity)),
-            InnerClient::Tls(c) => self
-                .runtime
-                .block_on(c.read_discrete_inputs(UnitId(unit_id), address, quantity)),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => {
+                self.runtime
+                    .block_on(c.read_discrete_inputs(UnitId(unit_id), address, quantity))
+            }
+            InnerClient::Tls(c) => {
+                self.runtime
+                    .block_on(c.read_discrete_inputs(UnitId(unit_id), address, quantity))
+            }
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -294,18 +320,21 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, value))]
     fn write_single_coil(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         value: bool,
     ) -> PyResult<()> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self
-                .runtime
-                .block_on(c.write_single_coil(UnitId(unit_id), address, value)),
-            InnerClient::Tls(c) => self
-                .runtime
-                .block_on(c.write_single_coil(UnitId(unit_id), address, value)),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => {
+                self.runtime
+                    .block_on(c.write_single_coil(UnitId(unit_id), address, value))
+            }
+            InnerClient::Tls(c) => {
+                self.runtime
+                    .block_on(c.write_single_coil(UnitId(unit_id), address, value))
+            }
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -313,18 +342,21 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, address, values))]
     fn write_multiple_coils(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         address: u16,
         values: Vec<bool>,
     ) -> PyResult<()> {
-        let result = match &self.inner {
-            InnerClient::Tcp(c) => self
-                .runtime
-                .block_on(c.write_multiple_coils(UnitId(unit_id), address, &values)),
-            InnerClient::Tls(c) => self
-                .runtime
-                .block_on(c.write_multiple_coils(UnitId(unit_id), address, &values)),
-        };
+        let result = py.detach(|| match &self.inner {
+            InnerClient::Tcp(c) => {
+                self.runtime
+                    .block_on(c.write_multiple_coils(UnitId(unit_id), address, &values))
+            }
+            InnerClient::Tls(c) => {
+                self.runtime
+                    .block_on(c.write_multiple_coils(UnitId(unit_id), address, &values))
+            }
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -334,17 +366,18 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, pointer_address))]
     fn read_fifo_queue(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         pointer_address: u16,
     ) -> PyResult<Vec<u16>> {
-        let result = match &self.inner {
+        let result = py.detach(|| match &self.inner {
             InnerClient::Tcp(c) => self
                 .runtime
                 .block_on(c.read_fifo_queue(UnitId(unit_id), pointer_address)),
             InnerClient::Tls(c) => self
                 .runtime
                 .block_on(c.read_fifo_queue(UnitId(unit_id), pointer_address)),
-        };
+        });
         result.map_err(errors::client_error_to_pyerr)
     }
 
@@ -354,17 +387,18 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, sub_request_data))]
     fn read_file_record(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         sub_request_data: Vec<u8>,
     ) -> PyResult<Vec<u8>> {
-        let result = match &self.inner {
+        let result = py.detach(|| match &self.inner {
             InnerClient::Tcp(c) => self
                 .runtime
                 .block_on(c.read_file_record(UnitId(unit_id), &sub_request_data)),
             InnerClient::Tls(c) => self
                 .runtime
                 .block_on(c.read_file_record(UnitId(unit_id), &sub_request_data)),
-        };
+        });
         result
             .map(|r| r.data.to_vec())
             .map_err(errors::client_error_to_pyerr)
@@ -374,17 +408,18 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id, sub_request_data))]
     fn write_file_record(
         &self,
+        py: Python<'_>,
         unit_id: u8,
         sub_request_data: Vec<u8>,
     ) -> PyResult<Vec<u8>> {
-        let result = match &self.inner {
+        let result = py.detach(|| match &self.inner {
             InnerClient::Tcp(c) => self
                 .runtime
                 .block_on(c.write_file_record(UnitId(unit_id), &sub_request_data)),
             InnerClient::Tls(c) => self
                 .runtime
                 .block_on(c.write_file_record(UnitId(unit_id), &sub_request_data)),
-        };
+        });
         result
             .map(|r| r.data.to_vec())
             .map_err(errors::client_error_to_pyerr)
@@ -396,16 +431,17 @@ impl SyncModbusClient {
     #[pyo3(signature = (unit_id))]
     fn read_device_identification(
         &self,
+        py: Python<'_>,
         unit_id: u8,
     ) -> PyResult<DeviceIdentification> {
-        let result = match &self.inner {
+        let result = py.detach(|| match &self.inner {
             InnerClient::Tcp(c) => self
                 .runtime
                 .block_on(c.read_device_identification(UnitId(unit_id))),
             InnerClient::Tls(c) => self
                 .runtime
                 .block_on(c.read_device_identification(UnitId(unit_id))),
-        };
+        });
         result
             .map(DeviceIdentification::from)
             .map_err(errors::client_error_to_pyerr)
