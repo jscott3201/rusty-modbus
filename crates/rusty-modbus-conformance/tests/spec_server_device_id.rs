@@ -82,6 +82,32 @@ async fn device_id_individual_access_returns_one_configured_object() {
 }
 
 #[tokio::test]
+async fn device_id_basic_stream_excludes_regular_objects() {
+    let device_id = DeviceIdentification {
+        vendor_url: Some(String::from("https://example.invalid/vendor")),
+        product_name: Some(String::from("Pump Controller")),
+        model_name: Some(String::from("PM-42")),
+        user_application_name: Some(String::from("Lift Station")),
+        ..DeviceIdentification::default()
+    };
+
+    let basic = respond(&device_id, &[0x2B, 0x0E, 0x01, 0x00]).await;
+    let basic = decode_device_id_response(&basic);
+    assert_eq!(basic.device_id_code, DeviceIdCode::BasicStream);
+    assert_eq!(basic.conformity_level, 0x82);
+
+    let basic_ids: Vec<_> = basic.objects().map(|object| object.id).collect();
+    assert_eq!(basic_ids, vec![0x00, 0x01, 0x02]);
+
+    let regular = respond(&device_id, &[0x2B, 0x0E, 0x02, 0x00]).await;
+    let regular = decode_device_id_response(&regular);
+    assert_eq!(regular.device_id_code, DeviceIdCode::RegularStream);
+
+    let regular_ids: Vec<_> = regular.objects().map(|object| object.id).collect();
+    assert_eq!(regular_ids, vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+}
+
+#[tokio::test]
 async fn device_id_stream_unknown_object_restarts_at_zero() {
     let response = respond(&DeviceIdentification::default(), &[0x2B, 0x0E, 0x01, 0x77]).await;
     let response = decode_device_id_response(&response);

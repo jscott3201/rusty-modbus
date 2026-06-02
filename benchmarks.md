@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `9c840bf` base plus this file-record wire-byte benchmark refresh |
+| Git commit | `d12dc47` base plus this stack-backed FC2B device-id response refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -153,6 +153,10 @@ once and lets the store write directly into the wire payload bytes, avoiding the
 previous scratch buffers, queue clone, per-group `Vec<u16>` materialization, and
 second response-encoding pass on common paths.
 
+FC 0x2B / MEI 0x0E Read Device Identification now keeps the configured object
+list on the stack, slices basic/regular selections without temporary vectors,
+and pre-sizes the final response buffer.
+
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
 decoder overlays it onto the read buffer before slicing the PDU. The benchmark
@@ -231,7 +235,7 @@ TLS, RTU framing, and client-side work:
 | FC14 two-group file read | 68.6 ns | Direct file-record response writes keep multi-group reads sub-100 ns. |
 | FC17 max read/write registers | 43.7 ns | Read half now writes directly into the final response bytes. |
 | FC18 FIFO two-value read | 26.5 ns | Direct FIFO response path is comparable to simple register handlers. |
-| FC2B basic device identification | 116 ns | Device ID response construction is now a visible handler-level allocation target. |
+| FC2B basic device identification | 47.3 ns | Stack-backed object selection removes the previous object/filter/selection vectors. |
 
 The most likely next performance wins are adjacent to, not inside, raw PDU
 parsing:
