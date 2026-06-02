@@ -17,10 +17,24 @@ if [[ -n "${RUSTY_MODBUS_DOCKER_PLATFORM:-}" ]]; then
   platform_args=(--platform "${RUSTY_MODBUS_DOCKER_PLATFORM}")
 fi
 
+cache_args=()
+case "${RUSTY_MODBUS_DOCKER_CACHE:-}" in
+  "")
+    ;;
+  gha)
+    cache_args=(--cache-from type=gha --cache-to type=gha,mode=max)
+    ;;
+  *)
+    echo "unsupported RUSTY_MODBUS_DOCKER_CACHE: ${RUSTY_MODBUS_DOCKER_CACHE}" >&2
+    exit 2
+    ;;
+esac
+
 docker buildx build \
   --load \
   --target "$target" \
   --tag "$tag" \
+  "${cache_args[@]}" \
   "${platform_args[@]}" \
   "$@" \
   .
