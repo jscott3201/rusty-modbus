@@ -6,8 +6,8 @@ pub mod memory;
 use std::future::Future;
 
 use rusty_modbus_types::{
-    DiagnosticSubFunction, ExceptionCode, MAX_READ_COILS, MAX_READ_DISCRETE_INPUTS,
-    MAX_READ_REGISTERS, MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
+    DiagnosticSubFunction, ExceptionCode, MAX_FIFO_VALUES, MAX_READ_COILS,
+    MAX_READ_DISCRETE_INPUTS, MAX_READ_REGISTERS, MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
 };
 
 /// Snapshot of the communications event log returned by Get Comm Event Log
@@ -388,6 +388,27 @@ pub trait DataStore: Send + Sync {
         async move {
             let _ = address;
             Err(ExceptionCode::IllegalDataAddress)
+        }
+    }
+
+    /// Read a FIFO queue snapshot directly into big-endian Modbus wire bytes.
+    ///
+    /// The default implementation delegates to [`Self::read_fifo_queue`] and
+    /// packs the returned values. Stores with direct queue access can override
+    /// this method to avoid cloning the queue and allocating an intermediate
+    /// byte buffer.
+    fn read_fifo_queue_be(
+        &self,
+        address: u16,
+        out: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let values = self.read_fifo_queue(address).await?;
+            if values.len() > usize::from(MAX_FIFO_VALUES) {
+                return Err(ExceptionCode::IllegalDataValue);
+            }
+            pack_registers_be(&values, out)?;
+            Ok(values.len())
         }
     }
 

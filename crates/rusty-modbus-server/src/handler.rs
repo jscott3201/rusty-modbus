@@ -3,15 +3,14 @@
 use rusty_modbus_codec::request::{ReadFileRecordRequest, WriteFileRecordRequest};
 use rusty_modbus_codec::response::{
     DiagnosticsResponse, GetCommEventCounterResponse, GetCommEventLogResponse,
-    MaskWriteRegisterResponse, ReadExceptionStatusResponse, ReadFifoQueueResponse,
-    ReadFileRecordResponse, ReportServerIdResponse, WriteFileRecordResponse,
-    WriteMultipleCoilsResponse, WriteMultipleRegistersResponse, WriteSingleCoilResponse,
-    WriteSingleRegisterResponse,
+    MaskWriteRegisterResponse, ReadExceptionStatusResponse, ReadFileRecordResponse,
+    ReportServerIdResponse, WriteFileRecordResponse, WriteMultipleCoilsResponse,
+    WriteMultipleRegistersResponse, WriteSingleCoilResponse, WriteSingleRegisterResponse,
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
-    Address, ExceptionCode, FunctionCode, MAX_PDU_SIZE, MAX_READ_REGISTERS, MeiType, Quantity,
-    UnitId,
+    Address, ExceptionCode, FunctionCode, MAX_FIFO_VALUES, MAX_PDU_SIZE, MAX_READ_REGISTERS,
+    MeiType, Quantity, UnitId,
 };
 use tracing::debug;
 
@@ -699,34 +698,37 @@ async fn apply_write_file_record<S: DataStore>(
 }
 
 async fn handle_read_fifo_queue<S: DataStore>(address: Address, store: &S) -> Vec<u8> {
-    match store.read_fifo_queue(address.0).await {
-        Ok(values) => {
+    const MAX_FIFO_VALUE_BYTES: usize = MAX_FIFO_VALUES as usize * 2;
+
+    let mut response = vec![0u8; 5 + MAX_FIFO_VALUE_BYTES];
+    response[0] = FunctionCode::ReadFifoQueue.code();
+
+    match store
+        .read_fifo_queue_be(address.0, &mut response[5..])
+        .await
+    {
+        Ok(count) => {
             // §6.18 / Figure 28: at most 31 values. The store call ran first, so
             // an unknown address still wins as 0x02 over this 0x03.
-            if values.len() > 31 {
+            if count > usize::from(MAX_FIFO_VALUES) {
                 return encode_exception(
                     FunctionCode::ReadFifoQueue.exception_code(),
                     ExceptionCode::IllegalDataValue,
                 );
             }
-            let n = values.len();
-            let mut bytes = vec![0u8; n * 2];
-            for (i, &v) in values.iter().enumerate() {
-                bytes[i * 2..i * 2 + 2].copy_from_slice(&v.to_be_bytes());
-            }
-            let byte_count = match checked_response_u16(2 + n * 2, FunctionCode::ReadFifoQueue) {
+            let byte_count = match checked_response_u16(2 + count * 2, FunctionCode::ReadFifoQueue)
+            {
                 Ok(byte_count) => byte_count,
                 Err(resp) => return resp,
             };
-            let fifo_count = match checked_response_u16(n, FunctionCode::ReadFifoQueue) {
+            let fifo_count = match checked_response_u16(count, FunctionCode::ReadFifoQueue) {
                 Ok(fifo_count) => fifo_count,
                 Err(resp) => return resp,
             };
-            encode_response(&ReadFifoQueueResponse {
-                byte_count,
-                fifo_count,
-                fifo_values: &bytes,
-            })
+            response[1..3].copy_from_slice(&byte_count.to_be_bytes());
+            response[3..5].copy_from_slice(&fifo_count.to_be_bytes());
+            response.truncate(5 + count * 2);
+            response
         }
         Err(ec) => encode_exception(FunctionCode::ReadFifoQueue.exception_code(), ec),
     }

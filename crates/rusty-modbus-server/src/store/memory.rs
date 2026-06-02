@@ -529,6 +529,22 @@ impl DataStore for InMemoryStore {
             .ok_or(ExceptionCode::IllegalDataAddress)
     }
 
+    async fn read_fifo_queue_be(
+        &self,
+        address: u16,
+        out: &mut [u8],
+    ) -> Result<usize, ExceptionCode> {
+        let queues = self.fifo_queues.read();
+        let values = queues
+            .get(&address)
+            .ok_or(ExceptionCode::IllegalDataAddress)?;
+        if values.len() > usize::from(rusty_modbus_types::MAX_FIFO_VALUES) {
+            return Err(ExceptionCode::IllegalDataValue);
+        }
+        pack_registers_be(values, out)?;
+        Ok(values.len())
+    }
+
     async fn read_exception_status(&self) -> Result<u8, ExceptionCode> {
         Ok(*self.exception_status.read())
     }
