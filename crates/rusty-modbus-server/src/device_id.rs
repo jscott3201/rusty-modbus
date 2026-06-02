@@ -7,6 +7,8 @@ use crate::config::DeviceIdentification;
 const DEVICE_ID_RESPONSE_HEADER_LEN: usize = 7;
 const DEVICE_ID_OBJECT_HEADER_LEN: usize = 2;
 const DEVICE_ID_REQUEST_LEN: usize = 2;
+const BASIC_DEVICE_ID_OBJECT_COUNT: usize = 3;
+const MAX_CONFIGURED_DEVICE_ID_OBJECTS: usize = 7;
 const MAX_DEVICE_ID_OBJECT_VALUE_LEN: usize =
     MAX_PDU_SIZE - DEVICE_ID_RESPONSE_HEADER_LEN - DEVICE_ID_OBJECT_HEADER_LEN;
 
@@ -14,6 +16,30 @@ const MAX_DEVICE_ID_OBJECT_VALUE_LEN: usize =
 struct DeviceIdObject<'a> {
     id: u8,
     value: &'a [u8],
+}
+
+struct ConfiguredDeviceIdObjects<'a> {
+    objects: [DeviceIdObject<'a>; MAX_CONFIGURED_DEVICE_ID_OBJECTS],
+    len: usize,
+}
+
+impl<'a> ConfiguredDeviceIdObjects<'a> {
+    fn new() -> Self {
+        Self {
+            objects: [DeviceIdObject { id: 0, value: &[] }; MAX_CONFIGURED_DEVICE_ID_OBJECTS],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, object: DeviceIdObject<'a>) {
+        debug_assert!(self.len < self.objects.len());
+        self.objects[self.len] = object;
+        self.len += 1;
+    }
+
+    fn as_slice(&self) -> &[DeviceIdObject<'a>] {
+        &self.objects[..self.len]
+    }
 }
 
 /// Build a Read Device Identification response PDU (FC 0x2B / MEI 0x0E).
@@ -35,6 +61,7 @@ pub(crate) fn build_device_id_response(
     };
 
     let objects = configured_objects(device_id);
+    let objects = objects.as_slice();
     let conformity_level = conformity_level(device_id);
 
     match device_id_code {
@@ -49,37 +76,42 @@ pub(crate) fn build_device_id_response(
             if object.value.len() > MAX_DEVICE_ID_OBJECT_VALUE_LEN {
                 return device_id_exception(ExceptionCode::ServerDeviceFailure);
             }
-            build_response(device_id_code, conformity_level, false, 0, &[object])
+            let selected = [object];
+            build_response(
+                device_id_code,
+                conformity_level,
+                false,
+                0,
+                &selected,
+                DEVICE_ID_RESPONSE_HEADER_LEN + DEVICE_ID_OBJECT_HEADER_LEN + object.value.len(),
+            )
         }
-        DeviceIdCode::BasicStream => {
-            let stream_objects: Vec<_> = objects
-                .iter()
-                .copied()
-                .filter(|object| object.id <= 0x02)
-                .collect();
-            build_stream_response(device_id_code, conformity_level, object_id, &stream_objects)
-        }
+        DeviceIdCode::BasicStream => build_stream_response(
+            device_id_code,
+            conformity_level,
+            object_id,
+            &objects[..BASIC_DEVICE_ID_OBJECT_COUNT],
+        ),
         DeviceIdCode::RegularStream | DeviceIdCode::ExtendedStream => {
-            build_stream_response(device_id_code, conformity_level, object_id, &objects)
+            build_stream_response(device_id_code, conformity_level, object_id, objects)
         }
     }
 }
 
-fn configured_objects(device_id: &DeviceIdentification) -> Vec<DeviceIdObject<'_>> {
-    let mut objects = vec![
-        DeviceIdObject {
-            id: 0x00,
-            value: device_id.vendor_name.as_bytes(),
-        },
-        DeviceIdObject {
-            id: 0x01,
-            value: device_id.product_code.as_bytes(),
-        },
-        DeviceIdObject {
-            id: 0x02,
-            value: device_id.major_minor_revision.as_bytes(),
-        },
-    ];
+fn configured_objects(device_id: &DeviceIdentification) -> ConfiguredDeviceIdObjects<'_> {
+    let mut objects = ConfiguredDeviceIdObjects::new();
+    objects.push(DeviceIdObject {
+        id: 0x00,
+        value: device_id.vendor_name.as_bytes(),
+    });
+    objects.push(DeviceIdObject {
+        id: 0x01,
+        value: device_id.product_code.as_bytes(),
+    });
+    objects.push(DeviceIdObject {
+        id: 0x02,
+        value: device_id.major_minor_revision.as_bytes(),
+    });
 
     if let Some(ref value) = device_id.vendor_url {
         objects.push(DeviceIdObject {
@@ -140,7 +172,7 @@ fn build_stream_response(
         .unwrap_or(0);
 
     let mut response_len = DEVICE_ID_RESPONSE_HEADER_LEN;
-    let mut selected = Vec::new();
+    let mut selected_count = 0;
     let mut more_follows = false;
     let mut next_object_id = 0;
 
@@ -151,20 +183,22 @@ fn build_stream_response(
             next_object_id = object.id;
             break;
         }
-        selected.push(*object);
+        selected_count += 1;
         response_len += object_len;
     }
 
-    if selected.is_empty() {
+    if selected_count == 0 {
         return device_id_exception(ExceptionCode::ServerDeviceFailure);
     }
+    let selected = &objects[start..start + selected_count];
 
     build_response(
         device_id_code,
         conformity_level,
         more_follows,
         next_object_id,
-        &selected,
+        selected,
+        response_len,
     )
 }
 
@@ -175,8 +209,10 @@ fn build_response(
     more_follows: bool,
     next_object_id: u8,
     objects: &[DeviceIdObject<'_>],
+    response_len: usize,
 ) -> Vec<u8> {
-    let mut response = vec![
+    let mut response = Vec::with_capacity(response_len);
+    response.extend_from_slice(&[
         FunctionCode::EncapsulatedInterfaceTransport.code(),
         0x0E,
         device_id_code.code(),
@@ -184,7 +220,7 @@ fn build_response(
         if more_follows { 0xFF } else { 0x00 },
         if more_follows { next_object_id } else { 0x00 },
         objects.len() as u8,
-    ];
+    ]);
 
     for object in objects {
         response.push(object.id);
@@ -192,6 +228,7 @@ fn build_response(
         response.extend_from_slice(object.value);
     }
 
+    debug_assert_eq!(response.len(), response_len);
     response
 }
 
