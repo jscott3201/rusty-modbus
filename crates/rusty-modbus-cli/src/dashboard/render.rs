@@ -51,7 +51,7 @@ pub(super) fn render_dashboard(frame: &mut Frame, view: &DashboardView) {
     render_sidebar(frame, sidebar_area, view);
     render_data_panel(frame, data_area, view);
     render_command_panel(frame, command_area, view);
-    render_footer(frame, footer_area);
+    render_footer(frame, footer_area, view);
 }
 
 fn render_compact(frame: &mut Frame, area: Rect, view: &DashboardView) {
@@ -243,23 +243,34 @@ fn render_command_panel(frame: &mut Frame, area: Rect, view: &DashboardView) {
     );
 }
 
-fn render_footer(frame: &mut Frame, area: Rect) {
-    let footer = Line::from(vec![
-        Span::styled("q/Esc", Style::new().fg(palette::CYAN)),
-        Span::raw(" quit  "),
-        Span::styled(":", Style::new().fg(palette::CYAN)),
-        Span::raw(" command  "),
-        Span::styled("Up/Down", Style::new().fg(palette::CYAN)),
-        Span::raw(" history  "),
-        Span::styled("r", Style::new().fg(palette::CYAN)),
-        Span::raw(" refresh  "),
-        Span::styled("1-4/Tab", Style::new().fg(palette::CYAN)),
-        Span::raw(" area  "),
-        Span::styled("PageUp/PageDown", Style::new().fg(palette::CYAN)),
-        Span::raw(" address  "),
-        Span::styled("+/-", Style::new().fg(palette::CYAN)),
-        Span::raw(" quantity"),
-    ]);
+fn render_footer(frame: &mut Frame, area: Rect, view: &DashboardView) {
+    let footer = if view.command_mode == CommandMode::Editing {
+        Line::from(vec![
+            Span::styled("Enter", Style::new().fg(palette::CYAN)),
+            Span::raw(" run  "),
+            Span::styled("Tab", Style::new().fg(palette::CYAN)),
+            Span::raw(" complete  "),
+            Span::styled("Up/Down", Style::new().fg(palette::CYAN)),
+            Span::raw(" history  "),
+            Span::styled("Esc", Style::new().fg(palette::CYAN)),
+            Span::raw(" close"),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("q/Esc", Style::new().fg(palette::CYAN)),
+            Span::raw(" quit  "),
+            Span::styled(":", Style::new().fg(palette::CYAN)),
+            Span::raw(" command  "),
+            Span::styled("r", Style::new().fg(palette::CYAN)),
+            Span::raw(" refresh  "),
+            Span::styled("1-4/Tab", Style::new().fg(palette::CYAN)),
+            Span::raw(" area  "),
+            Span::styled("PageUp/PageDown", Style::new().fg(palette::CYAN)),
+            Span::raw(" address  "),
+            Span::styled("+/-", Style::new().fg(palette::CYAN)),
+            Span::raw(" quantity"),
+        ])
+    };
     frame.render_widget(
         Paragraph::new(footer)
             .style(Style::new().fg(palette::TEXT).bg(palette::BACKGROUND))

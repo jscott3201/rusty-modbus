@@ -370,6 +370,7 @@ impl DashboardApp {
             }
             KeyCode::Up => self.recall_previous_command(),
             KeyCode::Down => self.recall_next_command(),
+            KeyCode::Tab => self.complete_command_input(),
             KeyCode::Backspace => {
                 self.view.command_input.pop();
                 self.command_history_cursor = None;
@@ -379,6 +380,13 @@ impl DashboardApp {
                 self.command_history_cursor = None;
             }
             _ => {}
+        }
+    }
+
+    fn complete_command_input(&mut self) {
+        if let Some(completion) = shell_parser::complete_command(&self.view.command_input) {
+            self.view.command_input = completion;
+            self.command_history_cursor = None;
         }
     }
 
