@@ -9,7 +9,7 @@ use rusty_modbus_codec::response::{
     ReportServerIdResponse, WriteFileRecordResponse, WriteMultipleCoilsResponse,
     WriteMultipleRegistersResponse, WriteSingleCoilResponse, WriteSingleRegisterResponse,
 };
-use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request};
+use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
     Address, ExceptionCode, FunctionCode, MAX_PDU_SIZE, MAX_READ_COILS, MAX_READ_REGISTERS,
     MeiType, Quantity, UnitId,
@@ -167,6 +167,17 @@ async fn dispatch_request<S: DataStore>(
             })
         }
         RequestPdu::WriteMultipleRegisters(req) => {
+            if let Err(ec) =
+                validate::validate_write_registers(req.address.0, req.quantity.0, req.byte_count)
+            {
+                if is_broadcast {
+                    return None;
+                }
+                return Some(encode_exception(
+                    FunctionCode::WriteMultipleRegisters.exception_code(),
+                    ec,
+                ));
+            }
             let values: Vec<u16> = req
                 .register_values
                 .chunks_exact(2)
@@ -200,6 +211,17 @@ async fn dispatch_request<S: DataStore>(
             })
         }
         RequestPdu::WriteMultipleCoils(req) => {
+            if let Err(ec) =
+                validate::validate_write_coils(req.address.0, req.quantity.0, req.byte_count)
+            {
+                if is_broadcast {
+                    return None;
+                }
+                return Some(encode_exception(
+                    FunctionCode::WriteMultipleCoils.exception_code(),
+                    ec,
+                ));
+            }
             let mut values = Vec::with_capacity(req.quantity.0 as usize);
             for i in 0..req.quantity.0 as usize {
                 values.push((req.coil_values[i / 8] >> (i % 8)) & 1 == 1);
@@ -396,6 +418,10 @@ async fn handle_read_registers<S: DataStore>(
     store: &S,
     is_holding: bool,
 ) -> Vec<u8> {
+    if let Err(ec) = validate::validate_read_registers(address.0, quantity.0) {
+        return encode_exception(fc.exception_code(), ec);
+    }
+
     let mut buf = [0u16; MAX_READ_REGISTERS as usize];
     let result = if is_holding {
         store
@@ -444,6 +470,15 @@ async fn handle_read_bits<S: DataStore>(
     store: &S,
     is_coils: bool,
 ) -> Vec<u8> {
+    let validation = if is_coils {
+        validate::validate_read_coils(address.0, quantity.0)
+    } else {
+        validate::validate_read_discrete_inputs(address.0, quantity.0)
+    };
+    if let Err(ec) = validation {
+        return encode_exception(fc.exception_code(), ec);
+    }
+
     let mut buf = [false; MAX_READ_COILS as usize];
     let result = if is_coils {
         store.read_coils(address.0, quantity.0, &mut buf).await
@@ -491,6 +526,8 @@ async fn handle_mask_write<S: DataStore>(
     or_mask: u16,
     store: &S,
 ) -> Result<(), ExceptionCode> {
+    validate::validate_mask_write_address(address.0)?;
+
     let mut buf = [0u16; 1];
     store.read_holding_registers(address.0, 1, &mut buf).await?;
     let result = (buf[0] & and_mask) | (or_mask & !and_mask);
@@ -501,6 +538,19 @@ async fn handle_read_write_multiple<S: DataStore>(
     req: rusty_modbus_codec::request::ReadWriteMultipleRegistersRequest<'_>,
     store: &S,
 ) -> Vec<u8> {
+    if let Err(ec) = validate::validate_read_write_registers(
+        req.read_address.0,
+        req.read_quantity.0,
+        req.write_address.0,
+        req.write_quantity.0,
+        req.write_byte_count,
+    ) {
+        return encode_exception(
+            FunctionCode::ReadWriteMultipleRegisters.exception_code(),
+            ec,
+        );
+    }
+
     // Write executes before read per spec §6.17.
     let write_values: Vec<u16> = req
         .write_register_values
