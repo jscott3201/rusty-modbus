@@ -112,6 +112,28 @@ jobs:
         # ever tagged (publish.yml re-checks it right before the publish loop).
         run: python3 scripts/check-publish-versions.py
 
+  python:
+    name: python bindings
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rusty-modbus-python
+      # Excluded from the workspace, so the jobs above never compile it; it is
+      # the only exhaustive ClientError consumer. (Cargo.lock gitignored.)
+      - name: clippy (python bindings)
+        working-directory: crates/rusty-modbus-python
+        run: cargo clippy --all-targets -- -D warnings
+
   deny:
     name: cargo-deny
     if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'

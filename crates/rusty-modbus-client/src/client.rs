@@ -103,6 +103,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     }
 
     /// Whether the client is currently connected.
+    ///
+    /// Reflects graceful close (peer FIN) and transport errors surfaced by the
+    /// background reader — it is **not** an active liveness probe. A benign idle
+    /// read timeout does not flip this to `false`, so a silently half-open
+    /// socket (e.g. a peer crash without RST) may report connected until TCP
+    /// keepalive probes fail. In-flight requests still fail with
+    /// [`ClientError::Timeout`] via the transaction sweep regardless.
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)

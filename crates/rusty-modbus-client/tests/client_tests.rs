@@ -392,3 +392,155 @@ async fn short_register_response_is_error() {
         "expected ShortResponse, got {result:?}"
     );
 }
+
+#[tokio::test]
+async fn read_discrete_inputs_happy_path() {
+    // FC02 reply: byte_count=1, bits 0b0001_0101 (inputs 0,2,4 set).
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x02 {
+            vec![0x02, 0x01, 0x15]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let inputs = client
+        .read_discrete_inputs(UnitId(0xFF), 0, 5)
+        .await
+        .unwrap();
+    assert_eq!(inputs, vec![true, false, true, false, true]);
+}
+
+#[tokio::test]
+async fn short_discrete_input_response_is_error_not_panic() {
+    // FC02 reply with byte_count=1 while 64 inputs were requested.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x02 {
+            vec![0x02, 0x01, 0xFF]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_discrete_inputs(UnitId(0xFF), 0, 64).await;
+    assert!(
+        matches!(result, Err(ClientError::ShortResponse { .. })),
+        "expected ShortResponse, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn exception_with_mismatched_fc_is_rejected() {
+    // Answer an FC03 request with an exception flagged for FC04 (0x84). The FC
+    // echo check must reject it rather than surfacing it as the request's
+    // exception.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x03 {
+            vec![0x84, 0x01]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_holding_registers(UnitId(0xFF), 0, 1).await;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::UnexpectedResponse {
+                expected: 0x03,
+                got: 0x84
+            })
+        ),
+        "expected UnexpectedResponse, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn matching_exception_surfaces_as_exception() {
+    // An exception that DOES echo the request FC (0x83 for FC03, non-retryable
+    // IllegalDataAddress 0x02) must pass the FC check and surface as Exception.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x03 {
+            vec![0x83, 0x02]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_holding_registers(UnitId(0xFF), 0, 1).await;
+    match result {
+        Err(ClientError::Exception(exc)) => assert_eq!(exc.function_code.code(), 0x03),
+        other => panic!("expected Exception for FC 0x03, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn short_input_register_response_is_error() {
+    // FC04 reply with byte_count=2 (one register) while 10 were requested.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x04 {
+            vec![0x04, 0x02, 0x00, 0x42]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_input_registers(UnitId(0xFF), 0, 10).await;
+    assert!(
+        matches!(result, Err(ClientError::ShortResponse { .. })),
+        "expected ShortResponse, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn short_read_write_registers_response_is_error() {
+    // FC17 reply with byte_count=2 while read_quantity=10 — the guard must key
+    // on the read quantity, not the write quantity.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x17 {
+            vec![0x17, 0x02, 0x00, 0x42]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client
+        .read_write_multiple_registers(UnitId(0xFF), 0, 10, 0, &[0x0001])
+        .await;
+    assert!(
+        matches!(result, Err(ClientError::ShortResponse { .. })),
+        "expected ShortResponse, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn short_raw_register_response_is_error() {
+    // The zero-copy raw variant must apply the same short-response guard.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x03 {
+            vec![0x03, 0x02, 0x00, 0x42]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_holding_registers_raw(UnitId(0xFF), 0, 10).await;
+    assert!(
+        matches!(result, Err(ClientError::ShortResponse { .. })),
+        "expected ShortResponse, got {result:?}"
+    );
+}
