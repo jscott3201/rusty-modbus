@@ -8,6 +8,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/python.yml"
+      - "scripts/ci-python.sh"
       - "Cargo.lock"
       - "Cargo.toml"
       - "deny.toml"

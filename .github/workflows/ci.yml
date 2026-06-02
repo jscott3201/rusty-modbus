@@ -55,6 +55,8 @@ jobs:
             python:
               - '.github/workflows/ci.yml'
               - '.github/workflows/python.yml'
+              - 'scripts/ci-python.sh'
+              - 'scripts/ci-pr.sh'
               - 'Cargo.lock'
               - 'Cargo.toml'
               - 'deny.toml'

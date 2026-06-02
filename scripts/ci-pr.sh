@@ -4,6 +4,7 @@
 # Usage:
 #   scripts/ci-pr.sh
 #   RUSTY_MODBUS_RUN_PYTHON=always scripts/ci-pr.sh
+#   RUSTY_MODBUS_RUN_PYTHON=full scripts/ci-pr.sh
 #   RUSTY_MODBUS_RUN_PYTHON=never scripts/ci-pr.sh
 #   RUSTY_MODBUS_RUN_DENY=always scripts/ci-pr.sh
 #   RUSTY_MODBUS_RUN_DENY=never scripts/ci-pr.sh
@@ -36,6 +37,8 @@ python_changed() {
   changed_since_base \
     .github/workflows/ci.yml \
     .github/workflows/python.yml \
+    scripts/ci-python.sh \
+    scripts/ci-pr.sh \
     Cargo.lock \
     Cargo.toml \
     deny.toml \
@@ -56,6 +59,10 @@ run_python_clippy() {
   )
 }
 
+run_python_full() {
+  run scripts/ci-python.sh
+}
+
 run cargo fmt --all --check
 run rust-analyzer --version
 run cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -64,6 +71,9 @@ run env RUSTY_MODBUS_NEXTEST_PROFILE=ci scripts/test-local.sh
 case "${RUSTY_MODBUS_RUN_PYTHON:-auto}" in
   always)
     run_python_clippy
+    ;;
+  full)
+    run_python_full
     ;;
   never)
     echo
@@ -78,7 +88,7 @@ case "${RUSTY_MODBUS_RUN_PYTHON:-auto}" in
     fi
     ;;
   *)
-    echo "RUSTY_MODBUS_RUN_PYTHON must be auto, always, or never" >&2
+    echo "RUSTY_MODBUS_RUN_PYTHON must be auto, always, full, or never" >&2
     exit 2
     ;;
 esac
