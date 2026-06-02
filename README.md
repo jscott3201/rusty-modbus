@@ -188,6 +188,9 @@ scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --operatio
 scripts/bench-local.sh all --quick --noplot
 ```
 
+See [benchmarks.md](benchmarks.md) for the current local stress-test baseline
+and follow-up benchmark targets.
+
 Minimum Rust version: 1.95 (pinned in `rust-toolchain.toml`)
 
 ## License
