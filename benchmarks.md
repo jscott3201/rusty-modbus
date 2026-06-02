@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `56a93f0` base plus this register-read benchmark refresh |
+| Git commit | `9baacb6` base plus this FIFO-read benchmark refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -146,10 +146,10 @@ borrow from that buffer, and owned response types slice `bytes::Bytes` instead o
 copying payloads.
 
 On the server side, the in-memory store now exposes direct wire-byte read hooks
-for FC 0x01/0x02 bit tables and FC 0x03/0x04 register tables. The handler
-allocates the final response PDU once and lets the store write directly into the
-wire payload bytes, avoiding the previous bool/register scratch buffers and
-second response-encoding pass on common read paths.
+for FC 0x01/0x02 bit tables, FC 0x03/0x04 register tables, and FC 0x18 FIFO
+queues. The handler allocates the final response PDU once and lets the store
+write directly into the wire payload bytes, avoiding the previous scratch
+buffers, queue clone, and second response-encoding pass on common read paths.
 
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
@@ -196,6 +196,8 @@ paths to the in-memory store:
 | Max coil packed bytes via `Vec<bool>` | 746 ns | Approximate old handler shape; packed-bit expansion dominates. |
 | Max coil read to packed wire bytes | 809 ns | Store writes directly into the response payload buffer. |
 | Max coil read via bool buffer then pack | 980 ns | Approximate old handler shape; extra scratch fill/copy/pack pass costs ~17%. |
+| Max FIFO read to BE wire bytes | 14.3 ns | Store writes the queue snapshot directly into the response payload buffer. |
+| Max FIFO read via cloned `Vec<u16>` then pack | 27.0 ns | Approximate old handler shape; queue clone and second pack pass roughly double this microbench. |
 
 The RTU-over-TCP CRC scan quick smoke was run with
 `scripts/bench-local.sh codec rtu_tcp --quick --noplot` after changing the
@@ -214,8 +216,9 @@ parsing:
 - Keep Criterion baselines around maximum-size request decode, response
   dispatch, owned `Bytes` dispatch, register iteration, and packed write paths
   before changing parser internals.
-- Continue evaluating server bit/register paths where packed-bit expansion,
-  response encoding, or store locking dominates more than borrowed decode.
+- Continue evaluating server file-record, diagnostics, and device-identification
+  paths where temporary vectors or store cloning still dominate more than
+  borrowed decode.
 - Add multi-client stress matrices to separate protocol overhead from Tokio task
   scheduling and connection scaling.
 - Add allocation profiling for server handlers and Python bindings so zero-copy
