@@ -69,6 +69,7 @@ case "$output" in
 esac
 
 docker run --rm "$tag" --help >/dev/null
+docker run --rm "$tag" shell --help >/dev/null
 docker run --rm "$tag" dashboard --help >/dev/null
 
 echo "docker smoke ok: $tag"
