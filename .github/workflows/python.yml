@@ -35,51 +35,8 @@ permissions:
   pull-requests: read
 
 jobs:
-  develop-test:
+  wheel-test:
     name: wheel install + pytest (${{ matrix.python-version }})
-    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.14", "3.14t"]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
-          components: clippy
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: crates/rusty-modbus-python
-      - name: install python test tools
-        working-directory: crates/rusty-modbus-python
-        run: python -m pip install "maturin>=1.12,<2" pytest pytest-asyncio
-      - name: cargo clippy
-        working-directory: crates/rusty-modbus-python
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: build wheel
-        working-directory: crates/rusty-modbus-python
-        run: maturin build --release --locked -o dist -i "$(command -v python)"
-      - name: install wheel
-        working-directory: crates/rusty-modbus-python
-        run: python -m pip install --force-reinstall dist/*.whl
-      - name: pytest
-        if: matrix.python-version != '3.14t'
-        working-directory: crates/rusty-modbus-python
-        run: pytest tests/ -v
-      - name: pytest free-threaded
-        if: matrix.python-version == '3.14t'
-        working-directory: crates/rusty-modbus-python
-        env:
-          PYTHON_GIL: "0"
-        run: pytest tests/ -v
-
-  build-wheels:
-    name: build wheel (${{ matrix.python-version }})
     if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
@@ -95,6 +52,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.95.0"
+          components: clippy
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -104,6 +62,10 @@ jobs:
       - name: install maturin
         working-directory: crates/rusty-modbus-python
         run: python -m pip install "maturin>=1.12,<2" pytest pytest-asyncio
+      - name: cargo clippy
+        if: matrix.python-version == '3.14'
+        working-directory: crates/rusty-modbus-python
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: build wheel
         working-directory: crates/rusty-modbus-python
         run: maturin build --release --locked -o dist -i "$(command -v python)"
@@ -121,6 +83,10 @@ jobs:
           assert wheels, "no wheels were built"
           assert any(expected in wheel for wheel in wheels), (expected, wheels)
           PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-${{ matrix.python-version }}
+          path: crates/rusty-modbus-python/dist/*.whl
       - name: install wheel
         working-directory: crates/rusty-modbus-python
         run: python -m pip install --force-reinstall dist/*.whl
@@ -138,24 +104,20 @@ jobs:
   stubs:
     name: stubs
     if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    needs: wheel-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          workspaces: crates/rusty-modbus-python
+          name: python-wheel-3.14
+          path: crates/rusty-modbus-python/dist
       - name: install typing tools
         working-directory: crates/rusty-modbus-python
-        run: python -m pip install "maturin>=1.12,<2" mypy pyright
-      - name: build wheel
-        working-directory: crates/rusty-modbus-python
-        run: maturin build --release --locked -o dist -i "$(command -v python)"
+        run: python -m pip install mypy pyright
       - name: install wheel
         working-directory: crates/rusty-modbus-python
         run: python -m pip install --force-reinstall dist/*.whl
