@@ -59,7 +59,7 @@ run_python_clippy() {
 run cargo fmt --all --check
 run rust-analyzer --version
 run cargo clippy --workspace --all-targets --locked -- -D warnings
-run scripts/test-local.sh
+run env RUSTY_MODBUS_NEXTEST_PROFILE=ci scripts/test-local.sh
 
 case "${RUSTY_MODBUS_RUN_PYTHON:-auto}" in
   always)
