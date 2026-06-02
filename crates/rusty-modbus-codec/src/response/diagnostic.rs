@@ -227,6 +227,7 @@ impl Encode for GetCommEventLogResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count(usize::from(self.byte_count), 6 + self.events.len())?;
         buf[0] = FunctionCode::GetCommEventLog.code();
         buf[1] = self.byte_count;
         let st = self.status.to_be_bytes();
@@ -296,6 +297,7 @@ impl Encode for ReportServerIdResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count(usize::from(self.byte_count), self.data.len())?;
         buf[0] = FunctionCode::ReportServerId.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.data);

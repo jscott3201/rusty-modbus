@@ -16,6 +16,7 @@ use rusty_modbus_types::{
 };
 
 use crate::config::DeviceIdentification;
+use crate::device_id::build_device_id_response;
 use crate::store::DataStore;
 
 /// Process a request PDU and return a response PDU (or `None` for broadcast writes).
@@ -628,55 +629,4 @@ fn encode_response(resp: &dyn Encode) -> Vec<u8> {
 
 fn encode_exception(fc_with_flag: u8, ec: ExceptionCode) -> Vec<u8> {
     vec![fc_with_flag, ec.code()]
-}
-
-/// Build a Read Device Identification response PDU (FC 0x2B / MEI 0x0E).
-fn build_device_id_response(mei_data: &[u8], device_id: &DeviceIdentification) -> Vec<u8> {
-    let device_id_code = mei_data.first().copied().unwrap_or(0x01);
-
-    let mut objects: Vec<(u8, &[u8])> = vec![
-        (0x00, device_id.vendor_name.as_bytes()),
-        (0x01, device_id.product_code.as_bytes()),
-        (0x02, device_id.major_minor_revision.as_bytes()),
-    ];
-
-    let has_regular = device_id.vendor_url.is_some()
-        || device_id.product_name.is_some()
-        || device_id.model_name.is_some()
-        || device_id.user_application_name.is_some();
-
-    if let Some(ref v) = device_id.vendor_url {
-        objects.push((0x03, v.as_bytes()));
-    }
-    if let Some(ref v) = device_id.product_name {
-        objects.push((0x04, v.as_bytes()));
-    }
-    if let Some(ref v) = device_id.model_name {
-        objects.push((0x05, v.as_bytes()));
-    }
-    if let Some(ref v) = device_id.user_application_name {
-        objects.push((0x06, v.as_bytes()));
-    }
-
-    let conformity_level: u8 = if has_regular { 0x02 } else { 0x01 };
-
-    #[allow(clippy::cast_possible_truncation)]
-    let mut resp = vec![
-        0x2B, // FC
-        0x0E, // MEI type
-        device_id_code,
-        conformity_level,
-        0x00, // more_follows = false
-        0x00, // next_object_id
-        objects.len() as u8,
-    ];
-
-    for (id, value) in &objects {
-        resp.push(*id);
-        #[allow(clippy::cast_possible_truncation)]
-        resp.push(value.len() as u8);
-        resp.extend_from_slice(value);
-    }
-
-    resp
 }

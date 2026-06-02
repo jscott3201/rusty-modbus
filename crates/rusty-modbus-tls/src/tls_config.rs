@@ -12,6 +12,7 @@ use std::sync::Once;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use rusty_modbus_types::MODBUS_TLS_MAX_FRAGMENT_SIZE;
 
 static CRYPTO_INIT: Once = Once::new();
 
@@ -43,10 +44,11 @@ pub fn build_client_config(config: &TlsClientConfig) -> Result<ClientConfig, Tls
             .map_err(|e| TlsError::Certificate(format!("failed to add CA cert: {e}")))?;
     }
 
-    let tls_config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+    let mut tls_config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(root_store)
         .with_client_auth_cert(client_certs, client_key)
         .map_err(|e| TlsError::Certificate(format!("client auth config failed: {e}")))?;
+    tls_config.max_fragment_size = Some(MODBUS_TLS_MAX_FRAGMENT_SIZE);
 
     Ok(tls_config)
 }
@@ -87,10 +89,11 @@ pub fn build_server_config(config: &TlsServerConfig) -> Result<ServerConfig, Tls
             .map_err(|e| TlsError::Certificate(format!("client verifier failed: {e}")))?
     };
 
-    let tls_config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+    let mut tls_config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_client_cert_verifier(client_verifier)
         .with_single_cert(server_certs, server_key)
         .map_err(|e| TlsError::Certificate(format!("server cert config failed: {e}")))?;
+    tls_config.max_fragment_size = Some(MODBUS_TLS_MAX_FRAGMENT_SIZE);
 
     Ok(tls_config)
 }
@@ -132,4 +135,119 @@ fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, Tl
         })?;
 
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
+    use tempfile::NamedTempFile;
+
+    use super::*;
+    use crate::config::{TlsClientConfig, TlsServerConfig};
+
+    struct TestCerts {
+        ca_cert: NamedTempFile,
+        server_cert: NamedTempFile,
+        server_key: NamedTempFile,
+        client_cert: NamedTempFile,
+        client_key: NamedTempFile,
+    }
+
+    fn generate_test_certs() -> TestCerts {
+        let mut ca_params = CertificateParams::new(vec![String::from("Test CA")]).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_key = KeyPair::generate().unwrap();
+        let ca = CertifiedIssuer::self_signed(ca_params, ca_key).unwrap();
+
+        let mut server_params = CertificateParams::new(vec![String::from("127.0.0.1")]).unwrap();
+        server_params
+            .subject_alt_names
+            .push(rcgen::SanType::IpAddress(std::net::IpAddr::V4(
+                std::net::Ipv4Addr::LOCALHOST,
+            )));
+        let server_key = KeyPair::generate().unwrap();
+        let server_cert = server_params.signed_by(&server_key, &*ca).unwrap();
+
+        let client_params = CertificateParams::new(vec![String::from("Test Client")]).unwrap();
+        let client_key = KeyPair::generate().unwrap();
+        let client_cert = client_params.signed_by(&client_key, &*ca).unwrap();
+
+        let mut ca_file = NamedTempFile::new().unwrap();
+        ca_file.write_all(ca.pem().as_bytes()).unwrap();
+
+        let mut server_cert_file = NamedTempFile::new().unwrap();
+        server_cert_file
+            .write_all(server_cert.pem().as_bytes())
+            .unwrap();
+
+        let mut server_key_file = NamedTempFile::new().unwrap();
+        server_key_file
+            .write_all(server_key.serialize_pem().as_bytes())
+            .unwrap();
+
+        let mut client_cert_file = NamedTempFile::new().unwrap();
+        client_cert_file
+            .write_all(client_cert.pem().as_bytes())
+            .unwrap();
+
+        let mut client_key_file = NamedTempFile::new().unwrap();
+        client_key_file
+            .write_all(client_key.serialize_pem().as_bytes())
+            .unwrap();
+
+        TestCerts {
+            ca_cert: ca_file,
+            server_cert: server_cert_file,
+            server_key: server_key_file,
+            client_cert: client_cert_file,
+            client_key: client_key_file,
+        }
+    }
+
+    #[test]
+    fn builders_set_modbus_security_max_fragment_size() {
+        let certs = generate_test_certs();
+
+        let client_config = build_client_config(&TlsClientConfig {
+            ca_cert: certs.ca_cert.path().to_path_buf(),
+            client_cert: certs.client_cert.path().to_path_buf(),
+            client_key: certs.client_key.path().to_path_buf(),
+            ..TlsClientConfig::default()
+        })
+        .unwrap();
+        assert_eq!(
+            client_config.max_fragment_size,
+            Some(MODBUS_TLS_MAX_FRAGMENT_SIZE)
+        );
+
+        let server_config = build_server_config(&TlsServerConfig {
+            server_cert: certs.server_cert.path().to_path_buf(),
+            server_key: certs.server_key.path().to_path_buf(),
+            ca_cert: certs.ca_cert.path().to_path_buf(),
+            require_client_cert: true,
+            max_connections: 64,
+            authz_callback: None,
+        })
+        .unwrap();
+        assert_eq!(
+            server_config.max_fragment_size,
+            Some(MODBUS_TLS_MAX_FRAGMENT_SIZE)
+        );
+    }
+
+    #[test]
+    fn missing_files_fail_before_fragment_setting() {
+        let missing = PathBuf::from("/definitely/not/a/certificate.pem");
+        let err = build_client_config(&TlsClientConfig {
+            ca_cert: missing.clone(),
+            client_cert: missing.clone(),
+            client_key: missing,
+            ..TlsClientConfig::default()
+        })
+        .unwrap_err();
+        assert!(matches!(err, TlsError::Certificate(_)));
+    }
 }

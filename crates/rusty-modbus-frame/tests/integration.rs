@@ -2,8 +2,15 @@
 //!
 //! Proves the three-layer pipeline (modbus-types → modbus-codec → modbus-frame) composes.
 
-use bytes::BytesMut;
-use rusty_modbus_codec::{ResponsePdu, decode_response};
+use bytes::{Bytes, BytesMut};
+use rusty_modbus_codec::{DecodeError, ResponsePdu, decode_response};
+use rusty_modbus_frame::owned::{
+    OwnedDiagnosticsResponse, OwnedEncapsulatedInterfaceResponse, OwnedGetCommEventLogResponse,
+    OwnedReadCoilsResponse, OwnedReadDiscreteInputsResponse, OwnedReadFifoQueueResponse,
+    OwnedReadFileRecordResponse, OwnedReadHoldingRegistersResponse,
+    OwnedReadInputRegistersResponse, OwnedReadWriteMultipleRegistersResponse,
+    OwnedReportServerIdResponse, OwnedWriteFileRecordResponse,
+};
 use rusty_modbus_frame::{MbapCodec, OwnedResponsePdu};
 use rusty_modbus_types::MbapHeader;
 use tokio_util::codec::Decoder;
@@ -150,4 +157,32 @@ fn end_to_end_multiple_frames_in_stream() {
         ResponsePdu::ReadCoils(r) => assert!(r.coil(0)),
         other => panic!("unexpected: {other:?}"),
     }
+}
+
+#[test]
+fn owned_response_constructors_reject_empty_pdu_without_panicking() {
+    macro_rules! assert_empty_pdu_truncated {
+        ($ty:ty) => {
+            assert!(matches!(
+                <$ty>::from_pdu(Bytes::new()),
+                Err(DecodeError::Truncated {
+                    expected: 1,
+                    actual: 0
+                })
+            ));
+        };
+    }
+
+    assert_empty_pdu_truncated!(OwnedReadCoilsResponse);
+    assert_empty_pdu_truncated!(OwnedReadDiscreteInputsResponse);
+    assert_empty_pdu_truncated!(OwnedReadHoldingRegistersResponse);
+    assert_empty_pdu_truncated!(OwnedReadInputRegistersResponse);
+    assert_empty_pdu_truncated!(OwnedReadFifoQueueResponse);
+    assert_empty_pdu_truncated!(OwnedDiagnosticsResponse);
+    assert_empty_pdu_truncated!(OwnedGetCommEventLogResponse);
+    assert_empty_pdu_truncated!(OwnedReportServerIdResponse);
+    assert_empty_pdu_truncated!(OwnedReadFileRecordResponse);
+    assert_empty_pdu_truncated!(OwnedWriteFileRecordResponse);
+    assert_empty_pdu_truncated!(OwnedReadWriteMultipleRegistersResponse);
+    assert_empty_pdu_truncated!(OwnedEncapsulatedInterfaceResponse);
 }

@@ -84,6 +84,13 @@ pub enum EncodeError {
         /// The invalid quantity value.
         quantity: u16,
     },
+    /// Declared byte count does not match the payload length.
+    ByteCountMismatch {
+        /// Declared byte count.
+        declared: usize,
+        /// Actual payload length.
+        actual: usize,
+    },
 }
 
 impl core::fmt::Display for EncodeError {
@@ -101,6 +108,30 @@ impl core::fmt::Display for EncodeError {
             Self::QuantityOutOfRange { quantity } => {
                 write!(f, "quantity out of range: {quantity}")
             }
+            Self::ByteCountMismatch { declared, actual } => {
+                write!(
+                    f,
+                    "byte count mismatch: declared {declared}, actual {actual}"
+                )
+            }
+        }
+    }
+}
+
+impl EncodeError {
+    pub(crate) fn check_quantity(quantity: u16, max: u16) -> Result<(), Self> {
+        if quantity == 0 || quantity > max {
+            Err(Self::QuantityOutOfRange { quantity })
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn check_byte_count(declared: usize, actual: usize) -> Result<(), Self> {
+        if declared == actual {
+            Ok(())
+        } else {
+            Err(Self::ByteCountMismatch { declared, actual })
         }
     }
 }

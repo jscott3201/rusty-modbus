@@ -9,6 +9,7 @@
 #![allow(clippy::missing_errors_doc)] // Error conditions documented at trait level
 
 pub mod config;
+mod device_id;
 pub mod error;
 pub mod handler;
 pub mod server;

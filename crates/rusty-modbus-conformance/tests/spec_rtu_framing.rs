@@ -7,6 +7,7 @@ use bytes::{Bytes, BytesMut};
 use rusty_modbus_frame::Frame;
 use rusty_modbus_frame::crc::crc16;
 use rusty_modbus_frame::frame::FrameHeader;
+use rusty_modbus_types::MAX_PDU_SIZE;
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Build a valid RTU frame.
@@ -61,6 +62,18 @@ fn rtu_bad_crc_error() {
     assert!(matches!(
         codec.decode(&mut buf),
         Err(rusty_modbus_frame::FrameError::CrcMismatch { .. })
+    ));
+}
+
+#[test]
+fn rtu_rejects_adu_over_256_bytes() {
+    let raw = make_rtu_frame(0x01, &vec![0x03; MAX_PDU_SIZE + 1]);
+    let mut buf = BytesMut::from(&raw[..]);
+    let mut codec = rusty_modbus_frame::rtu::RtuCodec;
+
+    assert!(matches!(
+        codec.decode(&mut buf),
+        Err(rusty_modbus_frame::FrameError::PduLengthOverflow { .. })
     ));
 }
 

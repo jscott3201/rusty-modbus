@@ -13,6 +13,42 @@ pub enum FrameError {
     #[error("MBAP length overflow: {0}")]
     LengthOverflow(u16),
 
+    /// MBAP length field cannot contain the Unit Identifier plus a function code.
+    #[error("invalid MBAP length: {declared} (minimum {minimum})")]
+    InvalidLength {
+        /// Declared MBAP length field value.
+        declared: u16,
+        /// Minimum valid MBAP length field value.
+        minimum: u16,
+    },
+
+    /// MBAP length field does not match the encoded payload size.
+    #[error("MBAP length mismatch: declared {declared}, actual {actual}")]
+    LengthMismatch {
+        /// Declared MBAP length field value.
+        declared: u16,
+        /// Actual length field value implied by the Unit Identifier and PDU bytes.
+        actual: u16,
+    },
+
+    /// PDU payload is too short to contain the function code.
+    #[error("invalid PDU length: {length} (minimum {minimum})")]
+    InvalidPduLength {
+        /// Actual PDU length in bytes.
+        length: usize,
+        /// Minimum valid PDU length in bytes.
+        minimum: usize,
+    },
+
+    /// PDU payload exceeds the Modbus maximum size.
+    #[error("PDU length overflow: {length} (maximum {maximum})")]
+    PduLengthOverflow {
+        /// Actual PDU length in bytes.
+        length: usize,
+        /// Maximum valid PDU length in bytes.
+        maximum: usize,
+    },
+
     /// RTU CRC-16 mismatch.
     #[error("CRC mismatch: expected {expected:#06X}, got {actual:#06X}")]
     CrcMismatch {

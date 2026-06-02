@@ -5,9 +5,8 @@
 //! - FC 10: byte_count MUST equal quantity × 2
 //! - FC 17: write_byte_count MUST equal write_quantity × 2
 //!
-//! The codec currently only checks byte_count == remaining_data_length (wire check)
-//! but not byte_count == f(quantity) (semantic check). These tests verify the semantic
-//! constraint is enforced.
+//! These tests verify the decoder enforces both the wire byte count and the
+//! semantic relationship between byte_count and quantity fields.
 
 use rusty_modbus_codec::decode_request;
 

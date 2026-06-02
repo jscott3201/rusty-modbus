@@ -2,7 +2,7 @@
 
 use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
-use rusty_modbus_types::{Address, FunctionCode, Quantity};
+use rusty_modbus_types::{Address, FunctionCode, MAX_WRITE_REGISTERS, Quantity};
 
 /// Response to a Write Single Register request (FC 0x06).
 ///
@@ -95,6 +95,7 @@ impl Encode for WriteMultipleRegistersResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, MAX_WRITE_REGISTERS)?;
         buf[0] = FunctionCode::WriteMultipleRegisters.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -252,6 +253,7 @@ impl Encode for ReadWriteMultipleRegistersResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count(usize::from(self.byte_count), self.register_data.len())?;
         buf[0] = FunctionCode::ReadWriteMultipleRegisters.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.register_data);

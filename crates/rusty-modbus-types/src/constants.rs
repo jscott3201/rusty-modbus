@@ -34,6 +34,11 @@ pub const MODBUS_TCP_PORT: u16 = 502;
 /// Modbus/TCP Security port. Security Spec §5, IANA mbaps.
 pub const MODBUS_TLS_PORT: u16 = 802;
 
+/// Required TLS maximum fragment length for Modbus/TCP Security.
+///
+/// Security Spec §6.2 requires support for a 512-byte maximum fragment length.
+pub const MODBUS_TLS_MAX_FRAGMENT_SIZE: usize = 512;
+
 // --- Unit IDs ---
 
 /// Unit ID for direct TCP device. TCP Guide §4.4.1.2.

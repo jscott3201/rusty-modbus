@@ -209,11 +209,37 @@ fn encode_decode_round_trip() {
 }
 
 #[test]
-fn zero_length_pdu() {
-    // length=1 means only unit_id, zero PDU bytes
+fn zero_length_pdu_is_invalid() {
+    // The TCP Guide length field includes Unit Identifier + data fields, while
+    // the Application Protocol defines each PDU as starting with a 1-byte
+    // function code. length=1 leaves no function code and is malformed.
     let adu = build_adu(1, 0x01, &[]);
     let mut buf = BytesMut::from(&adu[..]);
     let mut codec = MbapCodec;
-    let frame = codec.decode(&mut buf).unwrap().unwrap();
-    assert!(frame.pdu.is_empty());
+    assert!(matches!(
+        codec.decode(&mut buf),
+        Err(rusty_modbus_frame::FrameError::InvalidLength { .. })
+    ));
+}
+
+#[test]
+fn encode_rejects_mismatched_length_field() {
+    // Outbound frames must not emit an MBAP header whose length field disagrees
+    // with the actual Unit Identifier + PDU bytes.
+    let pdu = Bytes::from_static(&[0x03, 0x00, 0x6B, 0x00, 0x03]);
+    let header = MbapHeader::new(1, 0xFF, 3);
+    let frame = rusty_modbus_frame::Frame {
+        header: FrameHeader::Mbap(header),
+        pdu,
+    };
+
+    let mut buf = BytesMut::new();
+    let mut codec = MbapCodec;
+    assert!(matches!(
+        codec.encode(frame, &mut buf),
+        Err(rusty_modbus_frame::FrameError::LengthMismatch {
+            declared: 4,
+            actual: 6
+        })
+    ));
 }
