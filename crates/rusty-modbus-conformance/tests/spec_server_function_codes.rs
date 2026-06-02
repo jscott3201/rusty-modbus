@@ -8,10 +8,11 @@
 //! access, and response encode. Worked examples come from Modbus V1.1b3 §6.14,
 //! §6.15, and §6.18.
 
-use rusty_modbus_server::DataStore;
 use rusty_modbus_server::handler::process_request;
-use rusty_modbus_server::{DeviceIdentification, InMemoryStore, StoreConfig};
-use rusty_modbus_types::{ExceptionCode, UnitId};
+use rusty_modbus_server::{
+    CommEventLog, DataStore, DeviceIdentification, InMemoryStore, StoreConfig,
+};
+use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, UnitId};
 
 const UNIT: UnitId = UnitId(1);
 
@@ -286,47 +287,102 @@ async fn diagnostics_family_broadcast_produces_no_response() {
 // the DataStore trait defaults. This is the safety net for the public-trait
 // default-method design.
 
-struct NoCapabilityStore;
+/// Emit trivial implementations of the eight mandatory data-table methods so a
+/// test store can focus on the optional-capability methods under test.
+macro_rules! stub_core_tables {
+    () => {
+        async fn read_coils(&self, _: u16, _: u16, _: &mut [bool]) -> Result<usize, ExceptionCode> {
+            Err(ExceptionCode::IllegalDataAddress)
+        }
+        async fn write_coil(&self, _: u16, _: bool) -> Result<(), ExceptionCode> {
+            Err(ExceptionCode::IllegalDataAddress)
+        }
+        async fn write_coils(&self, _: u16, _: &[bool]) -> Result<(), ExceptionCode> {
+            Err(ExceptionCode::IllegalDataAddress)
+        }
+        async fn read_discrete_inputs(
+            &self,
+            _: u16,
+            _: u16,
+            _: &mut [bool],
+        ) -> Result<usize, ExceptionCode> {
+            Err(ExceptionCode::IllegalDataAddress)
+        }
+        async fn read_holding_registers(
+            &self,
+            _: u16,
+            _: u16,
+            _: &mut [u16],
+        ) -> Result<usize, ExceptionCode> {
+            Err(ExceptionCode::IllegalDataAddress)
+        }
+        async fn write_register(&self, _: u16, _: u16) -> Result<(), ExceptionCode> {
+            Err(ExceptionCode::IllegalDataAddress)
+        }
+        async fn write_registers(&self, _: u16, _: &[u16]) -> Result<(), ExceptionCode> {
+            Err(ExceptionCode::IllegalDataAddress)
+        }
+        async fn read_input_registers(
+            &self,
+            _: u16,
+            _: u16,
+            _: &mut [u16],
+        ) -> Result<usize, ExceptionCode> {
+            Err(ExceptionCode::IllegalDataAddress)
+        }
+    };
+}
 
+/// Overrides nothing beyond the mandatory tables — exercises the trait defaults.
+struct NoCapabilityStore;
 impl DataStore for NoCapabilityStore {
-    async fn read_coils(&self, _: u16, _: u16, _: &mut [bool]) -> Result<usize, ExceptionCode> {
-        Err(ExceptionCode::IllegalDataAddress)
+    stub_core_tables!();
+}
+
+/// Serves the comm-event family and a no-reply (Force Listen Only) diagnostic.
+struct DiagCapableStore;
+impl DataStore for DiagCapableStore {
+    stub_core_tables!();
+
+    async fn get_comm_event_counter(&self) -> Result<(u16, u16), ExceptionCode> {
+        Ok((0x0000, 0x0108))
     }
-    async fn write_coil(&self, _: u16, _: bool) -> Result<(), ExceptionCode> {
-        Err(ExceptionCode::IllegalDataAddress)
+    async fn get_comm_event_log(&self) -> Result<CommEventLog, ExceptionCode> {
+        // Spec §6.10 example values.
+        Ok(CommEventLog {
+            status: 0x0000,
+            event_count: 0x0108,
+            message_count: 0x0121,
+            events: vec![0x20, 0x00],
+        })
     }
-    async fn write_coils(&self, _: u16, _: &[bool]) -> Result<(), ExceptionCode> {
-        Err(ExceptionCode::IllegalDataAddress)
+    async fn diagnostic(
+        &self,
+        sub_function: DiagnosticSubFunction,
+        data: &[u8],
+    ) -> Result<Option<Vec<u8>>, ExceptionCode> {
+        match sub_function {
+            DiagnosticSubFunction::ForceListenOnlyMode => Ok(None), // no reply
+            DiagnosticSubFunction::ReturnQueryData => Ok(Some(data.to_vec())),
+            _ => Err(ExceptionCode::IllegalFunction),
+        }
     }
-    async fn read_discrete_inputs(
+}
+
+/// A misbehaving store that claims to have written more registers than the
+/// caller's buffer holds — the handler must not panic.
+struct LyingFileStore;
+impl DataStore for LyingFileStore {
+    stub_core_tables!();
+
+    async fn read_file_record(
         &self,
         _: u16,
-        _: u16,
-        _: &mut [bool],
-    ) -> Result<usize, ExceptionCode> {
-        Err(ExceptionCode::IllegalDataAddress)
-    }
-    async fn read_holding_registers(
-        &self,
         _: u16,
         _: u16,
         _: &mut [u16],
     ) -> Result<usize, ExceptionCode> {
-        Err(ExceptionCode::IllegalDataAddress)
-    }
-    async fn write_register(&self, _: u16, _: u16) -> Result<(), ExceptionCode> {
-        Err(ExceptionCode::IllegalDataAddress)
-    }
-    async fn write_registers(&self, _: u16, _: &[u16]) -> Result<(), ExceptionCode> {
-        Err(ExceptionCode::IllegalDataAddress)
-    }
-    async fn read_input_registers(
-        &self,
-        _: u16,
-        _: u16,
-        _: &mut [u16],
-    ) -> Result<usize, ExceptionCode> {
-        Err(ExceptionCode::IllegalDataAddress)
+        Ok(999)
     }
 }
 
@@ -357,5 +413,121 @@ async fn trait_defaults_report_spec_correct_codes() {
     assert_eq!(
         respond(&s, &[0x08, 0x00, 0x00, 0x12, 0x34]).await,
         vec![0x08, 0x00, 0x00, 0x12, 0x34]
+    );
+}
+
+// ── Additional coverage surfaced by adversarial review ────────────
+
+#[tokio::test]
+async fn fifo_boundary_31_values_payload_matches() {
+    // The boundary test above only checks the header; assert the full payload too.
+    let s = store();
+    let values: Vec<u16> = (0..31).collect();
+    s.set_fifo_queue(0x0040, values.clone());
+    let mut expected = vec![0x18, 0x00, 0x40, 0x00, 0x1F];
+    for v in &values {
+        expected.extend_from_slice(&v.to_be_bytes());
+    }
+    assert_eq!(respond(&s, &[0x18, 0x00, 0x40]).await, expected);
+}
+
+#[tokio::test]
+async fn file_read_accumulated_over_pdu_cap_is_illegal_data_value() {
+    let s = store();
+    for r in 0..4 {
+        s.set_file_record(1, r, 0x1111);
+    }
+    // 30 sub-requests × 4 registers each → ~10 response bytes apiece, past the cap.
+    let mut req = vec![0x14, 30 * 7];
+    for _ in 0..30 {
+        req.extend_from_slice(&[0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04]);
+    }
+    assert_eq!(respond(&s, &req).await, vec![0x94, 0x03]);
+}
+
+#[tokio::test]
+async fn file_read_length_over_scratch_is_illegal_data_address() {
+    let s = store();
+    s.set_file_record(1, 199, 0x2222); // file 1 spans records 0..=199
+    // length 200 (0xC8) exceeds the handler's 122-register scratch buffer
+    let req = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0xC8];
+    assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
+}
+
+#[tokio::test]
+async fn file_read_lying_store_count_is_server_device_failure() {
+    // A store reporting more written registers than the buffer holds must not
+    // panic the handler — it returns ServerDeviceFailure (0x04).
+    let req = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02];
+    assert_eq!(respond(&LyingFileStore, &req).await, vec![0x94, 0x04]);
+}
+
+#[tokio::test]
+async fn file_write_grows_existing_file_preserving_records() {
+    let s = store();
+    s.set_file_record(1, 0, 0xAAAA);
+    s.set_file_record(1, 1, 0xBBBB);
+    // write records 5..=6, leaving a 2..4 gap
+    let write = [
+        0x15, 0x0B, 0x06, 0x00, 0x01, 0x00, 0x05, 0x00, 0x02, 0xCC, 0xCC, 0xDD, 0xDD,
+    ];
+    respond(&s, &write).await;
+    // read records 0..=6 back
+    let read = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x07];
+    assert_eq!(
+        respond(&s, &read).await,
+        vec![
+            0x14, 0x10, // byte_count = 1 + 1 + 14
+            0x0F, 0x06, // File Resp Length = 1 + 14
+            0xAA, 0xAA, 0xBB, 0xBB, // records 0,1 preserved
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // records 2..4 zero-filled
+            0xCC, 0xCC, 0xDD, 0xDD, // records 5,6 written
+        ]
+    );
+}
+
+#[tokio::test]
+async fn fc08_return_query_data_empty_payload() {
+    let s = store();
+    assert_eq!(
+        respond(&s, &[0x08, 0x00, 0x00]).await,
+        vec![0x08, 0x00, 0x00]
+    );
+}
+
+#[tokio::test]
+async fn fc08_broadcast_produces_no_response() {
+    let s = store();
+    assert!(
+        respond_opt(&s, &[0x08, 0x00, 0x00, 0x12, 0x34], UnitId(0))
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn fc0b_get_comm_event_counter_served_by_store() {
+    assert_eq!(
+        respond(&DiagCapableStore, &[0x0B]).await,
+        vec![0x0B, 0x00, 0x00, 0x01, 0x08]
+    );
+}
+
+#[tokio::test]
+async fn fc0c_get_comm_event_log_matches_spec_example() {
+    // §6.10: byte_count (0x08) = 6 fixed bytes + 2 event bytes; the handler derives it.
+    assert_eq!(
+        respond(&DiagCapableStore, &[0x0C]).await,
+        vec![0x0C, 0x08, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x20, 0x00]
+    );
+}
+
+#[tokio::test]
+async fn fc08_force_listen_only_mode_produces_no_response() {
+    // The store returns Ok(None) for sub-function 0x0004 → the server emits no reply.
+    assert!(
+        respond_opt(&DiagCapableStore, &[0x08, 0x00, 0x04, 0x00, 0x00], UNIT)
+            .await
+            .is_none()
     );
 }

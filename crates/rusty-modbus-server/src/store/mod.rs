@@ -32,6 +32,13 @@ pub struct CommEventLog {
 /// `tokio::spawn` in the server runtime.
 ///
 /// Read methods take `&mut [T]` buffers to avoid heap allocation per request.
+///
+/// The eight methods covering the four core data tables (coils, discrete inputs,
+/// holding/input registers) are **required**. The remaining methods — file
+/// records, FIFO queues, and the serial-line diagnostics family — are
+/// **optional**: each has a default body returning the spec-correct exception
+/// for an unsupported capability, so existing implementations keep compiling and
+/// only override the capabilities they actually serve.
 pub trait DataStore: Send + Sync {
     // ── Coils (read-write bits) ────────────────────────────────────
 

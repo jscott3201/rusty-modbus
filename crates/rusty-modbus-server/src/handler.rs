@@ -248,11 +248,14 @@ async fn dispatch_request<S: DataStore>(
             })
         }
         RequestPdu::Diagnostics(req) => {
+            // Run the sub-function first (it may mutate device state, e.g. clear
+            // counters), then suppress the reply on broadcast — mirroring the
+            // write arms. Ok(None) is the spec "no reply" path (Force Listen Only).
+            let result = store.diagnostic(req.sub_function, req.data).await;
             if is_broadcast {
                 return None;
             }
-            // Ok(None) is the spec "no reply" path (e.g. Force Listen Only Mode).
-            match store.diagnostic(req.sub_function, req.data).await {
+            match result {
                 Ok(Some(data)) => Some(encode_response(&DiagnosticsResponse {
                     sub_function: req.sub_function,
                     data: &data,
@@ -281,6 +284,13 @@ async fn dispatch_request<S: DataStore>(
                 return None;
             }
             Some(match store.get_comm_event_log().await {
+                // §6.10 caps the event log at 64 bytes; a larger log would make the
+                // byte_count unrepresentable / the frame malformed, so a store that
+                // returns more is failing → ServerDeviceFailure.
+                Ok(log) if log.events.len() > 64 => encode_exception(
+                    FunctionCode::GetCommEventLog.exception_code(),
+                    ExceptionCode::ServerDeviceFailure,
+                ),
                 Ok(log) => {
                     // Derive the wire byte_count (status+event+message = 6 bytes + events).
                     let byte_count = u8::try_from(log.events.len() + 6).unwrap_or(u8::MAX);
@@ -300,6 +310,13 @@ async fn dispatch_request<S: DataStore>(
                 return None;
             }
             Some(match store.report_server_id().await {
+                // The PDU is FC + byte_count(u8) + data, capped at 253 bytes; a blob
+                // over 251 bytes can't be represented and would panic the encoder
+                // (copy_from_slice into a byte_count-sized slice) → ServerDeviceFailure.
+                Ok(data) if data.len() > 251 => encode_exception(
+                    FunctionCode::ReportServerId.exception_code(),
+                    ExceptionCode::ServerDeviceFailure,
+                ),
                 Ok(data) => {
                     // byte_count MUST equal data.len() or the encoder panics.
                     let byte_count = u8::try_from(data.len()).unwrap_or(u8::MAX);
@@ -476,8 +493,8 @@ async fn handle_read_file_record<S: DataStore>(
 ) -> Vec<u8> {
     let subs = req.sub_requests;
     // Each sub-request is exactly 7 bytes; the byte count must be a non-empty
-    // multiple of 7 (§6.14, Figure 24 → IllegalDataValue).
-    if subs.is_empty() || !subs.len().is_multiple_of(7) {
+    // multiple of 7 within 0x07..=0xF5 (§6.14, Figure 24 → IllegalDataValue).
+    if subs.is_empty() || !subs.len().is_multiple_of(7) || subs.len() > 0xF5 {
         return encode_exception(
             FunctionCode::ReadFileRecord.exception_code(),
             ExceptionCode::IllegalDataValue,
@@ -500,6 +517,13 @@ async fn handle_read_file_record<S: DataStore>(
             .read_file_record(file, record, length, &mut scratch)
             .await
         {
+            // Guard against a misbehaving store reporting more than it could write.
+            Ok(n) if n > scratch.len() => {
+                return encode_exception(
+                    FunctionCode::ReadFileRecord.exception_code(),
+                    ExceptionCode::ServerDeviceFailure,
+                );
+            }
             Ok(n) => {
                 // Each sub-response is [resp_len][ref_type=6][2*N data]; resp_len
                 // counts the ref-type byte plus the data, excluding itself.
@@ -531,7 +555,15 @@ async fn apply_write_file_record<S: DataStore>(
     req: &WriteFileRecordRequest<'_>,
     store: &S,
 ) -> Result<(), ExceptionCode> {
+    // §6.15 / Figure 25: byte_count must be 0x07..=0xF5.
+    if req.byte_count > 0xF5 {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    // Pass 1: validate framing and collect every sub-request *before* writing, so
+    // a malformed later sub-request rejects the whole request without committing
+    // the earlier ones (write is atomic with respect to framing errors).
     let mut subs = req.sub_requests;
+    let mut groups: Vec<(u16, u16, Vec<u16>)> = Vec::new();
     while !subs.is_empty() {
         // Sub-request header [ref_type][file Hi/Lo][record Hi/Lo][len Hi/Lo]
         // followed by len*2 data bytes (§6.15).
@@ -552,8 +584,12 @@ async fn apply_write_file_record<S: DataStore>(
             .chunks_exact(2)
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
             .collect();
-        store.write_file_record(file, record, &values).await?;
+        groups.push((file, record, values));
         subs = &subs[data_end..];
+    }
+    // Pass 2: apply the validated sub-requests.
+    for (file, record, values) in &groups {
+        store.write_file_record(*file, *record, values).await?;
     }
     Ok(())
 }
