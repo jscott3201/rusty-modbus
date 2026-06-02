@@ -220,6 +220,23 @@ async fn forward_to_backend(
     }
 
     if let Ok(Ok(rtu_response)) = time::timeout(serial_timeout, rtu_stream.recv()).await {
+        // Validate the response actually came from the addressed slave and
+        // answers this request before relaying it. On a shared RTU bus a stale
+        // or cross-talk frame from a different slave (or a response to an
+        // earlier transaction) could otherwise be forwarded to the TCP client
+        // stamped with the requested unit_id, masking the mismatch — the client
+        // has no way to detect the substitution. The function code must echo
+        // the request (an exception sets fc | 0x80, so compare modulo that bit).
+        let resp_unit = rtu_response.unit_id();
+        let resp_fc = rtu_response.pdu.first().copied().unwrap_or(0);
+        if resp_unit != unit_id || (resp_fc & 0x7F) != fc {
+            return translator::make_exception_frame(
+                txn_id,
+                unit_id,
+                fc,
+                ExceptionCode::GatewayTargetDeviceFailedToRespond.code(),
+            );
+        }
         translator::rtu_to_mbap(&rtu_response, txn_id, unit_id)
     } else {
         translator::make_exception_frame(
