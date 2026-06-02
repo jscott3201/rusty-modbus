@@ -2,7 +2,7 @@
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, network_endian::U16};
 
-use crate::constants::MBAP_HEADER_LEN;
+use crate::constants::{MAX_PDU_SIZE, MBAP_HEADER_LEN};
 
 /// The 7-byte MBAP header for Modbus/TCP.
 ///
@@ -29,18 +29,40 @@ pub struct MbapHeader {
 }
 
 impl MbapHeader {
+    /// Try to construct a new MBAP header.
+    ///
+    /// `pdu_length` is the size of the PDU that follows (not including the unit ID byte).
+    /// The `length` field is set to `pdu_length + 1` to account for the unit ID byte.
+    ///
+    /// Returns `None` when `pdu_length` exceeds the maximum Modbus PDU size.
+    #[must_use]
+    pub fn try_new(transaction_id: u16, unit_id: u8, pdu_length: u16) -> Option<Self> {
+        if usize::from(pdu_length) > MAX_PDU_SIZE {
+            return None;
+        }
+
+        let length = pdu_length.checked_add(1)?;
+        Some(Self {
+            transaction_id: U16::new(transaction_id),
+            protocol_id: U16::new(crate::constants::MODBUS_PROTOCOL_ID),
+            length: U16::new(length),
+            unit_id,
+        })
+    }
+
     /// Construct a new MBAP header.
     ///
     /// `pdu_length` is the size of the PDU that follows (not including the unit ID byte).
     /// The `length` field is set to `pdu_length + 1` to account for the unit ID byte.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pdu_length` exceeds the maximum Modbus PDU size. Use
+    /// [`Self::try_new`] when the length comes from external input.
     #[must_use]
     pub fn new(transaction_id: u16, unit_id: u8, pdu_length: u16) -> Self {
-        Self {
-            transaction_id: U16::new(transaction_id),
-            protocol_id: U16::new(crate::constants::MODBUS_PROTOCOL_ID),
-            length: U16::new(pdu_length + 1), // +1 for unit_id byte
-            unit_id,
-        }
+        Self::try_new(transaction_id, unit_id, pdu_length)
+            .expect("pdu_length must be <= MAX_PDU_SIZE")
     }
 
     /// Byte count of the PDU that follows (length field minus 1 for unit ID).
@@ -73,6 +95,25 @@ mod tests {
         assert_eq!(h.protocol_id.get(), 0x0000);
         assert_eq!(h.length.get(), 6); // pdu_length(5) + 1
         assert_eq!(h.unit_id, 1);
+    }
+
+    #[test]
+    fn try_new_accepts_max_pdu_size() {
+        let h = MbapHeader::try_new(1, 1, 253).expect("max PDU size should be accepted");
+        assert_eq!(h.length.get(), 254);
+        assert_eq!(h.pdu_length(), 253);
+    }
+
+    #[test]
+    fn try_new_rejects_oversized_pdu() {
+        assert!(MbapHeader::try_new(1, 1, 254).is_none());
+        assert!(MbapHeader::try_new(1, 1, u16::MAX).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "pdu_length must be <= MAX_PDU_SIZE")]
+    fn new_panics_on_oversized_pdu() {
+        let _ = MbapHeader::new(1, 1, 254);
     }
 
     #[test]
@@ -120,7 +161,7 @@ mod tests {
 
     #[test]
     fn wire_format_is_big_endian() {
-        let h = MbapHeader::new(0x0102, 0xAB, 0x0304);
+        let h = MbapHeader::new(0x0102, 0xAB, 0x00FC);
         let bytes = h.as_bytes();
 
         // transaction_id: 0x0102 big-endian → [0x01, 0x02]
@@ -129,9 +170,9 @@ mod tests {
         // protocol_id: 0x0000 → [0x00, 0x00]
         assert_eq!(bytes[2], 0x00);
         assert_eq!(bytes[3], 0x00);
-        // length: 0x0304 + 1 = 0x0305 → [0x03, 0x05]
-        assert_eq!(bytes[4], 0x03);
-        assert_eq!(bytes[5], 0x05);
+        // length: 0x00FC + 1 = 0x00FD → [0x00, 0xFD]
+        assert_eq!(bytes[4], 0x00);
+        assert_eq!(bytes[5], 0xFD);
         // unit_id: 0xAB
         assert_eq!(bytes[6], 0xAB);
     }

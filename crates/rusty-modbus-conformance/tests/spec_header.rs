@@ -1,7 +1,11 @@
 //! TCP Guide §3.1.3 — MBAP header wire format verification.
 
-use rusty_modbus_types::{MBAP_HEADER_LEN, MbapHeader};
+use rusty_modbus_types::{MAX_PDU_SIZE, MBAP_HEADER_LEN, MbapHeader};
 use zerocopy::IntoBytes;
+
+fn max_pdu_size_u16() -> u16 {
+    u16::try_from(MAX_PDU_SIZE).expect("MAX_PDU_SIZE fits in u16")
+}
 
 #[test]
 fn mbap_header_new_sets_fields() {
@@ -70,4 +74,19 @@ fn mbap_header_protocol_id_always_zero() {
     // Per TCP Guide §3.1.3, protocol ID is always 0x0000 for Modbus
     let h = MbapHeader::new(0xFFFF, 0xFF, 253);
     assert_eq!(h.protocol_id.get(), 0x0000);
+}
+
+#[test]
+fn mbap_header_try_new_accepts_spec_max_pdu() {
+    let h = MbapHeader::try_new(0x1234, 0xFF, max_pdu_size_u16())
+        .expect("maximum Modbus PDU size should be accepted");
+
+    assert_eq!(h.length.get(), 254);
+    assert_eq!(h.pdu_length(), 253);
+}
+
+#[test]
+fn mbap_header_try_new_rejects_pdu_above_spec_max() {
+    assert!(MbapHeader::try_new(0x1234, 0xFF, max_pdu_size_u16() + 1).is_none());
+    assert!(MbapHeader::try_new(0x1234, 0xFF, u16::MAX).is_none());
 }
