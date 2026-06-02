@@ -71,6 +71,11 @@ pub enum DecodeError {
     UnknownExceptionCode(u8),
     /// Diagnostic sub-function code is not recognized.
     UnknownDiagnosticSubFunction(u16),
+    /// Diagnostics data is not an even number of bytes.
+    InvalidDiagnosticDataLength {
+        /// Invalid diagnostics data length.
+        length: usize,
+    },
     /// Device ID code byte is not recognized (FC 0x2B / MEI 0x0E).
     InvalidDeviceIdCode(u8),
 }
@@ -143,6 +148,12 @@ impl core::fmt::Display for DecodeError {
             Self::UnknownDiagnosticSubFunction(sf) => {
                 write!(f, "unknown diagnostic sub-function: {sf:#06X}")
             }
+            Self::InvalidDiagnosticDataLength { length } => {
+                write!(
+                    f,
+                    "invalid diagnostics data length: {length} (expected a multiple of 2)"
+                )
+            }
             Self::InvalidDeviceIdCode(code) => write!(f, "invalid device ID code: {code:#04X}"),
         }
     }
@@ -205,6 +216,11 @@ pub enum EncodeError {
         /// Number of records.
         record_length: u16,
     },
+    /// Diagnostics data is not an even number of bytes.
+    InvalidDiagnosticDataLength {
+        /// Invalid diagnostics data length.
+        length: usize,
+    },
 }
 
 impl core::fmt::Display for EncodeError {
@@ -251,6 +267,12 @@ impl core::fmt::Display for EncodeError {
                 f,
                 "file record out of range: file {file_number}, record {record_number}, length {record_length}"
             ),
+            Self::InvalidDiagnosticDataLength { length } => {
+                write!(
+                    f,
+                    "invalid diagnostics data length: {length} (expected a multiple of 2)"
+                )
+            }
         }
     }
 }

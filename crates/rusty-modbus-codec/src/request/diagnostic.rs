@@ -12,11 +12,26 @@ use rusty_modbus_types::{DiagnosticSubFunction, FunctionCode};
 use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
 
+fn check_diagnostic_data_len_decode(data: &[u8]) -> Result<(), DecodeError> {
+    if data.len().is_multiple_of(2) {
+        Ok(())
+    } else {
+        Err(DecodeError::InvalidDiagnosticDataLength { length: data.len() })
+    }
+}
+
+fn check_diagnostic_data_len_encode(data: &[u8]) -> Result<(), EncodeError> {
+    if data.len().is_multiple_of(2) {
+        Ok(())
+    } else {
+        Err(EncodeError::InvalidDiagnosticDataLength { length: data.len() })
+    }
+}
+
 /// FC 0x08 — Diagnostics request.
 ///
-/// The sub-function code selects the diagnostic action. Most sub-functions
-/// carry a single 16-bit data word, but Return Query Data (0x0000) echoes
-/// arbitrary data.
+/// The sub-function code selects the diagnostic action. Diagnostic data is
+/// encoded as `N x 2` bytes per Spec V1.1b3 §6.8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticsRequest<'buf> {
     /// Diagnostic sub-function code.
@@ -33,6 +48,8 @@ impl<'buf> DiagnosticsRequest<'buf> {
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 2 bytes.
     /// Returns [`DecodeError::UnknownFunctionCode`] if the sub-function code is not recognized
     /// (reused as a general "unknown sub-code" error via the raw value).
+    /// Returns [`DecodeError::InvalidDiagnosticDataLength`] if the payload is not
+    /// an even number of bytes.
     pub fn decode(data: &'buf [u8]) -> Result<Self, DecodeError> {
         if data.len() < 2 {
             return Err(DecodeError::Truncated {
@@ -44,6 +61,7 @@ impl<'buf> DiagnosticsRequest<'buf> {
         let sub_function = DiagnosticSubFunction::from_raw(raw_sub)
             .ok_or(DecodeError::UnknownDiagnosticSubFunction(raw_sub))?;
         let payload = &data[2..];
+        check_diagnostic_data_len_decode(payload)?;
         Ok(Self {
             sub_function,
             data: payload,
@@ -60,6 +78,7 @@ impl Encode for DiagnosticsRequest<'_> {
                 available: buf.len(),
             });
         }
+        check_diagnostic_data_len_encode(self.data)?;
         EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::Diagnostics.code();
         buf[1..3].copy_from_slice(&self.sub_function.code().to_be_bytes());

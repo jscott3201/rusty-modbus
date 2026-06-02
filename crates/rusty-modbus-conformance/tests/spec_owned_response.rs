@@ -4,8 +4,9 @@
 //! PDUs to the right owned types with correct field values.
 
 use bytes::Bytes;
+use rusty_modbus_codec::DecodeError;
 use rusty_modbus_frame::OwnedResponsePdu;
-use rusty_modbus_types::{ExceptionCode, FunctionCode};
+use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, FunctionCode};
 
 // ── FC 01 Read Coils ───────────────────────────────────────────────
 
@@ -108,6 +109,38 @@ fn owned_fc07_read_exception_status() {
         }
         other => panic!("expected ReadExceptionStatus, got {other:?}"),
     }
+}
+
+// ── FC 08 Diagnostics ─────────────────────────────────────────────
+
+#[test]
+fn owned_fc08_diagnostics() {
+    let pdu = Bytes::from_static(&[0x08, 0x00, 0x00, 0xA5, 0x37]);
+    match OwnedResponsePdu::from_pdu(pdu).unwrap() {
+        OwnedResponsePdu::Diagnostics(r) => {
+            assert_eq!(r.sub_function, DiagnosticSubFunction::ReturnQueryData);
+            assert_eq!(r.data, Bytes::from_static(&[0xA5, 0x37]));
+        }
+        other => panic!("expected Diagnostics, got {other:?}"),
+    }
+}
+
+#[test]
+fn owned_fc08_odd_data_length_errors() {
+    let pdu = Bytes::from_static(&[0x08, 0x00, 0x00, 0xA5]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::InvalidDiagnosticDataLength { length: 1 }
+    );
+}
+
+#[test]
+fn owned_fc08_unknown_subfunction_errors() {
+    let pdu = Bytes::from_static(&[0x08, 0x00, 0x05, 0x00, 0x00]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::UnknownDiagnosticSubFunction(0x0005)
+    );
 }
 
 // ── FC 0B Get Comm Event Counter ──────────────────────────────────

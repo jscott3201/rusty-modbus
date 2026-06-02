@@ -508,7 +508,13 @@ impl OwnedDiagnosticsResponse {
         }
         let raw_sub = u16::from_be_bytes([data[0], data[1]]);
         let sub_function = DiagnosticSubFunction::from_raw(raw_sub)
-            .ok_or(DecodeError::UnknownFunctionCode(data[0]))?;
+            .ok_or(DecodeError::UnknownDiagnosticSubFunction(raw_sub))?;
+        let payload = &data[2..];
+        if !payload.len().is_multiple_of(2) {
+            return Err(DecodeError::InvalidDiagnosticDataLength {
+                length: payload.len(),
+            });
+        }
         let owned_data = pdu.slice(3..);
         Ok(Self {
             sub_function,

@@ -6,7 +6,7 @@
 use rusty_modbus_codec::request::*;
 use rusty_modbus_codec::response::*;
 use rusty_modbus_codec::{DecodeError, Encode, EncodeError, decode_request, decode_response};
-use rusty_modbus_types::{Address, MAX_PDU_SIZE, Quantity};
+use rusty_modbus_types::{Address, DiagnosticSubFunction, MAX_PDU_SIZE, Quantity};
 
 fn encode_err(value: &impl Encode) -> EncodeError {
     let mut buf = [0u8; 300];
@@ -40,6 +40,10 @@ fn assert_pdu_too_large(err: EncodeError, length: usize) {
             maximum: MAX_PDU_SIZE,
         }
     );
+}
+
+fn assert_invalid_diagnostic_data_length(err: EncodeError, length: usize) {
+    assert_eq!(err, EncodeError::InvalidDiagnosticDataLength { length });
 }
 
 #[test]
@@ -397,6 +401,25 @@ fn encode_rejects_file_and_diagnostic_response_byte_count_mismatches() {
         }),
         4,
         2,
+    );
+}
+
+#[test]
+fn encode_rejects_odd_diagnostic_data_lengths() {
+    assert_invalid_diagnostic_data_length(
+        encode_err(&DiagnosticsRequest {
+            sub_function: DiagnosticSubFunction::ReturnQueryData,
+            data: &[0xA5],
+        }),
+        1,
+    );
+
+    assert_invalid_diagnostic_data_length(
+        encode_err(&DiagnosticsResponse {
+            sub_function: DiagnosticSubFunction::ReturnQueryData,
+            data: &[0xA5],
+        }),
+        1,
     );
 }
 
