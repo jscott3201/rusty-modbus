@@ -37,6 +37,10 @@ impl ExceptionResponse {
                 actual: 0,
             });
         }
+        let raw_function_code = fc_byte & 0x7F;
+        if raw_function_code == 0 {
+            return Err(DecodeError::UnknownFunctionCode(raw_function_code));
+        }
         let function_code = FunctionCode::from_exception_raw(fc_byte);
         let exception_code = ExceptionCode::from_raw(data[0]);
         Ok(Self {

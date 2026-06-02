@@ -103,6 +103,12 @@ async fn unknown_function_code_is_illegal_function() {
     assert_eq!(respond(&[0x65, 0x00, 0x00]).await, vec![0x65 | 0x80, 0x01]);
 }
 
+#[tokio::test]
+async fn zero_function_code_is_illegal_function() {
+    // Function code 0 is invalid per Modbus Application Protocol §4.1.
+    assert_eq!(respond(&[0x00]).await, vec![0x80, 0x01]);
+}
+
 // ── Happy path still works through the real dispatch ──────────────
 
 #[tokio::test]

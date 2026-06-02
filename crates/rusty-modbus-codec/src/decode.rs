@@ -128,10 +128,9 @@ pub fn decode_response(pdu: &[u8]) -> Result<ResponsePdu<'_>, DecodeError> {
         return ExceptionResponse::decode(fc, data).map(ResponsePdu::Exception);
     }
 
-    // Exception-flagged bytes handled above. from_raw returns Some for all
-    // non-exception bytes (known → named, unknown → Custom). The unwrap_or_else
-    // is a safety net for the impossible case where fc has the high bit set.
-    let fc_enum = FunctionCode::from_raw(fc).unwrap_or(FunctionCode::Custom(fc));
+    // Exception-flagged bytes handled above. from_raw returns named variants for
+    // public codes and Custom for nonzero vendor codes.
+    let fc_enum = FunctionCode::from_raw(fc).ok_or(DecodeError::UnknownFunctionCode(fc))?;
 
     match fc_enum {
         FunctionCode::ReadCoils => ReadCoilsResponse::decode(data).map(ResponsePdu::ReadCoils),
