@@ -370,6 +370,10 @@ async fn handle_read_registers<S: DataStore>(
 
     match result {
         Ok(count) => {
+            let count = match validate_store_count(count, quantity.0, buf.len()) {
+                Ok(count) => count,
+                Err(ec) => return encode_exception(fc.exception_code(), ec),
+            };
             let byte_count = u8::try_from(count * 2).unwrap_or(u8::MAX);
             let mut data = vec![0u8; count * 2];
             for (i, &val) in buf[..count].iter().enumerate() {
@@ -409,6 +413,10 @@ async fn handle_read_bits<S: DataStore>(
 
     match result {
         Ok(count) => {
+            let count = match validate_store_count(count, quantity.0, buf.len()) {
+                Ok(count) => count,
+                Err(ec) => return encode_exception(fc.exception_code(), ec),
+            };
             let byte_count = u8::try_from(count.div_ceil(8)).unwrap_or(u8::MAX);
             let mut bit_bytes = vec![0u8; byte_count as usize];
             for (i, &val) in buf[..count].iter().enumerate() {
@@ -471,6 +479,15 @@ async fn handle_read_write_multiple<S: DataStore>(
         .await
     {
         Ok(count) => {
+            let count = match validate_store_count(count, req.read_quantity.0, buf.len()) {
+                Ok(count) => count,
+                Err(ec) => {
+                    return encode_exception(
+                        FunctionCode::ReadWriteMultipleRegisters.exception_code(),
+                        ec,
+                    );
+                }
+            };
             let byte_count = u8::try_from(count * 2).unwrap_or(u8::MAX);
             let mut data = vec![0u8; count * 2];
             for (i, &val) in buf[..count].iter().enumerate() {
@@ -518,14 +535,13 @@ async fn handle_read_file_record<S: DataStore>(
             .read_file_record(file, record, length, &mut scratch)
             .await
         {
-            // Guard against a misbehaving store reporting more than it could write.
-            Ok(n) if n > scratch.len() => {
-                return encode_exception(
-                    FunctionCode::ReadFileRecord.exception_code(),
-                    ExceptionCode::ServerDeviceFailure,
-                );
-            }
             Ok(n) => {
+                let n = match validate_store_count(n, length, scratch.len()) {
+                    Ok(n) => n,
+                    Err(ec) => {
+                        return encode_exception(FunctionCode::ReadFileRecord.exception_code(), ec);
+                    }
+                };
                 // Each sub-response is [resp_len][ref_type=6][2*N data]; resp_len
                 // counts the ref-type byte plus the data, excluding itself.
                 let resp_len = 1 + 2 * n;
@@ -625,6 +641,18 @@ fn encode_response(resp: &dyn Encode) -> Vec<u8> {
     let mut buf = vec![0u8; resp.encoded_len()];
     let _ = resp.encode_into(&mut buf);
     buf
+}
+
+fn validate_store_count(
+    count: usize,
+    requested: u16,
+    capacity: usize,
+) -> Result<usize, ExceptionCode> {
+    if count == usize::from(requested) && count <= capacity {
+        Ok(count)
+    } else {
+        Err(ExceptionCode::ServerDeviceFailure)
+    }
 }
 
 fn encode_exception(fc_with_flag: u8, ec: ExceptionCode) -> Vec<u8> {
