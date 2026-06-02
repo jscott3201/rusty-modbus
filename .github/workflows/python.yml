@@ -35,18 +35,30 @@ permissions:
   pull-requests: read
 
 jobs:
-  wheel-test:
-    name: wheel install + pytest (${{ matrix.python-version }})
+  changes:
+    name: detect python dependency changes
     if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - python-version: "3.14"
-            expected-tag: "cp314-"
-          - python-version: "3.14t"
-            expected-tag: "cp314t"
+    outputs:
+      deps: ${{ steps.filter.outputs.deps }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            deps:
+              - ".github/workflows/python.yml"
+              - "Cargo.lock"
+              - "Cargo.toml"
+              - "deny.toml"
+              - "crates/*/Cargo.toml"
+              - "crates/rusty-modbus-python/Cargo.lock"
+
+  wheel-test:
+    name: wheel install + pytest (3.14)
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -54,7 +66,7 @@ jobs:
           toolchain: "1.95.0"
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/rusty-modbus-python
@@ -67,7 +79,7 @@ jobs:
       - name: assert wheel tag
         working-directory: crates/rusty-modbus-python
         env:
-          EXPECTED_TAG: ${{ matrix.expected-tag }}
+          EXPECTED_TAG: "cp314-"
         run: |
           python - <<'PY'
           import glob
@@ -80,17 +92,58 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: python-wheel-${{ matrix.python-version }}
+          name: python-wheel-3.14
           path: crates/rusty-modbus-python/dist/*.whl
       - name: install wheel
         working-directory: crates/rusty-modbus-python
         run: python -m pip install --force-reinstall dist/*.whl
       - name: test installed wheel
-        if: matrix.python-version != '3.14t'
         working-directory: crates/rusty-modbus-python
         run: pytest tests/ -v
+
+  wheel-test-free-threaded:
+    name: wheel install + pytest (3.14t)
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14t"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rusty-modbus-python
+      - name: install maturin
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install "maturin>=1.12,<2" pytest pytest-asyncio
+      - name: build wheel
+        working-directory: crates/rusty-modbus-python
+        run: maturin build --release --locked -o dist -i "$(command -v python)"
+      - name: assert wheel tag
+        working-directory: crates/rusty-modbus-python
+        env:
+          EXPECTED_TAG: "cp314t"
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+
+          wheels = glob.glob("dist/*.whl")
+          expected = os.environ["EXPECTED_TAG"]
+          assert wheels, "no wheels were built"
+          assert any(expected in wheel for wheel in wheels), (expected, wheels)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-3.14t
+          path: crates/rusty-modbus-python/dist/*.whl
+      - name: install wheel
+        working-directory: crates/rusty-modbus-python
+        run: python -m pip install --force-reinstall dist/*.whl
       - name: test installed wheel free-threaded
-        if: matrix.python-version == '3.14t'
         working-directory: crates/rusty-modbus-python
         env:
           PYTHON_GIL: "0"
@@ -132,7 +185,10 @@ jobs:
 
   supply-chain:
     name: python crate supply-chain
-    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: |
+      (github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch')
+      && (needs.changes.outputs.deps == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
