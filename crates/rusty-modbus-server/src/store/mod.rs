@@ -164,7 +164,7 @@ pub trait DataStore: Send + Sync {
         async move {
             let mut values = [false; MAX_READ_COILS as usize];
             let count = self.read_coils(address, quantity, &mut values).await?;
-            if count > values.len() {
+            if count > values.len() || count > usize::from(quantity) {
                 return Err(ExceptionCode::ServerDeviceFailure);
             }
             pack_coils(&values[..count], out)?;
@@ -230,7 +230,7 @@ pub trait DataStore: Send + Sync {
             let count = self
                 .read_discrete_inputs(address, quantity, &mut values)
                 .await?;
-            if count > values.len() {
+            if count > values.len() || count > usize::from(quantity) {
                 return Err(ExceptionCode::ServerDeviceFailure);
             }
             pack_coils(&values[..count], out)?;
@@ -265,7 +265,7 @@ pub trait DataStore: Send + Sync {
             let count = self
                 .read_holding_registers(address, quantity, &mut values)
                 .await?;
-            if count > values.len() {
+            if count > values.len() || count > usize::from(quantity) {
                 return Err(ExceptionCode::ServerDeviceFailure);
             }
             pack_registers_be(&values[..count], out)?;
@@ -331,7 +331,7 @@ pub trait DataStore: Send + Sync {
             let count = self
                 .read_input_registers(address, quantity, &mut values)
                 .await?;
-            if count > values.len() {
+            if count > values.len() || count > usize::from(quantity) {
                 return Err(ExceptionCode::ServerDeviceFailure);
             }
             pack_registers_be(&values[..count], out)?;
