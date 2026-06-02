@@ -157,6 +157,35 @@ fn owned_fc0b_get_comm_event_counter() {
     }
 }
 
+// ── FC 0C Get Comm Event Log ─────────────────────────────────────
+
+#[test]
+fn owned_fc0c_get_comm_event_log() {
+    let pdu = Bytes::from_static(&[0x0C, 0x08, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x20, 0x00]);
+    match OwnedResponsePdu::from_pdu(pdu).unwrap() {
+        OwnedResponsePdu::GetCommEventLog(r) => {
+            assert_eq!(r.byte_count, 0x08);
+            assert_eq!(r.status, 0x0000);
+            assert_eq!(r.event_count, 0x0108);
+            assert_eq!(r.message_count, 0x0121);
+            assert_eq!(r.events, Bytes::from_static(&[0x20, 0x00]));
+        }
+        other => panic!("expected GetCommEventLog, got {other:?}"),
+    }
+}
+
+#[test]
+fn owned_fc0c_rejects_byte_count_under_fixed_fields() {
+    let pdu = Bytes::from_static(&[0x0C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::ByteCountMismatch {
+            declared: 0,
+            actual: 6,
+        }
+    );
+}
+
 // ── FC 0F Write Multiple Coils ────────────────────────────────────
 
 #[test]
@@ -212,6 +241,49 @@ fn owned_fc18_read_fifo_queue() {
         }
         other => panic!("expected ReadFifoQueue, got {other:?}"),
     }
+}
+
+#[test]
+fn owned_fc18_rejects_fifo_count_data_mismatch() {
+    let pdu = Bytes::from_static(&[0x18, 0x00, 0x02, 0x00, 0x01]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::ByteCountMismatch {
+            declared: 2,
+            actual: 0,
+        }
+    );
+}
+
+#[test]
+fn owned_fc18_rejects_fifo_count_out_of_range() {
+    let mut pdu = vec![0x18, 0x00, 0x42, 0x00, 0x20];
+    pdu.extend([0; 64]);
+
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(Bytes::from(pdu)).unwrap_err(),
+        DecodeError::QuantityOutOfRange { quantity: 32 }
+    );
+}
+
+// ── FC 14/15 File Record ─────────────────────────────────────────
+
+#[test]
+fn owned_fc14_rejects_invalid_reference_type() {
+    let pdu = Bytes::from_static(&[0x14, 0x04, 0x03, 0x07, 0x12, 0x34]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::InvalidReferenceType(0x07)
+    );
+}
+
+#[test]
+fn owned_fc15_rejects_invalid_reference_type() {
+    let pdu = Bytes::from_static(&[0x15, 0x09, 0x07, 0, 1, 0, 0, 0, 1, 0x12, 0x34]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::InvalidReferenceType(0x07)
+    );
 }
 
 // ── FC 2B Encapsulated Interface ──────────────────────────────────
