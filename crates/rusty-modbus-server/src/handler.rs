@@ -296,9 +296,8 @@ async fn dispatch_request<S: DataStore>(
                 return None;
             }
             Some(match store.get_comm_event_log().await {
-                // §6.10 caps the event log at 64 bytes; a larger log would make the
-                // byte_count unrepresentable / the frame malformed, so a store that
-                // returns more is failing → ServerDeviceFailure.
+                // §6.10 caps the event log at 64 bytes; a store returning more is
+                // failing its optional capability contract → ServerDeviceFailure.
                 Ok(log) if log.events.len() > 64 => encode_exception(
                     FunctionCode::GetCommEventLog.exception_code(),
                     ExceptionCode::ServerDeviceFailure,
