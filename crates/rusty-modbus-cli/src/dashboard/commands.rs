@@ -1,9 +1,14 @@
 use rusty_modbus_client::ClientError;
 use rusty_modbus_types::UnitId;
 
+use crate::discover::{self, DiscoverConfig, DiscoveredDevice, DiscoveryReport};
+use crate::output::OutputFormat;
 use crate::shell_parser::{self, ShellCommand};
 
 use super::{CommandLogEntry, DashboardApp, DashboardStatus, DashboardTarget};
+
+const DISCOVERY_CONCURRENCY: usize = 64;
+const DISCOVERY_LOG_LIMIT: usize = 6;
 
 impl DashboardApp {
     pub(super) async fn execute_command_line(&mut self, line: String) {
@@ -77,6 +82,9 @@ impl DashboardApp {
                 self.push_log(CommandLogEntry::success(format!("Unit ID set to {id}")));
                 let _ = self.refresh().await;
             }
+            ShellCommand::DiscoverUnits { unit_id_range } => {
+                self.discover_units(unit_id_range).await;
+            }
             ShellCommand::Status => {
                 self.push_log(CommandLogEntry::info(format!(
                     "Endpoint {} unit {} connected {}",
@@ -94,6 +102,47 @@ impl DashboardApp {
                 self.should_quit = true;
             }
             ShellCommand::Empty => {}
+        }
+    }
+
+    async fn discover_units(&mut self, unit_id_range: String) {
+        let config = DiscoverConfig {
+            range: None,
+            host: Some(self.addr.ip().to_string()),
+            port: self.addr.port(),
+            unit_id_range,
+            timeout: self.view.timeout_secs,
+            concurrency: DISCOVERY_CONCURRENCY,
+            format: OutputFormat::Human,
+        };
+
+        match discover::scan(&config).await {
+            Ok(report) => self.record_discovery(report),
+            Err(error) => self.record_error(format!("Discovery failed: {error}")),
+        }
+    }
+
+    fn record_discovery(&mut self, report: DiscoveryReport) {
+        let devices = report
+            .results
+            .iter()
+            .flat_map(|result| result.devices.iter())
+            .collect::<Vec<_>>();
+        if devices.is_empty() {
+            self.push_log(CommandLogEntry::info(format!(
+                "Discovery OK: no responding unit IDs on {}",
+                self.view.endpoint
+            )));
+            return;
+        }
+
+        self.push_log(CommandLogEntry::success(format!(
+            "Discovery OK: {} responding unit IDs on {}",
+            devices.len(),
+            self.view.endpoint
+        )));
+        for device in devices.into_iter().take(DISCOVERY_LOG_LIMIT) {
+            self.push_log(CommandLogEntry::info(format_device(device)));
         }
     }
 
@@ -139,5 +188,15 @@ impl DashboardApp {
         self.view.status = DashboardStatus::Error;
         self.view.message = message.clone();
         self.push_log(CommandLogEntry::error(message));
+    }
+}
+
+fn format_device(device: &DiscoveredDevice) -> String {
+    if let (Some(vendor), Some(product), Some(rev)) =
+        (&device.vendor_name, &device.product_code, &device.revision)
+    {
+        format!("Unit {:>3}: [{vendor}] {product} rev {rev}", device.unit_id)
+    } else {
+        format!("Unit {:>3}: (no device identification)", device.unit_id)
     }
 }

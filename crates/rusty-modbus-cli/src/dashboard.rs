@@ -203,6 +203,7 @@ impl Drop for TerminalSession {
 }
 
 struct DashboardApp {
+    addr: SocketAddr,
     client: ModbusClient,
     view: DashboardView,
     refresh_interval: Duration,
@@ -235,6 +236,7 @@ impl DashboardApp {
         view.clamp_quantity();
 
         Self {
+            addr: config.addr,
             client,
             view,
             refresh_interval: config.refresh_interval,
