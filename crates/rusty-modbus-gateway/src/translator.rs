@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
-use rusty_modbus_types::{MbapHeader, TransactionId};
+use rusty_modbus_types::{ExceptionCode, MAX_PDU_SIZE, MbapHeader, TransactionId};
 
 /// Convert an MBAP (TCP) frame to an RTU frame for serial forwarding.
 ///
@@ -21,11 +21,24 @@ pub fn mbap_to_rtu(frame: &Frame) -> Frame {
 /// Adds an MBAP header with the original transaction ID and unit ID.
 #[must_use]
 pub fn rtu_to_mbap(rtu_frame: &Frame, transaction_id: TransactionId, unit_id: u8) -> Frame {
-    let header = MbapHeader::new(
-        transaction_id.0,
-        unit_id,
-        u16::try_from(rtu_frame.pdu.len()).unwrap_or(u16::MAX),
-    );
+    if rtu_frame.pdu.is_empty() || rtu_frame.pdu.len() > MAX_PDU_SIZE {
+        return make_exception_frame(
+            transaction_id,
+            unit_id,
+            rtu_frame.pdu.first().copied().unwrap_or(0),
+            ExceptionCode::GatewayTargetDeviceFailedToRespond.code(),
+        );
+    }
+
+    let Ok(pdu_len) = u16::try_from(rtu_frame.pdu.len()) else {
+        return make_exception_frame(
+            transaction_id,
+            unit_id,
+            rtu_frame.pdu.first().copied().unwrap_or(0),
+            ExceptionCode::GatewayTargetDeviceFailedToRespond.code(),
+        );
+    };
+    let header = MbapHeader::new(transaction_id.0, unit_id, pdu_len);
     Frame {
         header: FrameHeader::Mbap(header),
         pdu: rtu_frame.pdu.clone(),
@@ -82,6 +95,48 @@ mod tests {
             }
             FrameHeader::Rtu { .. } => panic!("expected MBAP header"),
         }
+    }
+
+    #[test]
+    fn rtu_to_mbap_oversized_pdu_is_gateway_target_failure() {
+        let rtu = Frame {
+            header: FrameHeader::Rtu { unit_id: 0x05 },
+            pdu: Bytes::from(vec![0x03; MAX_PDU_SIZE + 1]),
+        };
+
+        let mbap = rtu_to_mbap(&rtu, TransactionId(99), 0x05);
+        match mbap.header {
+            FrameHeader::Mbap(h) => {
+                assert_eq!(h.transaction_id.get(), 99);
+                assert_eq!(h.unit_id, 0x05);
+                assert_eq!(h.pdu_length(), 2);
+            }
+            FrameHeader::Rtu { .. } => panic!("expected MBAP header"),
+        }
+        assert_eq!(
+            &mbap.pdu[..],
+            &[
+                0x83,
+                ExceptionCode::GatewayTargetDeviceFailedToRespond.code()
+            ]
+        );
+    }
+
+    #[test]
+    fn rtu_to_mbap_empty_pdu_is_gateway_target_failure() {
+        let rtu = Frame {
+            header: FrameHeader::Rtu { unit_id: 0x05 },
+            pdu: Bytes::new(),
+        };
+
+        let mbap = rtu_to_mbap(&rtu, TransactionId(99), 0x05);
+        assert_eq!(
+            &mbap.pdu[..],
+            &[
+                0x80,
+                ExceptionCode::GatewayTargetDeviceFailedToRespond.code()
+            ]
+        );
     }
 
     #[test]
