@@ -6,6 +6,7 @@ use crate::config::DeviceIdentification;
 
 const DEVICE_ID_RESPONSE_HEADER_LEN: usize = 7;
 const DEVICE_ID_OBJECT_HEADER_LEN: usize = 2;
+const DEVICE_ID_REQUEST_LEN: usize = 2;
 const MAX_DEVICE_ID_OBJECT_VALUE_LEN: usize =
     MAX_PDU_SIZE - DEVICE_ID_RESPONSE_HEADER_LEN - DEVICE_ID_OBJECT_HEADER_LEN;
 
@@ -20,6 +21,9 @@ pub(crate) fn build_device_id_response(
     mei_data: &[u8],
     device_id: &DeviceIdentification,
 ) -> Vec<u8> {
+    if mei_data.len() != DEVICE_ID_REQUEST_LEN {
+        return device_id_exception(ExceptionCode::IllegalDataValue);
+    }
     let Some((&raw_device_id_code, rest)) = mei_data.split_first() else {
         return device_id_exception(ExceptionCode::IllegalDataValue);
     };

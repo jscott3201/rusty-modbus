@@ -117,6 +117,18 @@ async fn device_id_truncated_payload_is_illegal_data_value() {
 }
 
 #[tokio::test]
+async fn device_id_extra_payload_is_illegal_data_value() {
+    assert_eq!(
+        respond(
+            &DeviceIdentification::default(),
+            &[0x2B, 0x0E, 0x01, 0x00, 0xFF],
+        )
+        .await,
+        vec![0xAB, 0x03]
+    );
+}
+
+#[tokio::test]
 async fn device_id_oversized_indivisible_object_is_server_device_failure() {
     let device_id = DeviceIdentification {
         vendor_name: "V".repeat(245),
