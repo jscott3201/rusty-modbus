@@ -7,7 +7,7 @@ use bytes::Bytes;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_gateway::routing::RouteTable;
 use rusty_modbus_gateway::translator::{make_exception_frame, mbap_to_rtu, rtu_to_mbap};
-use rusty_modbus_types::{ExceptionCode, MbapHeader, TransactionId};
+use rusty_modbus_types::{ExceptionCode, MAX_PDU_SIZE, MbapHeader, TransactionId};
 
 // ── §3.1.2 Frame Translation ──────────────────────────────────────
 
@@ -74,6 +74,32 @@ fn spec_3_1_2_round_trip_preserves_data() {
         }
         _ => panic!("expected MBAP"),
     }
+}
+
+#[test]
+fn spec_3_1_2_rtu_to_mbap_rejects_oversized_public_pdu() {
+    let rtu = Frame {
+        header: FrameHeader::Rtu { unit_id: 0x05 },
+        pdu: Bytes::from(vec![0x03; MAX_PDU_SIZE + 1]),
+    };
+
+    let mbap = rtu_to_mbap(&rtu, TransactionId(99), 0x05);
+
+    match mbap.header {
+        FrameHeader::Mbap(h) => {
+            assert_eq!(h.transaction_id.get(), 99);
+            assert_eq!(h.unit_id, 0x05);
+            assert_eq!(h.pdu_length(), 2);
+        }
+        _ => panic!("expected MBAP"),
+    }
+    assert_eq!(
+        &mbap.pdu[..],
+        &[
+            0x83,
+            ExceptionCode::GatewayTargetDeviceFailedToRespond.code()
+        ]
+    );
 }
 
 // ── §7 Gateway Exception Codes ────────────────────────────────────
