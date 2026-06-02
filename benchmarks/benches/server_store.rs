@@ -2,7 +2,11 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rusty_modbus_server::{DataStore, InMemoryStore, StoreConfig};
+use rusty_modbus_types::MAX_READ_COILS;
 use tokio::runtime::Runtime;
+
+const MAX_READ_COIL_COUNT: usize = MAX_READ_COILS as usize;
+const MAX_READ_COIL_BYTES: usize = MAX_READ_COIL_COUNT.div_ceil(8);
 
 fn bench_in_memory_store_register_writes(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
@@ -93,6 +97,37 @@ fn bench_in_memory_store_coil_writes(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_in_memory_store_coil_reads(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let store = InMemoryStore::new(StoreConfig::default());
+    seed_coils(&store, MAX_READ_COIL_COUNT);
+
+    let mut group = c.benchmark_group("in_memory_store_coil_reads");
+    group.bench_function("wire_packed_max", |b| {
+        b.to_async(&rt).iter(|| async {
+            let mut packed = [0u8; MAX_READ_COIL_BYTES];
+            store
+                .read_coils_packed(0, MAX_READ_COILS, black_box(&mut packed))
+                .await
+                .unwrap();
+            black_box(packed);
+        });
+    });
+    group.bench_function("slice_bool_then_pack_max", |b| {
+        b.to_async(&rt).iter(|| async {
+            let mut values = [false; MAX_READ_COIL_COUNT];
+            let mut packed = [0u8; MAX_READ_COIL_BYTES];
+            store
+                .read_coils(0, MAX_READ_COILS, black_box(&mut values))
+                .await
+                .unwrap();
+            pack_bool_slice(black_box(&values), &mut packed);
+            black_box(packed);
+        });
+    });
+    group.finish();
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn register_value_bytes(register_count: usize) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(register_count * 2);
@@ -100,6 +135,15 @@ fn register_value_bytes(register_count: usize) -> Vec<u8> {
         bytes.extend_from_slice(&(register as u16).to_be_bytes());
     }
     bytes
+}
+
+fn seed_coils(store: &InMemoryStore, coil_count: usize) {
+    for index in 0..coil_count {
+        if index % 3 == 0 {
+            let address = u16::try_from(index).expect("benchmark coil address fits u16");
+            store.set_coil(address, true).unwrap();
+        }
+    }
 }
 
 fn packed_coil_values(coil_count: usize) -> Vec<u8> {
@@ -112,9 +156,19 @@ fn packed_coil_values(coil_count: usize) -> Vec<u8> {
     bytes
 }
 
+fn pack_bool_slice(bits: &[bool], out: &mut [u8]) {
+    out.fill(0);
+    for (index, &value) in bits.iter().enumerate() {
+        if value {
+            out[index / 8] |= 1 << (index % 8);
+        }
+    }
+}
+
 criterion_group!(
     benches,
     bench_in_memory_store_register_writes,
-    bench_in_memory_store_coil_writes
+    bench_in_memory_store_coil_writes,
+    bench_in_memory_store_coil_reads
 );
 criterion_main!(benches);

@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `a874c19` base plus this codec benchmark-baseline refresh |
+| Git commit | `cf3405d` base plus this packed-read benchmark refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -145,6 +145,12 @@ decode operates over caller-owned `&[u8]`, variable-length response payloads
 borrow from that buffer, and owned response types slice `bytes::Bytes` instead of
 copying payloads.
 
+On the server side, the in-memory store now exposes packed-bit read hooks for
+FC 0x01 and FC 0x02. The handler allocates the final response PDU once and lets
+the store write directly into the wire payload bytes, avoiding the previous
+2,000-element bool scratch buffer and second packing pass on the common
+read-coils/read-discrete-inputs path.
+
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
 decoder overlays it onto the read buffer before slicing the PDU. The benchmark
@@ -186,6 +192,8 @@ write paths to the in-memory store:
 | Max coil write from `&[bool]` | 23.4 ns | Slice baseline for existing store API. |
 | Max coil write from packed wire bytes | 691 ns | Direct packed path avoids the previous temporary `Vec<bool>`. |
 | Max coil packed bytes via `Vec<bool>` | 746 ns | Approximate old handler shape; packed-bit expansion dominates. |
+| Max coil read to packed wire bytes | 809 ns | Store writes directly into the response payload buffer. |
+| Max coil read via bool buffer then pack | 980 ns | Approximate old handler shape; extra scratch fill/copy/pack pass costs ~17%. |
 
 The RTU-over-TCP CRC scan quick smoke was run with
 `scripts/bench-local.sh codec rtu_tcp --quick --noplot` after changing the
@@ -204,7 +212,7 @@ parsing:
 - Keep Criterion baselines around maximum-size request decode, response
   dispatch, owned `Bytes` dispatch, register iteration, and packed write paths
   before changing parser internals.
-- Continue evaluating write-heavy server paths where packed-bit expansion,
+- Continue evaluating server bit/register paths where packed-bit expansion,
   response encoding, or store locking dominates more than borrowed decode.
 - Add multi-client stress matrices to separate protocol overhead from Tokio task
   scheduling and connection scaling.
