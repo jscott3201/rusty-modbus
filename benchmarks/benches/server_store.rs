@@ -2,13 +2,15 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rusty_modbus_server::{DataStore, InMemoryStore, StoreConfig};
-use rusty_modbus_types::{MAX_READ_COILS, MAX_READ_REGISTERS};
+use rusty_modbus_types::{MAX_FIFO_VALUES, MAX_READ_COILS, MAX_READ_REGISTERS};
 use tokio::runtime::Runtime;
 
 const MAX_READ_COIL_COUNT: usize = MAX_READ_COILS as usize;
 const MAX_READ_COIL_BYTES: usize = MAX_READ_COIL_COUNT.div_ceil(8);
 const MAX_READ_REGISTER_COUNT: usize = MAX_READ_REGISTERS as usize;
 const MAX_READ_REGISTER_BYTES: usize = MAX_READ_REGISTER_COUNT * 2;
+const MAX_FIFO_VALUE_COUNT: usize = MAX_FIFO_VALUES as usize;
+const MAX_FIFO_VALUE_BYTES: usize = MAX_FIFO_VALUE_COUNT * 2;
 
 fn bench_in_memory_store_register_writes(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
@@ -161,6 +163,33 @@ fn bench_in_memory_store_coil_reads(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_in_memory_store_fifo_reads(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let store = InMemoryStore::new(StoreConfig::default());
+    seed_fifo_queue(&store, MAX_FIFO_VALUE_COUNT);
+
+    let mut group = c.benchmark_group("in_memory_store_fifo_reads");
+    group.bench_function("wire_be_max", |b| {
+        b.to_async(&rt).iter(|| async {
+            let mut bytes = [0u8; MAX_FIFO_VALUE_BYTES];
+            store
+                .read_fifo_queue_be(0, black_box(&mut bytes))
+                .await
+                .unwrap();
+            black_box(bytes);
+        });
+    });
+    group.bench_function("vec_u16_then_pack_max", |b| {
+        b.to_async(&rt).iter(|| async {
+            let values = store.read_fifo_queue(0).await.unwrap();
+            let mut bytes = [0u8; MAX_FIFO_VALUE_BYTES];
+            pack_register_slice(black_box(&values), &mut bytes);
+            black_box(bytes);
+        });
+    });
+    group.finish();
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn register_value_bytes(register_count: usize) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(register_count * 2);
@@ -185,6 +214,13 @@ fn seed_holding_registers(store: &InMemoryStore, register_count: usize) {
         let value = u16::try_from(index).expect("benchmark register value fits u16");
         store.set_holding_register(address, value).unwrap();
     }
+}
+
+fn seed_fifo_queue(store: &InMemoryStore, value_count: usize) {
+    let values = (0..value_count)
+        .map(|value| u16::try_from(value).expect("benchmark FIFO value fits u16"))
+        .collect();
+    store.set_fifo_queue(0, values);
 }
 
 fn packed_coil_values(coil_count: usize) -> Vec<u8> {
@@ -217,6 +253,7 @@ criterion_group!(
     bench_in_memory_store_register_writes,
     bench_in_memory_store_register_reads,
     bench_in_memory_store_coil_writes,
-    bench_in_memory_store_coil_reads
+    bench_in_memory_store_coil_reads,
+    bench_in_memory_store_fifo_reads
 );
 criterion_main!(benches);

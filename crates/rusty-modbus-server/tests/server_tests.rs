@@ -160,6 +160,53 @@ async fn direct_packed_input_register_read_writes_wire_bytes() {
 }
 
 #[tokio::test]
+async fn direct_packed_fifo_read_writes_wire_bytes_without_draining() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_fifo_queue(0x0100, vec![0x01B8, 0x1284]);
+
+    let mut bytes = [0u8; 4];
+    let count = store.read_fifo_queue_be(0x0100, &mut bytes).await.unwrap();
+
+    assert_eq!(count, 2);
+    assert_eq!(bytes, [0x01, 0xB8, 0x12, 0x84]);
+
+    let snapshot = store.read_fifo_queue(0x0100).await.unwrap();
+    assert_eq!(snapshot, vec![0x01B8, 0x1284]);
+}
+
+#[tokio::test]
+async fn direct_packed_fifo_read_bad_output_len_is_illegal_data_value() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_fifo_queue(0x0100, vec![0x01B8, 0x1284]);
+    let mut bytes = [0u8; 3];
+
+    let result = store.read_fifo_queue_be(0x0100, &mut bytes).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataValue));
+}
+
+#[tokio::test]
+async fn direct_packed_fifo_read_over_spec_count_is_illegal_data_value() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_fifo_queue(0x0100, vec![0; 32]);
+    let mut bytes = [0u8; 64];
+
+    let result = store.read_fifo_queue_be(0x0100, &mut bytes).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataValue));
+}
+
+#[tokio::test]
+async fn direct_packed_fifo_read_unknown_address_is_illegal_data_address() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    let mut bytes = [0u8; 2];
+
+    let result = store.read_fifo_queue_be(0x0100, &mut bytes).await;
+
+    assert_eq!(result, Err(ExceptionCode::IllegalDataAddress));
+}
+
+#[tokio::test]
 async fn direct_packed_register_write_bad_byte_count_is_illegal_data_value() {
     let store = InMemoryStore::new(StoreConfig::default());
 
