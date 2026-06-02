@@ -10,6 +10,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Modbus TCP-to-RTU gateway bridge"
+readme = "README.md"
 
 [dependencies]
 rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
@@ -27,3 +28,6 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rusty-modbus-client = { path = "../rusty-modbus-client" }
 rusty-modbus-server = { path = "../rusty-modbus-server" }
+
+[package.metadata.docs.rs]
+all-features = true

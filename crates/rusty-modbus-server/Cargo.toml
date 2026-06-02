@@ -10,6 +10,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Async Modbus server with pluggable DataStore backend"
+readme = "README.md"
 
 [dependencies]
 rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
@@ -24,3 +25,6 @@ thiserror = "2"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 rusty-modbus-client = { path = "../rusty-modbus-client" }
+
+[package.metadata.docs.rs]
+all-features = true
