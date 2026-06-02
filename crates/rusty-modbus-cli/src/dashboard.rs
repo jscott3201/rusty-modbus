@@ -160,8 +160,6 @@ pub async fn run(config: DashboardConfig) -> Result<(), Box<dyn Error>> {
     let client = ModbusClient::connect(config.addr, client_config).await?;
 
     let mut app = DashboardApp::new(config, client);
-    app.refresh().await;
-
     let mut terminal = TerminalSession::enter()?;
     run_loop(terminal.terminal_mut(), &mut app).await
 }
@@ -174,7 +172,7 @@ async fn run_loop(
         app.update_refresh_age();
         terminal.draw(|frame| render_dashboard(frame, &app.view))?;
 
-        if app.should_auto_refresh() {
+        if app.needs_initial_refresh() || app.should_auto_refresh() {
             app.refresh().await;
             continue;
         }
@@ -309,6 +307,10 @@ impl DashboardApp {
         }
         self.last_refresh
             .is_some_and(|last_refresh| last_refresh.elapsed() >= self.refresh_interval)
+    }
+
+    fn needs_initial_refresh(&self) -> bool {
+        self.last_refresh.is_none()
     }
 
     fn update_refresh_age(&mut self) {
