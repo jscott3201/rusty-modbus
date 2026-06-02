@@ -1,22 +1,12 @@
-# Docker image validation for rusty-modbus.
+# On-demand Docker image validation for rusty-modbus.
 #
-# This gate is intentionally path-filtered so ordinary protocol/source PRs do
-# not pay for container builds. Run it manually when Docker behavior needs a
-# fresh image check against the current branch.
+# Cold Docker release builds are too expensive for the ordinary PR path. Keep
+# this workflow available for explicit image checks and use `scripts/docker-ci.sh`
+# locally before Docker-focused PRs.
 
 name: docker
 
 on:
-  pull_request:
-    branches: [dev]
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - ".dockerignore"
-      - ".github/workflows/docker.yml"
-      - "Dockerfile"
-      - "README.md"
-      - "scripts/bench-suite.sh"
-      - "scripts/docker-*.sh"
   workflow_dispatch:
 
 concurrency:
@@ -29,7 +19,6 @@ permissions:
 jobs:
   image-smoke:
     name: image smoke
-    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
