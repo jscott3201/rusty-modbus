@@ -305,7 +305,13 @@ async fn dispatch_request<S: DataStore>(
                 ),
                 Ok(log) => {
                     // Derive the wire byte_count (status+event+message = 6 bytes + events).
-                    let byte_count = u8::try_from(log.events.len() + 6).unwrap_or(u8::MAX);
+                    let byte_count = match checked_response_u8(
+                        log.events.len() + 6,
+                        FunctionCode::GetCommEventLog,
+                    ) {
+                        Ok(byte_count) => byte_count,
+                        Err(resp) => return Some(resp),
+                    };
                     encode_response(&GetCommEventLogResponse {
                         byte_count,
                         status: log.status,
@@ -323,15 +329,18 @@ async fn dispatch_request<S: DataStore>(
             }
             Some(match store.report_server_id().await {
                 // The PDU is FC + byte_count(u8) + data, capped at 253 bytes; a blob
-                // over 251 bytes can't be represented and would panic the encoder
-                // (copy_from_slice into a byte_count-sized slice) → ServerDeviceFailure.
+                // over 251 bytes would exceed the Modbus PDU cap → ServerDeviceFailure.
                 Ok(data) if data.len() > 251 => encode_exception(
                     FunctionCode::ReportServerId.exception_code(),
                     ExceptionCode::ServerDeviceFailure,
                 ),
                 Ok(data) => {
-                    // byte_count MUST equal data.len() or the encoder panics.
-                    let byte_count = u8::try_from(data.len()).unwrap_or(u8::MAX);
+                    // byte_count MUST equal data.len() or the encoder rejects the response.
+                    let byte_count =
+                        match checked_response_u8(data.len(), FunctionCode::ReportServerId) {
+                            Ok(byte_count) => byte_count,
+                            Err(resp) => return Some(resp),
+                        };
                     encode_response(&ReportServerIdResponse {
                         byte_count,
                         data: &data,
@@ -385,7 +394,10 @@ async fn handle_read_registers<S: DataStore>(
                 Ok(count) => count,
                 Err(ec) => return encode_exception(fc.exception_code(), ec),
             };
-            let byte_count = u8::try_from(count * 2).unwrap_or(u8::MAX);
+            let byte_count = match checked_response_u8(count * 2, fc) {
+                Ok(byte_count) => byte_count,
+                Err(resp) => return resp,
+            };
             let mut data = vec![0u8; count * 2];
             for (i, &val) in buf[..count].iter().enumerate() {
                 data[i * 2..i * 2 + 2].copy_from_slice(&val.to_be_bytes());
@@ -428,7 +440,10 @@ async fn handle_read_bits<S: DataStore>(
                 Ok(count) => count,
                 Err(ec) => return encode_exception(fc.exception_code(), ec),
             };
-            let byte_count = u8::try_from(count.div_ceil(8)).unwrap_or(u8::MAX);
+            let byte_count = match checked_response_u8(count.div_ceil(8), fc) {
+                Ok(byte_count) => byte_count,
+                Err(resp) => return resp,
+            };
             let mut bit_bytes = vec![0u8; byte_count as usize];
             for (i, &val) in buf[..count].iter().enumerate() {
                 if val {
@@ -499,7 +514,11 @@ async fn handle_read_write_multiple<S: DataStore>(
                     );
                 }
             };
-            let byte_count = u8::try_from(count * 2).unwrap_or(u8::MAX);
+            let byte_count =
+                match checked_response_u8(count * 2, FunctionCode::ReadWriteMultipleRegisters) {
+                    Ok(byte_count) => byte_count,
+                    Err(resp) => return resp,
+                };
             let mut data = vec![0u8; count * 2];
             for (i, &val) in buf[..count].iter().enumerate() {
                 data[i * 2..i * 2 + 2].copy_from_slice(&val.to_be_bytes());
@@ -556,7 +575,11 @@ async fn handle_read_file_record<S: DataStore>(
                 // Each sub-response is [resp_len][ref_type=6][2*N data]; resp_len
                 // counts the ref-type byte plus the data, excluding itself.
                 let resp_len = 1 + 2 * n;
-                data.push(u8::try_from(resp_len).unwrap_or(u8::MAX));
+                let resp_len = match checked_response_u8(resp_len, FunctionCode::ReadFileRecord) {
+                    Ok(resp_len) => resp_len,
+                    Err(resp) => return resp,
+                };
+                data.push(resp_len);
                 data.push(0x06);
                 for &w in &scratch[..n] {
                     data.extend_from_slice(&w.to_be_bytes());
@@ -572,7 +595,10 @@ async fn handle_read_file_record<S: DataStore>(
             );
         }
     }
-    let byte_count = u8::try_from(data.len()).unwrap_or(u8::MAX);
+    let byte_count = match checked_response_u8(data.len(), FunctionCode::ReadFileRecord) {
+        Ok(byte_count) => byte_count,
+        Err(resp) => return resp,
+    };
     encode_response(&ReadFileRecordResponse {
         byte_count,
         data: &data,
@@ -638,14 +664,32 @@ async fn handle_read_fifo_queue<S: DataStore>(address: Address, store: &S) -> Ve
             for (i, &v) in values.iter().enumerate() {
                 bytes[i * 2..i * 2 + 2].copy_from_slice(&v.to_be_bytes());
             }
+            let byte_count = match checked_response_u16(2 + n * 2, FunctionCode::ReadFifoQueue) {
+                Ok(byte_count) => byte_count,
+                Err(resp) => return resp,
+            };
+            let fifo_count = match checked_response_u16(n, FunctionCode::ReadFifoQueue) {
+                Ok(fifo_count) => fifo_count,
+                Err(resp) => return resp,
+            };
             encode_response(&ReadFifoQueueResponse {
-                byte_count: u16::try_from(2 + n * 2).unwrap_or(u16::MAX),
-                fifo_count: u16::try_from(n).unwrap_or(u16::MAX),
+                byte_count,
+                fifo_count,
                 fifo_values: &bytes,
             })
         }
         Err(ec) => encode_exception(FunctionCode::ReadFifoQueue.exception_code(), ec),
     }
+}
+
+fn checked_response_u8(value: usize, fc: FunctionCode) -> Result<u8, Vec<u8>> {
+    u8::try_from(value)
+        .map_err(|_| encode_exception(fc.exception_code(), ExceptionCode::ServerDeviceFailure))
+}
+
+fn checked_response_u16(value: usize, fc: FunctionCode) -> Result<u16, Vec<u8>> {
+    u16::try_from(value)
+        .map_err(|_| encode_exception(fc.exception_code(), ExceptionCode::ServerDeviceFailure))
 }
 
 fn validate_store_count(

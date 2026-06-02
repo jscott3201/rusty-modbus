@@ -369,6 +369,23 @@ impl DataStore for DiagCapableStore {
     }
 }
 
+/// Returns a configured number of communication event bytes.
+struct SizedEventLogStore {
+    len: usize,
+}
+impl DataStore for SizedEventLogStore {
+    stub_core_tables!();
+
+    async fn get_comm_event_log(&self) -> Result<CommEventLog, ExceptionCode> {
+        Ok(CommEventLog {
+            status: 0x0000,
+            event_count: 0x0001,
+            message_count: 0x0002,
+            events: vec![0x5A; self.len],
+        })
+    }
+}
+
 /// Returns a diagnostic payload of a configured length, regardless of request data.
 struct SizedDiagnosticStore {
     len: usize,
@@ -553,6 +570,45 @@ async fn fc0c_get_comm_event_log_matches_spec_example() {
         respond(&DiagCapableStore, &[0x0C]).await,
         vec![0x0C, 0x08, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x20, 0x00]
     );
+}
+
+#[tokio::test]
+async fn fc0c_event_log_boundary_64_events_ok() {
+    let resp = respond(&SizedEventLogStore { len: 64 }, &[0x0C]).await;
+
+    assert_eq!(resp.len(), 1 + 1 + 6 + 64);
+    assert_eq!(resp[0], 0x0C);
+    assert_eq!(resp[1], 70); // byte_count = status/event/message fields + events
+    assert!(resp[8..].iter().all(|&b| b == 0x5A));
+}
+
+#[tokio::test]
+async fn fc0c_event_log_over_64_events_is_server_device_failure() {
+    assert_eq!(
+        respond(&SizedEventLogStore { len: 65 }, &[0x0C]).await,
+        vec![0x8C, 0x04]
+    );
+}
+
+#[tokio::test]
+async fn fc11_report_server_id_boundary_251_bytes_ok() {
+    let s = store();
+    s.set_server_id(vec![0x5A; 251]);
+
+    let resp = respond(&s, &[0x11]).await;
+
+    assert_eq!(resp.len(), MAX_PDU_SIZE);
+    assert_eq!(resp[0], 0x11);
+    assert_eq!(resp[1], 251);
+    assert!(resp[2..].iter().all(|&b| b == 0x5A));
+}
+
+#[tokio::test]
+async fn fc11_report_server_id_over_pdu_cap_is_server_device_failure() {
+    let s = store();
+    s.set_server_id(vec![0x5A; 252]);
+
+    assert_eq!(respond(&s, &[0x11]).await, vec![0x91, 0x04]);
 }
 
 #[tokio::test]
