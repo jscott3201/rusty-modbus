@@ -38,7 +38,7 @@ case "$mode" in
     run cargo bench -p rusty-modbus-benchmarks --bench tcp_throughput tcp_pipelined -- "$@"
     ;;
   stress)
-    run cargo run -p rusty-modbus-benchmarks --bin stress-test -- "$@"
+    run cargo run --release -p rusty-modbus-benchmarks --bin stress-test -- "$@"
     ;;
   all)
     run cargo bench -p rusty-modbus-benchmarks -- "$@"
