@@ -1,6 +1,7 @@
 //! Modbus CLI tool — read/write registers and coils from the command line.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ use rusty_modbus_types::UnitId;
 mod commands;
 mod dashboard;
 mod discover;
+mod logging;
 mod output;
 mod shell;
 mod shell_parser;
@@ -38,6 +40,18 @@ struct Cli {
     /// Output format.
     #[arg(long, global = true, default_value = "human")]
     format: output::OutputFormat,
+
+    /// Tracing filter for diagnostic logs. Defaults to RUST_LOG or "warn".
+    #[arg(long, global = true, value_name = "FILTER")]
+    log_filter: Option<String>,
+
+    /// Diagnostic log format.
+    #[arg(long, global = true, value_enum, default_value = "human")]
+    log_format: logging::LogFormat,
+
+    /// Write diagnostic logs to a file instead of stderr.
+    #[arg(long, global = true, value_name = "PATH")]
+    log_file: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -101,6 +115,19 @@ fn resolve_addr(host: &Option<String>, port: u16) -> Result<SocketAddr, ExitCode
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    let _log_guard = match logging::init(&logging::LogConfig {
+        filter: cli.log_filter.clone(),
+        format: cli.log_format,
+        file: cli.log_file.clone(),
+    }) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("Error: failed to initialize logging: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    tracing::debug!(command = ?cli.command, "parsed CLI command");
 
     match cli.command {
         Commands::Read(args) => {
@@ -251,5 +278,32 @@ mod tests {
         assert_eq!(args.address, 10);
         assert_eq!(args.quantity, 8);
         assert_eq!(args.refresh_secs, 0);
+    }
+
+    #[test]
+    fn parses_logging_args() {
+        let cli = Cli::try_parse_from([
+            "modbus",
+            "--host",
+            "127.0.0.1",
+            "--log-filter",
+            "rusty_modbus_client=debug",
+            "--log-format",
+            "json",
+            "--log-file",
+            "modbus.log",
+            "read",
+            "hr",
+            "0",
+            "1",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.log_filter.as_deref(), Some("rusty_modbus_client=debug"));
+        assert_eq!(cli.log_format, logging::LogFormat::Json);
+        assert_eq!(
+            cli.log_file.as_deref(),
+            Some(std::path::Path::new("modbus.log"))
+        );
     }
 }

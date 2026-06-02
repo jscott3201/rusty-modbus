@@ -14,6 +14,7 @@ use rusty_modbus_types::{
     Address, ExceptionCode, FunctionCode, MAX_PDU_SIZE, MAX_READ_COILS, MAX_READ_REGISTERS,
     MeiType, Quantity, UnitId,
 };
+use tracing::debug;
 
 use crate::config::DeviceIdentification;
 use crate::device_id::build_device_id_response;
@@ -27,6 +28,15 @@ const MAX_DIAGNOSTIC_DATA_LEN: usize = MAX_PDU_SIZE - 3;
 ///
 /// The `pdu` slice starts at the function code byte.
 #[allow(clippy::too_many_lines)]
+#[tracing::instrument(
+    level = "trace",
+    skip(pdu, store, device_id),
+    fields(
+        unit_id = unit_id.0,
+        pdu_len = pdu.len(),
+        function_code = pdu.first().copied().unwrap_or_default()
+    )
+)]
 pub async fn process_request<S: DataStore>(
     pdu: &[u8],
     unit_id: UnitId,
@@ -58,6 +68,12 @@ pub async fn process_request<S: DataStore>(
                     ExceptionCode::IllegalDataValue
                 }
             };
+            debug!(
+                function_code = fc,
+                exception_code = exc.code(),
+                error = %e,
+                "request decode failed; returning Modbus exception"
+            );
             return Some(encode_exception(fc | 0x80, exc));
         }
     };
@@ -709,5 +725,12 @@ fn validate_store_count(
 }
 
 fn encode_exception(fc_with_flag: u8, ec: ExceptionCode) -> Vec<u8> {
+    debug!(
+        function_code = fc_with_flag & 0x7F,
+        exception_function_code = fc_with_flag,
+        exception_code = ec.code(),
+        exception = ?ec,
+        "encoding Modbus exception response"
+    );
     vec![fc_with_flag, ec.code()]
 }

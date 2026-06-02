@@ -13,6 +13,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rusty_modbus_types::MODBUS_TLS_MAX_FRAGMENT_SIZE;
+use tracing::warn;
 
 static CRYPTO_INIT: Once = Once::new();
 
@@ -79,9 +80,9 @@ pub fn build_server_config(config: &TlsServerConfig) -> Result<ServerConfig, Tls
         // R-06 mandates mutual authentication. Warn loudly when disabled — in
         // ALL build profiles, since a release server silently skipping client
         // auth is exactly the dangerous case operators need to see.
-        eprintln!(
-            "WARNING: TLS server running WITHOUT client certificate verification. \
-             This violates Modbus/TCP Security spec R-06 (mutual authentication)."
+        warn!(
+            spec_requirement = "R-06",
+            "TLS server running without client certificate verification; this violates Modbus/TCP Security mutual authentication"
         );
         WebPkiClientVerifier::builder(Arc::new(client_root_store))
             .allow_unauthenticated()

@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use rusty_modbus_frame::mbap::MbapCodec;
 use tokio::net::TcpListener;
 use tokio_util::codec::Framed;
+use tracing::{debug, trace};
 
 use crate::config::TcpServerConfig;
 use crate::connect::{TcpRecvStream, TcpSink};
@@ -43,7 +44,13 @@ impl TcpServerListener {
     ///
     /// Returns `TransportError::Io` if the bind fails.
     pub async fn bind(addr: SocketAddr, config: TcpServerConfig) -> Result<Self, TransportError> {
+        debug!(
+            addr = %addr,
+            max_connections = config.max_connections,
+            "binding TCP Modbus listener"
+        );
         let listener = TcpListener::bind(addr).await?;
+        debug!(addr = %listener.local_addr()?, "TCP Modbus listener bound");
         Ok(Self {
             listener,
             config,
@@ -68,20 +75,33 @@ impl TcpServerListener {
     ) -> Result<(TcpSink, TcpRecvStream, SocketAddr, ConnectionGuard), TransportError> {
         loop {
             let (stream, addr) = self.listener.accept().await?;
+            trace!(peer_addr = %addr, "accepted TCP connection");
 
             // Check access control.
             if let Some(ref ac) = self.config.access_control
                 && !ac.is_allowed(&addr.ip())
             {
+                debug!(peer_addr = %addr, "dropping TCP connection denied by access control");
                 continue;
             }
 
             // Check connection limit.
             let current = self.active_connections.load(Ordering::Relaxed);
             if current >= self.config.max_connections {
+                debug!(
+                    peer_addr = %addr,
+                    active_connections = current,
+                    max_connections = self.config.max_connections,
+                    "dropping TCP connection over limit"
+                );
                 continue;
             }
             self.active_connections.fetch_add(1, Ordering::Relaxed);
+            trace!(
+                peer_addr = %addr,
+                active_connections = current + 1,
+                "tracking accepted TCP connection"
+            );
 
             // Configure socket.
             stream.set_nodelay(self.config.tcp.tcp_nodelay)?;
