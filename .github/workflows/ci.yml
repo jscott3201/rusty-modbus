@@ -98,6 +98,31 @@ jobs:
           cargo nextest run --workspace --locked
           cargo test --workspace --locked --doc
 
+  python:
+    name: python bindings
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rusty-modbus-python
+      # The python crate is excluded from the workspace (it needs Python headers
+      # to build the cdylib), so none of the jobs above compile it. It is the
+      # only exhaustive consumer of ClientError, so a new ClientError variant
+      # silently breaks it. Compile it here to catch that class of regression.
+      # (Its Cargo.lock is gitignored, so no --locked.)
+      - name: clippy (python bindings)
+        working-directory: crates/rusty-modbus-python
+        run: cargo clippy --all-targets -- -D warnings
+
   deny:
     name: cargo-deny
     needs: changes
