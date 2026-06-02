@@ -131,10 +131,26 @@ async fn register_read_overreported_count_is_server_device_failure() {
 }
 
 #[tokio::test]
+async fn coil_read_partial_count_is_server_device_failure() {
+    assert_eq!(
+        respond(&BadCountStore::new(1), &[0x01, 0x00, 0x00, 0x00, 0x08]).await,
+        vec![0x81, 0x04]
+    );
+}
+
+#[tokio::test]
 async fn coil_read_overreported_count_is_server_device_failure() {
     assert_eq!(
         respond(&BadCountStore::new(2001), &[0x01, 0x00, 0x00, 0x00, 0x08]).await,
         vec![0x81, 0x04]
+    );
+}
+
+#[tokio::test]
+async fn discrete_input_read_partial_count_is_server_device_failure() {
+    assert_eq!(
+        respond(&BadCountStore::new(1), &[0x02, 0x00, 0x00, 0x00, 0x08]).await,
+        vec![0x82, 0x04]
     );
 }
 

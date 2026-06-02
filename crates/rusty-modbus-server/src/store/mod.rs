@@ -6,7 +6,8 @@ pub mod memory;
 use std::future::Future;
 
 use rusty_modbus_types::{
-    DiagnosticSubFunction, ExceptionCode, MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
+    DiagnosticSubFunction, ExceptionCode, MAX_READ_COILS, MAX_READ_DISCRETE_INPUTS,
+    MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
 };
 
 /// Snapshot of the communications event log returned by Get Comm Event Log
@@ -93,6 +94,20 @@ pub(crate) fn packed_coil_value(packed_values: &[u8], index: usize) -> bool {
     (packed_values[index / 8] >> (index % 8)) & 1 == 1
 }
 
+pub(crate) fn pack_coils(bits: &[bool], out: &mut [u8]) -> Result<(), ExceptionCode> {
+    let byte_count = bits.len().div_ceil(8);
+    if out.len() < byte_count {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    out[..byte_count].fill(0);
+    for (index, &value) in bits.iter().enumerate() {
+        if value {
+            out[index / 8] |= 1 << (index % 8);
+        }
+    }
+    Ok(())
+}
+
 /// Async trait abstracting the four Modbus data tables (Spec V1.1b3 §4.3).
 ///
 /// All methods are async to support database-backed and remote-proxied stores.
@@ -121,6 +136,28 @@ pub trait DataStore: Send + Sync {
         quantity: u16,
         buf: &mut [bool],
     ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send;
+
+    /// Read coil statuses directly into the Modbus packed-bit wire format.
+    ///
+    /// The default implementation delegates to [`Self::read_coils`] through a
+    /// bounded scratch buffer. Stores with direct table access can override this
+    /// method to avoid the intermediate bool slice and response repacking.
+    fn read_coils_packed(
+        &self,
+        address: u16,
+        quantity: u16,
+        out: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let mut values = [false; MAX_READ_COILS as usize];
+            let count = self.read_coils(address, quantity, &mut values).await?;
+            if count > values.len() {
+                return Err(ExceptionCode::ServerDeviceFailure);
+            }
+            pack_coils(&values[..count], out)?;
+            Ok(count)
+        }
+    }
 
     /// Write a single coil.
     fn write_coil(
@@ -163,6 +200,30 @@ pub trait DataStore: Send + Sync {
         quantity: u16,
         buf: &mut [bool],
     ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send;
+
+    /// Read discrete input statuses directly into the Modbus packed-bit wire format.
+    ///
+    /// The default implementation delegates to [`Self::read_discrete_inputs`]
+    /// through a bounded scratch buffer. Stores with direct table access can
+    /// override this method to avoid the intermediate bool slice.
+    fn read_discrete_inputs_packed(
+        &self,
+        address: u16,
+        quantity: u16,
+        out: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let mut values = [false; MAX_READ_DISCRETE_INPUTS as usize];
+            let count = self
+                .read_discrete_inputs(address, quantity, &mut values)
+                .await?;
+            if count > values.len() {
+                return Err(ExceptionCode::ServerDeviceFailure);
+            }
+            pack_coils(&values[..count], out)?;
+            Ok(count)
+        }
+    }
 
     // ── Holding Registers (read-write words) ───────────────────────
 

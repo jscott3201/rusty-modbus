@@ -10,8 +10,8 @@ use rusty_modbus_codec::response::{
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
-    Address, ExceptionCode, FunctionCode, MAX_PDU_SIZE, MAX_READ_COILS, MAX_READ_REGISTERS,
-    MeiType, Quantity, UnitId,
+    Address, ExceptionCode, FunctionCode, MAX_PDU_SIZE, MAX_READ_REGISTERS, MeiType, Quantity,
+    UnitId,
 };
 use tracing::debug;
 
@@ -464,31 +464,35 @@ async fn handle_read_bits<S: DataStore>(
         return encode_exception(fc.exception_code(), ec);
     }
 
-    let mut buf = [false; MAX_READ_COILS as usize];
+    let byte_count = match checked_response_u8(usize::from(quantity.0).div_ceil(8), fc) {
+        Ok(byte_count) => byte_count,
+        Err(resp) => return resp,
+    };
+    let response_fc = if is_coils {
+        FunctionCode::ReadCoils
+    } else {
+        FunctionCode::ReadDiscreteInputs
+    };
+    let mut response = vec![0u8; 2 + usize::from(byte_count)];
+    response[0] = response_fc.code();
+    response[1] = byte_count;
+
     let result = if is_coils {
-        store.read_coils(address.0, quantity.0, &mut buf).await
+        store
+            .read_coils_packed(address.0, quantity.0, &mut response[2..])
+            .await
     } else {
         store
-            .read_discrete_inputs(address.0, quantity.0, &mut buf)
+            .read_discrete_inputs_packed(address.0, quantity.0, &mut response[2..])
             .await
     };
 
     match result {
         Ok(count) => {
-            let count = match validate_store_count(count, quantity.0, buf.len()) {
-                Ok(count) => count,
-                Err(ec) => return encode_exception(fc.exception_code(), ec),
-            };
-            let byte_count = match checked_response_u8(count.div_ceil(8), fc) {
-                Ok(byte_count) => byte_count,
-                Err(resp) => return resp,
-            };
-            let fc = if is_coils {
-                FunctionCode::ReadCoils
-            } else {
-                FunctionCode::ReadDiscreteInputs
-            };
-            encode_bit_read_response(fc, byte_count, &buf[..count])
+            if let Err(ec) = validate_store_count(count, quantity.0, usize::from(quantity.0)) {
+                return encode_exception(fc.exception_code(), ec);
+            }
+            response
         }
         Err(ec) => encode_exception(fc.exception_code(), ec),
     }
@@ -743,18 +747,6 @@ fn encode_register_read_response(fc: FunctionCode, byte_count: u8, registers: &[
     pdu[1] = byte_count;
     for (i, &value) in registers.iter().enumerate() {
         pdu[2 + i * 2..2 + i * 2 + 2].copy_from_slice(&value.to_be_bytes());
-    }
-    pdu
-}
-
-fn encode_bit_read_response(fc: FunctionCode, byte_count: u8, bits: &[bool]) -> Vec<u8> {
-    let mut pdu = vec![0u8; 2 + usize::from(byte_count)];
-    pdu[0] = fc.code();
-    pdu[1] = byte_count;
-    for (i, &value) in bits.iter().enumerate() {
-        if value {
-            pdu[2 + i / 8] |= 1 << (i % 8);
-        }
     }
     pdu
 }
