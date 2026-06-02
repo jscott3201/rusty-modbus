@@ -8,9 +8,10 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 tag="${RUSTY_MODBUS_DOCKER_BENCH_TAG:-rusty-modbus-bench:local}"
+target="${RUSTY_MODBUS_DOCKER_TARGET:-benchmark}"
 
 RUSTY_MODBUS_DOCKER_TAG="$tag" \
-RUSTY_MODBUS_DOCKER_TARGET=benchmark \
+RUSTY_MODBUS_DOCKER_TARGET="$target" \
   scripts/docker-build.sh
 
 docker run --rm "$tag" "$@"
