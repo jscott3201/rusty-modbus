@@ -8,7 +8,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rusty_modbus_server::{
     CommEventLog, DataStore, InMemoryStore as RustInMemoryStore, ModbusServer as RustModbusServer,
-    ServerConfig as RustServerConfig, StoreConfig as RustStoreConfig,
+    ServerConfig as RustServerConfig, StoreConfig as RustStoreConfig, StoreError,
 };
 use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, UnitId};
 use tokio::runtime::Runtime;
@@ -130,13 +130,20 @@ impl StoreConfig {
         discrete_input_count: usize,
         holding_register_count: usize,
         input_register_count: usize,
-    ) -> Self {
-        Self {
+    ) -> PyResult<Self> {
+        let config = RustStoreConfig {
             coil_count,
             discrete_input_count,
             holding_register_count,
             input_register_count,
-        }
+        };
+        config.validate().map_err(store_error_to_pyerr)?;
+        Ok(Self {
+            coil_count,
+            discrete_input_count,
+            holding_register_count,
+            input_register_count,
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -172,35 +179,44 @@ pub struct InMemoryStore {
 impl InMemoryStore {
     #[new]
     #[pyo3(signature = (config=None))]
-    fn new(config: Option<StoreConfig>) -> Self {
+    fn new(config: Option<StoreConfig>) -> PyResult<Self> {
         let config = config.map_or_else(RustStoreConfig::default, |c| c.to_rust());
-        Self {
-            inner: Arc::new(RustInMemoryStore::new(config)),
-        }
+        let inner = RustInMemoryStore::try_new(config).map_err(store_error_to_pyerr)?;
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
     }
 
     /// Set a coil value.
     #[pyo3(signature = (address, value))]
-    fn set_coil(&self, address: u16, value: bool) {
-        self.inner.set_coil(address, value);
+    fn set_coil(&self, address: u16, value: bool) -> PyResult<()> {
+        self.inner
+            .set_coil(address, value)
+            .map_err(store_error_to_pyerr)
     }
 
     /// Set a discrete-input value.
     #[pyo3(signature = (address, value))]
-    fn set_discrete_input(&self, address: u16, value: bool) {
-        self.inner.set_discrete_input(address, value);
+    fn set_discrete_input(&self, address: u16, value: bool) -> PyResult<()> {
+        self.inner
+            .set_discrete_input(address, value)
+            .map_err(store_error_to_pyerr)
     }
 
     /// Set a holding-register value.
     #[pyo3(signature = (address, value))]
-    fn set_holding_register(&self, address: u16, value: u16) {
-        self.inner.set_holding_register(address, value);
+    fn set_holding_register(&self, address: u16, value: u16) -> PyResult<()> {
+        self.inner
+            .set_holding_register(address, value)
+            .map_err(store_error_to_pyerr)
     }
 
     /// Set an input-register value.
     #[pyo3(signature = (address, value))]
-    fn set_input_register(&self, address: u16, value: u16) {
-        self.inner.set_input_register(address, value);
+    fn set_input_register(&self, address: u16, value: u16) -> PyResult<()> {
+        self.inner
+            .set_input_register(address, value)
+            .map_err(store_error_to_pyerr)
     }
 
     /// Set one file-record register.
@@ -526,7 +542,10 @@ impl ModbusServer {
                 })
             }
         } else {
-            let memory_store = Arc::new(RustInMemoryStore::new(RustStoreConfig::default()));
+            let memory_store = Arc::new(
+                RustInMemoryStore::try_new(RustStoreConfig::default())
+                    .map_err(store_error_to_pyerr)?,
+            );
             let server = runtime
                 .block_on(RustModbusServer::start(config, memory_store))
                 .map_err(errors::server_error_to_pyerr)?;
@@ -619,18 +638,22 @@ fn extract_memory_store(py: Python<'_>, obj: &Py<PyAny>) -> Option<Arc<RustInMem
 
 fn seed_test_store() -> RustInMemoryStore {
     let store = RustInMemoryStore::new(RustStoreConfig::default());
-    store.set_holding_register(0, 1);
-    store.set_holding_register(1, 2);
-    store.set_input_register(0, 1);
-    store.set_input_register(1, 2);
-    store.set_coil(0, true);
-    store.set_coil(1, false);
-    store.set_coil(2, true);
-    store.set_discrete_input(0, true);
-    store.set_discrete_input(1, false);
-    store.set_discrete_input(2, true);
+    store.set_holding_register(0, 1).unwrap();
+    store.set_holding_register(1, 2).unwrap();
+    store.set_input_register(0, 1).unwrap();
+    store.set_input_register(1, 2).unwrap();
+    store.set_coil(0, true).unwrap();
+    store.set_coil(1, false).unwrap();
+    store.set_coil(2, true).unwrap();
+    store.set_discrete_input(0, true).unwrap();
+    store.set_discrete_input(1, false).unwrap();
+    store.set_discrete_input(2, true).unwrap();
     store.set_fifo_queue(0, vec![10, 11]);
     store
+}
+
+fn store_error_to_pyerr(err: StoreError) -> PyErr {
+    PyValueError::new_err(err.to_string())
 }
 
 fn has_method(obj: &Bound<'_, PyAny>, method: &str) -> Result<bool, ExceptionCode> {

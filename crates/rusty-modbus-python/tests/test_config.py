@@ -1,6 +1,6 @@
 """Tests for configuration classes."""
 import pytest
-from rusty_modbus import ClientConfig, RetryConfig, TlsConfig
+from rusty_modbus import ClientConfig, RetryConfig, StoreConfig, TlsConfig
 
 
 class TestClientConfig:
@@ -42,3 +42,9 @@ class TestTlsConfig:
     def test_repr_hides_key(self):
         cfg = TlsConfig(ca_cert="a", client_cert="b", client_key="secret")
         assert "secret" not in repr(cfg)
+
+
+class TestStoreConfig:
+    def test_rejects_oversized_table(self):
+        with pytest.raises(ValueError, match="holding_registers"):
+            StoreConfig(holding_register_count=65_537)
