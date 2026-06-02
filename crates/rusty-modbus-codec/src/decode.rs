@@ -79,17 +79,29 @@ pub fn decode_request(pdu: &[u8]) -> Result<RequestPdu<'_>, DecodeError> {
         FunctionCode::WriteSingleRegister => {
             WriteSingleRegisterRequest::decode(data).map(RequestPdu::WriteSingleRegister)
         }
-        FunctionCode::ReadExceptionStatus => Ok(RequestPdu::ReadExceptionStatus),
+        FunctionCode::ReadExceptionStatus => {
+            DecodeError::check_exact_len(data, 0)?;
+            Ok(RequestPdu::ReadExceptionStatus)
+        }
         FunctionCode::Diagnostics => DiagnosticsRequest::decode(data).map(RequestPdu::Diagnostics),
-        FunctionCode::GetCommEventCounter => Ok(RequestPdu::GetCommEventCounter),
-        FunctionCode::GetCommEventLog => Ok(RequestPdu::GetCommEventLog),
+        FunctionCode::GetCommEventCounter => {
+            DecodeError::check_exact_len(data, 0)?;
+            Ok(RequestPdu::GetCommEventCounter)
+        }
+        FunctionCode::GetCommEventLog => {
+            DecodeError::check_exact_len(data, 0)?;
+            Ok(RequestPdu::GetCommEventLog)
+        }
         FunctionCode::WriteMultipleCoils => {
             WriteMultipleCoilsRequest::decode(data).map(RequestPdu::WriteMultipleCoils)
         }
         FunctionCode::WriteMultipleRegisters => {
             WriteMultipleRegistersRequest::decode(data).map(RequestPdu::WriteMultipleRegisters)
         }
-        FunctionCode::ReportServerId => Ok(RequestPdu::ReportServerId),
+        FunctionCode::ReportServerId => {
+            DecodeError::check_exact_len(data, 0)?;
+            Ok(RequestPdu::ReportServerId)
+        }
         FunctionCode::ReadFileRecord => {
             ReadFileRecordRequest::decode(data).map(RequestPdu::ReadFileRecord)
         }

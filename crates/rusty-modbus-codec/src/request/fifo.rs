@@ -20,13 +20,9 @@ impl ReadFifoQueueRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 2 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 2 {
-            return Err(DecodeError::Truncated {
-                expected: 2,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 2)?;
         let fifo_pointer_address = Address(u16::from_be_bytes([data[0], data[1]]));
         Ok(Self {
             fifo_pointer_address,

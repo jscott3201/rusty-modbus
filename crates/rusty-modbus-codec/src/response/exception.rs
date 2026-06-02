@@ -26,17 +26,13 @@ impl ExceptionResponse {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
+    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
     /// Returns `DecodeError::UnknownFunctionCode` if the function code is not
     /// recognized.
     /// Returns `DecodeError::UnknownExceptionCode` if the exception code is
     /// not recognized.
     pub fn decode(fc_byte: u8, data: &[u8]) -> Result<Self, DecodeError> {
-        if data.is_empty() {
-            return Err(DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            });
-        }
+        DecodeError::check_exact_len(data, 1)?;
         let raw_function_code = fc_byte & 0x7F;
         if raw_function_code == 0 {
             return Err(DecodeError::UnknownFunctionCode(raw_function_code));

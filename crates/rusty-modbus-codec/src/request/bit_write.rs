@@ -22,14 +22,10 @@ impl WriteSingleCoilRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 4 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     /// Returns [`DecodeError::InvalidCoilValue`] if the value is not 0xFF00 or 0x0000.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let raw_value = u16::from_be_bytes([data[2], data[3]]);
         let value =

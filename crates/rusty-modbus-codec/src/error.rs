@@ -10,6 +10,13 @@ pub enum DecodeError {
         /// Actual length received.
         actual: usize,
     },
+    /// PDU has extra bytes for a fixed-length function code.
+    LengthMismatch {
+        /// Exact expected length.
+        expected: usize,
+        /// Actual length received.
+        actual: usize,
+    },
     /// PDU exceeds the Modbus maximum of 253 bytes.
     PduTooLarge {
         /// Actual PDU length.
@@ -68,11 +75,34 @@ pub enum DecodeError {
     InvalidDeviceIdCode(u8),
 }
 
+impl DecodeError {
+    /// Check that a fixed-length PDU data slice has exactly `expected` bytes.
+    pub(crate) fn check_exact_len(data: &[u8], expected: usize) -> Result<(), Self> {
+        match data.len().cmp(&expected) {
+            core::cmp::Ordering::Less => Err(Self::Truncated {
+                expected,
+                actual: data.len(),
+            }),
+            core::cmp::Ordering::Equal => Ok(()),
+            core::cmp::Ordering::Greater => Err(Self::LengthMismatch {
+                expected,
+                actual: data.len(),
+            }),
+        }
+    }
+}
+
 impl core::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Truncated { expected, actual } => {
                 write!(f, "PDU truncated: expected {expected} bytes, got {actual}")
+            }
+            Self::LengthMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "PDU length mismatch: expected {expected} bytes, got {actual}"
+                )
             }
             Self::PduTooLarge { length, maximum } => {
                 write!(f, "PDU too large: {length} bytes (maximum {maximum})")

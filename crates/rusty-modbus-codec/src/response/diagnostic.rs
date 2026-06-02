@@ -17,13 +17,9 @@ impl ReadExceptionStatusResponse {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
+    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.is_empty() {
-            return Err(DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            });
-        }
+        DecodeError::check_exact_len(data, 1)?;
         Ok(Self { status: data[0] })
     }
 }
@@ -65,6 +61,7 @@ impl<'buf> DiagnosticsResponse<'buf> {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
+    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
     pub fn decode(data: &'buf [u8]) -> Result<Self, DecodeError> {
         if data.len() < 2 {
             return Err(DecodeError::Truncated {
@@ -121,12 +118,7 @@ impl GetCommEventCounterResponse {
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let status = u16::from_be_bytes([data[0], data[1]]);
         let event_count = u16::from_be_bytes([data[2], data[3]]);
         Ok(Self {

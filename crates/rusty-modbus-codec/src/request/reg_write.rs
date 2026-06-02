@@ -22,13 +22,9 @@ impl WriteSingleRegisterRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 4 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let value = u16::from_be_bytes([data[2], data[3]]);
         Ok(Self { address, value })
@@ -169,13 +165,9 @@ impl MaskWriteRegisterRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 6 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 6 {
-            return Err(DecodeError::Truncated {
-                expected: 6,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 6)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let and_mask = u16::from_be_bytes([data[2], data[3]]);
         let or_mask = u16::from_be_bytes([data[4], data[5]]);
