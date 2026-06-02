@@ -17,5 +17,5 @@ pub mod store;
 pub use config::{DeviceIdentification, ServerConfig};
 pub use error::ServerError;
 pub use server::ModbusServer;
-pub use store::DataStore;
 pub use store::memory::{InMemoryStore, StoreConfig};
+pub use store::{CommEventLog, DataStore};
