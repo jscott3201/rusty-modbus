@@ -2,24 +2,23 @@
 
 Last updated: 2026-06-02
 
-This document records the current local performance baseline for the Modbus/TCP
-client/server path. The focus is single-connection pipelining: one TCP client
-connection, multiple concurrent in-flight requests, and a local loopback server
-backed by the in-memory store. This refresh was run after the codec strict
-fixed-length PDU validation change in `d5f2681`.
+This document records the current local and Docker performance baseline for the
+Modbus/TCP client/server path. The focus is single-connection pipelining: one
+TCP client connection, multiple concurrent in-flight requests, and a loopback
+server backed by the in-memory store.
 
 ## Environment
 
 | Item | Value |
 |---|---|
-| Git commit | `d5f2681` |
+| Git commit | `6fd41df` base plus this Docker benchmark-suite refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
 | Cargo | `cargo 1.95.0 (f2d3ce0bd 2026-03-21)` |
 | Docker | `Docker version 29.5.2, build 79eb04c` |
 | Local build mode | `cargo run --release` |
-| Docker image | Alpine 3.22 runtime, Rust 1.95.0 Alpine builder |
+| Docker image | Alpine 3.22 runtime and distroless static-debian12:nonroot runtime, Rust 1.95.0 Alpine builder |
 | Transport | Modbus/TCP over loopback |
 | Server | Spawned benchmark server, `InMemoryStore` |
 | Workload duration | 1s warmup + 5s measured per row |
@@ -28,32 +27,23 @@ fixed-length PDU validation change in `d5f2681`.
 
 ## Commands
 
-The local benchmark matrix was run with:
+The comparable local + Docker matrix was run with:
 
 ```bash
-for op in read mixed; do
-  for depth in 1 2 4 8 16; do
-    scripts/bench-local.sh stress \
-      --duration 5 \
-      --warmup 1 \
-      --clients 1 \
-      --in-flight "$depth" \
-      --operation "$op" \
-      --json
-  done
-done
-```
-
-The Docker benchmark target was run with:
-
-```bash
-scripts/docker-bench.sh \
+scripts/bench-suite.sh all \
   --duration 5 \
   --warmup 1 \
   --clients 1 \
-  --in-flight 8 \
-  --operation mixed \
-  --json
+  --depths 1,2,4,8,16 \
+  --operations read,mixed \
+  --output-dir bench-output/stress-20260602-docker-local-suite
+```
+
+The same script can run either side independently:
+
+```bash
+scripts/bench-suite.sh local
+scripts/bench-suite.sh docker
 ```
 
 The local stress script now runs the stress binary in release mode by default:
@@ -68,48 +58,76 @@ cargo run --release -p rusty-modbus-benchmarks --bin stress-test -- ...
 
 Workload: repeated FC 0x03 reads of 10 holding registers.
 
-| In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 58,025 | 290,125 | 0.016 | 0.021 | 0.031 | 0.041 | 0.121 | 0 | 0 |
-| 2 | 103,923 | 519,613 | 0.018 | 0.028 | 0.034 | 0.049 | 0.104 | 0 | 1 |
-| 4 | 167,587 | 837,934 | 0.023 | 0.032 | 0.039 | 0.053 | 0.124 | 0 | 1 |
-| 8 | 246,526 | 1,232,628 | 0.031 | 0.045 | 0.053 | 0.069 | 0.133 | 0 | 1 |
-| 16 | 287,869 | 1,439,344 | 0.055 | 0.080 | 0.092 | 0.118 | 0.203 | 0 | 1 |
+| Runtime | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Local release | 1 | 57,788 | 288,939 | 0.016 | 0.021 | 0.031 | 0.036 | 0.087 | 0 | 0 |
+| Local release | 2 | 102,866 | 514,331 | 0.018 | 0.028 | 0.033 | 0.040 | 0.093 | 0 | 0 |
+| Local release | 4 | 167,054 | 835,268 | 0.023 | 0.032 | 0.040 | 0.066 | 0.741 | 0 | 1 |
+| Local release | 8 | 250,918 | 1,254,591 | 0.031 | 0.043 | 0.050 | 0.064 | 0.126 | 0 | 1 |
+| Local release | 16 | 288,162 | 1,440,810 | 0.055 | 0.079 | 0.091 | 0.114 | 0.316 | 0 | 1 |
+| Alpine container | 1 | 101,274 | 506,368 | 0.008 | 0.024 | 0.025 | 0.030 | 0.519 | 0 | 0 |
+| Alpine container | 2 | 153,820 | 769,098 | 0.011 | 0.022 | 0.029 | 0.037 | 0.109 | 0 | 0 |
+| Alpine container | 4 | 176,964 | 884,821 | 0.023 | 0.030 | 0.038 | 0.044 | 0.166 | 0 | 0 |
+| Alpine container | 8 | 250,919 | 1,254,596 | 0.031 | 0.045 | 0.052 | 0.061 | 0.091 | 0 | 0 |
+| Alpine container | 16 | 288,122 | 1,440,611 | 0.052 | 0.082 | 0.092 | 0.103 | 0.188 | 0 | 0 |
+| Distroless container | 1 | 96,004 | 480,020 | 0.008 | 0.024 | 0.025 | 0.030 | 0.362 | 0 | 0 |
+| Distroless container | 2 | 155,690 | 778,448 | 0.011 | 0.022 | 0.029 | 0.035 | 0.125 | 0 | 0 |
+| Distroless container | 4 | 176,732 | 883,661 | 0.023 | 0.030 | 0.037 | 0.044 | 0.076 | 0 | 0 |
+| Distroless container | 8 | 252,216 | 1,261,081 | 0.031 | 0.045 | 0.052 | 0.061 | 0.112 | 0 | 0 |
+| Distroless container | 16 | 288,198 | 1,440,988 | 0.052 | 0.082 | 0.092 | 0.103 | 0.728 | 0 | 0 |
 
 ### Mixed Read/Write
 
 Workload: alternating FC 0x03 reads and FC 0x06 write-single-register requests.
 
-| In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 59,099 | 295,494 | 0.016 | 0.021 | 0.031 | 0.040 | 0.220 | 0 | 0 |
-| 2 | 106,730 | 533,648 | 0.017 | 0.028 | 0.034 | 0.043 | 0.117 | 0 | 1 |
-| 4 | 170,655 | 853,273 | 0.022 | 0.031 | 0.038 | 0.050 | 0.132 | 0 | 1 |
-| 8 | 244,123 | 1,220,614 | 0.031 | 0.046 | 0.059 | 0.095 | 0.183 | 0 | 1 |
-| 16 | 290,026 | 1,450,130 | 0.055 | 0.079 | 0.091 | 0.115 | 0.301 | 0 | 1 |
-
-### Docker Benchmark Target
-
-Workload: the benchmark image running the mixed workload at in-flight depth 8.
-
 | Runtime | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Alpine container | 8 | 253,392 | 1,266,958 | 0.030 | 0.045 | 0.051 | 0.061 | 0.104 | 0 | 0 |
+| Local release | 1 | 58,873 | 294,364 | 0.016 | 0.021 | 0.031 | 0.041 | 0.108 | 0 | 0 |
+| Local release | 2 | 106,344 | 531,718 | 0.017 | 0.028 | 0.033 | 0.045 | 0.129 | 0 | 1 |
+| Local release | 4 | 170,552 | 852,758 | 0.022 | 0.031 | 0.038 | 0.054 | 0.122 | 0 | 1 |
+| Local release | 8 | 246,170 | 1,230,850 | 0.031 | 0.045 | 0.055 | 0.080 | 0.170 | 0 | 1 |
+| Local release | 16 | 288,579 | 1,442,897 | 0.055 | 0.079 | 0.092 | 0.115 | 0.285 | 0 | 1 |
+| Alpine container | 1 | 99,387 | 496,935 | 0.008 | 0.024 | 0.025 | 0.029 | 0.082 | 0 | 0 |
+| Alpine container | 2 | 159,425 | 797,123 | 0.011 | 0.021 | 0.028 | 0.035 | 0.129 | 0 | 0 |
+| Alpine container | 4 | 177,539 | 887,695 | 0.023 | 0.030 | 0.037 | 0.043 | 0.353 | 0 | 0 |
+| Alpine container | 8 | 252,992 | 1,264,962 | 0.031 | 0.045 | 0.052 | 0.060 | 0.107 | 0 | 0 |
+| Alpine container | 16 | 289,149 | 1,445,747 | 0.052 | 0.082 | 0.093 | 0.105 | 0.238 | 0 | 0 |
+| Distroless container | 1 | 100,467 | 502,336 | 0.008 | 0.024 | 0.025 | 0.029 | 0.079 | 0 | 0 |
+| Distroless container | 2 | 157,220 | 786,100 | 0.011 | 0.021 | 0.028 | 0.035 | 0.077 | 0 | 0 |
+| Distroless container | 4 | 177,554 | 887,769 | 0.023 | 0.030 | 0.037 | 0.044 | 0.087 | 0 | 0 |
+| Distroless container | 8 | 251,390 | 1,256,952 | 0.031 | 0.045 | 0.052 | 0.061 | 0.103 | 0 | 0 |
+| Distroless container | 16 | 289,998 | 1,449,992 | 0.052 | 0.082 | 0.092 | 0.105 | 0.198 | 0 | 0 |
+
+### Docker Image Footprint
+
+These image sizes were collected with `docker inspect` after local arm64 builds.
+
+| Image | Target | Size |
+|---|---|---:|
+| `rusty-modbus:local` | `runtime` | 6.7 MB |
+| `rusty-modbus:distroless` | `distroless` | 2.9 MB |
+| `rusty-modbus-bench:alpine` | `benchmark` | 8.9 MB |
+| `rusty-modbus-bench:distroless` | `benchmark-distroless` | 5.2 MB |
 
 ## Findings
 
-- Single-connection pipelining still scales materially on loopback. Depth 16
-  delivered about 4.96x the depth-1 read throughput and about 4.91x the depth-1
-  mixed throughput.
-- All local and Docker rows completed with zero request errors.
-- Tail latency rose as expected with deeper queues, but local p99 stayed below
-  0.1 ms for both workloads. Local p99.9 stayed at or below 0.118 ms.
+- Single-connection pipelining still scales materially on local loopback. The
+  local release run scaled from 57.8k to 288.2k ops/sec for reads and from
+  58.9k to 288.6k ops/sec for mixed read/write.
+- All 30 local/Docker rows completed with zero request errors.
+- Tail latency rose as expected with deeper queues, but p99 stayed below 0.1 ms
+  for every local and Docker row in this matrix.
 - RSS stayed effectively flat, with local measured deltas at 0-1 MiB across the
   matrix.
-- The Docker benchmark target is in the same range as the local release run. The
-  depth-8 mixed Docker row measured about 3.8% above the local depth-8 mixed row,
-  which should be treated as local-run variance rather than a container
-  advantage.
+- The Docker runs are not an apples-to-apples replacement for native macOS
+  numbers because Docker Desktop runs inside a Linux VM. In this environment the
+  containers were faster at shallow queue depths, while depths 8 and 16
+  converged with the local release run.
+- The distroless runtime keeps the same functional smoke behavior as the Alpine
+  runtime while cutting the local arm64 image footprint by roughly 56%.
+- The distroless benchmark image is about 42% smaller than the Alpine benchmark
+  image and showed no meaningful throughput penalty versus Alpine in this local
+  loopback suite.
 - No throughput regression is visible from the recent strict codec validation
   changes; the refreshed numbers are close to the previous `4e88718` baseline.
 

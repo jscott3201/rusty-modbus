@@ -94,6 +94,11 @@ shell, dashboard, or discovery modes.
 # Build the Alpine runtime image
 scripts/docker-build.sh
 
+# Build the distroless runtime image
+RUSTY_MODBUS_DOCKER_TARGET=distroless \
+RUSTY_MODBUS_DOCKER_TAG=rusty-modbus:distroless \
+  scripts/docker-build.sh
+
 # Run the default server
 docker run --rm -p 5502:5502 rusty-modbus:local
 
@@ -108,8 +113,18 @@ docker run --rm -it rusty-modbus:local \
 # Docker-only e2e smoke: server container + client containers
 scripts/docker-smoke.sh
 
-# Build and run the benchmark target
+# Build and run the Alpine benchmark target
 scripts/docker-bench.sh --duration 5 --clients 1 --in-flight 8 --json
+
+# Build and run the distroless benchmark target
+RUSTY_MODBUS_DOCKER_TARGET=benchmark-distroless \
+  scripts/docker-bench.sh --duration 5 --clients 1 --in-flight 8 --json
+
+# Full local Docker check: Alpine smoke, distroless smoke, benchmark smoke
+scripts/docker-ci.sh
+
+# Comparable local + Docker benchmark matrix
+scripts/bench-suite.sh all
 ```
 
 ## Workspace Structure
@@ -217,6 +232,16 @@ scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --operatio
 
 # Docker benchmark target
 scripts/docker-bench.sh --duration 5 --clients 1 --in-flight 8 --json
+
+# Docker image validation
+scripts/docker-ci.sh
+
+# Comparable stress matrix: local release + Alpine Docker + distroless Docker
+scripts/bench-suite.sh all
+
+# Local-only / Docker-only matrices
+scripts/bench-suite.sh local
+scripts/bench-suite.sh docker
 
 # Full benchmark suite
 scripts/bench-local.sh all --quick --noplot
