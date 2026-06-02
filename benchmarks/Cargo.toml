@@ -42,6 +42,10 @@ name = "server_store"
 harness = false
 
 [[bench]]
+name = "server_handler"
+harness = false
+
+[[bench]]
 name = "tcp_latency"
 harness = false
 
