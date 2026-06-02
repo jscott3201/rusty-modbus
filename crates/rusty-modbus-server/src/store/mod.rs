@@ -11,6 +11,7 @@ use rusty_modbus_types::{
 };
 
 pub(crate) const MAX_FILE_RECORD_REGISTERS: usize = 122;
+pub(crate) const MAX_DIAGNOSTIC_RESPONSE_DATA_LEN: usize = MAX_PDU_SIZE - 3;
 pub(crate) const MAX_SERVER_ID_BYTES: usize = MAX_PDU_SIZE - 2;
 
 /// Snapshot of the communications event log returned by Get Comm Event Log
@@ -539,6 +540,29 @@ pub trait DataStore: Send + Sync {
                 DiagnosticSubFunction::ReturnQueryData => Ok(Some(data.to_vec())),
                 _ => Err(ExceptionCode::IllegalFunction),
             }
+        }
+    }
+
+    /// Append Diagnostics response data bytes to `out`.
+    ///
+    /// The default delegates to [`Self::diagnostic`]. Stores that can produce a
+    /// response from borrowed request bytes can override this method to avoid an
+    /// intermediate owned `Vec` before the handler builds the final response PDU.
+    fn append_diagnostic_response(
+        &self,
+        sub_function: DiagnosticSubFunction,
+        data: &[u8],
+        out: &mut Vec<u8>,
+    ) -> impl Future<Output = Result<Option<usize>, ExceptionCode>> + Send {
+        async move {
+            let Some(data) = self.diagnostic(sub_function, data).await? else {
+                return Ok(None);
+            };
+            if data.len() > MAX_DIAGNOSTIC_RESPONSE_DATA_LEN {
+                return Err(ExceptionCode::ServerDeviceFailure);
+            }
+            out.extend_from_slice(&data);
+            Ok(Some(data.len()))
         }
     }
 }

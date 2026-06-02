@@ -25,6 +25,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     ];
     let fc17 = read_write_multiple_registers_pdu(0, 125, 0, 121);
     let fc18 = [0x18, 0x04, 0xDE];
+    let fc08 = [0x08, 0x00, 0x00, 0x12, 0x34]; // Return Query Data.
     let fc11 = [0x11]; // Report Server ID.
     let fc2b = [0x2B, 0x0E, 0x01, 0x00]; // Read Device Identification, basic stream.
 
@@ -76,6 +77,14 @@ fn bench_server_process_request(c: &mut Criterion) {
         &device_id,
         "fc18_read_fifo_two_values",
         &fc18,
+    );
+    bench_pdu(
+        &mut group,
+        &rt,
+        &store,
+        &device_id,
+        "fc08_return_query_data",
+        &fc08,
     );
     bench_pdu(
         &mut group,
