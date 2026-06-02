@@ -1,5 +1,13 @@
 //! Hand-rolled command parser for the Modbus shell.
 
+/// Concise help lines shared by the line shell and dashboard command bar.
+pub const HELP_LINES: &[&str] = &[
+    "read <type> <addr> <qty>; types: coils, discrete-inputs",
+    "read types: holding-registers, input-registers",
+    "write <type> <addr> <values>; types: coil, coils, register, registers",
+    "set unit-id <id> | status | help | exit",
+];
+
 /// Parsed shell command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShellCommand {
@@ -308,5 +316,25 @@ mod tests {
     fn parse_unknown_register_type() {
         assert!(parse_command("read foobar 0 1").is_err());
         assert!(parse_command("write foobar 0 1").is_err());
+    }
+
+    #[test]
+    fn help_lines_cover_supported_commands() {
+        let help = HELP_LINES.join("\n");
+        for command in [
+            "coils",
+            "discrete-inputs",
+            "holding-registers",
+            "input-registers",
+            "registers",
+            "set unit-id",
+            "status",
+            "exit",
+        ] {
+            assert!(help.contains(command), "missing help for {command}");
+        }
+        for line in HELP_LINES {
+            assert!(line.len() <= 70, "help line too wide for dashboard: {line}");
+        }
     }
 }

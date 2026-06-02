@@ -129,6 +129,21 @@ fn render_dashboard_shows_command_input_and_log() {
 }
 
 #[test]
+fn render_dashboard_shows_all_concise_help_lines() {
+    let mut view = sample_view(DashboardData::Registers(vec![1]));
+    view.command_log.clear();
+    for line in shell_parser::HELP_LINES {
+        view.command_log.push_back(CommandLogEntry::info(*line));
+    }
+
+    let text = buffer_text(&render_to_buffer(&view, 110, 32));
+
+    for line in shell_parser::HELP_LINES {
+        assert!(text.contains(line));
+    }
+}
+
+#[test]
 fn clamps_quantity_by_target_limits() {
     let mut view = sample_view(DashboardData::Empty);
 
@@ -211,6 +226,26 @@ async fn dashboard_command_reports_parse_errors() {
             .iter()
             .any(|entry| entry.status == CommandLogStatus::Error)
     );
+
+    sim.stop().await;
+}
+
+#[tokio::test]
+async fn dashboard_command_help_uses_shared_help_lines() {
+    let (mut sim, addr) = start_sim().await;
+    let mut app = app_for(addr).await;
+
+    app.execute_command_line("help".to_string()).await;
+
+    let log_text = app
+        .view
+        .command_log
+        .iter()
+        .map(|entry| entry.text.as_str())
+        .collect::<Vec<_>>();
+    for help_line in shell_parser::HELP_LINES {
+        assert!(log_text.contains(help_line));
+    }
 
     sim.stop().await;
 }

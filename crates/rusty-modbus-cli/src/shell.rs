@@ -188,18 +188,7 @@ async fn execute_command(
 
 fn print_help() {
     println!("Commands:");
-    println!("  read coils <address> <quantity>");
-    println!("  read discrete-inputs <address> <quantity>");
-    println!("  read holding-registers <address> <quantity>");
-    println!("  read input-registers <address> <quantity>");
-    println!("  write coil <address> <on|off>");
-    println!("  write coils <address> <value> [<value>...]");
-    println!("  write register <address> <value>");
-    println!("  write registers <address> <value> [<value>...]");
-    println!("  set unit-id <id>");
-    println!("  status");
-    println!("  help");
-    println!("  exit");
-    println!();
-    println!("Values: registers accept decimal or 0x hex. Coils accept on/off, true/false, 1/0.");
+    for line in shell_parser::HELP_LINES {
+        println!("  {line}");
+    }
 }
