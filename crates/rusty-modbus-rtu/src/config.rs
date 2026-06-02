@@ -72,6 +72,9 @@ const BITS_PER_CHARACTER: f64 = 11.0;
 /// Fixed inter-frame delay for baud rates above 19200 (per Modbus spec).
 const FIXED_INTERFRAME_DELAY: Duration = Duration::from_micros(1750);
 
+/// Fixed inter-character timeout for baud rates above 19200 (per Modbus spec).
+const FIXED_INTERCHARACTER_TIMEOUT: Duration = Duration::from_micros(750);
+
 /// Maximum baud rate that uses the calculated (character-time-based) inter-frame delay.
 const CALCULATED_DELAY_MAX_BAUD: u32 = 19200;
 
@@ -88,6 +91,21 @@ impl RtuConfig {
             Duration::from_secs_f64(3.5 * char_time_secs)
         } else {
             FIXED_INTERFRAME_DELAY
+        }
+    }
+
+    /// Compute the inter-character timeout per the Modbus RTU spec.
+    ///
+    /// At baud rates of 19200 or below the timeout is 1.5 character times,
+    /// where one character time is `11 bits / baud_rate` seconds. At baud
+    /// rates above 19200 the spec mandates a fixed 750 us timeout.
+    #[must_use]
+    pub fn intercharacter_timeout(&self) -> Duration {
+        if self.baud_rate <= CALCULATED_DELAY_MAX_BAUD {
+            let char_time_secs = BITS_PER_CHARACTER / f64::from(self.baud_rate);
+            Duration::from_secs_f64(1.5 * char_time_secs)
+        } else {
+            FIXED_INTERCHARACTER_TIMEOUT
         }
     }
 }
@@ -133,5 +151,34 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.interframe_delay(), Duration::from_micros(1750));
+    }
+
+    #[test]
+    fn intercharacter_timeout_9600() {
+        let cfg = RtuConfig::default();
+        let timeout = cfg.intercharacter_timeout();
+        // 1.5 * 11 / 9600 ≈ 1719 µs
+        let actual_us = timeout.as_micros();
+        assert!((1700..=1730).contains(&actual_us));
+    }
+
+    #[test]
+    fn intercharacter_timeout_19200() {
+        let cfg = RtuConfig {
+            baud_rate: 19200,
+            ..Default::default()
+        };
+        let timeout = cfg.intercharacter_timeout();
+        // 1.5 * 11 / 19200 ≈ 859 µs — still calculated
+        assert!((840..=880).contains(&timeout.as_micros()));
+    }
+
+    #[test]
+    fn intercharacter_timeout_above_19200_is_fixed() {
+        let cfg = RtuConfig {
+            baud_rate: 115_200,
+            ..Default::default()
+        };
+        assert_eq!(cfg.intercharacter_timeout(), Duration::from_micros(750));
     }
 }

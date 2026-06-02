@@ -96,6 +96,65 @@ fn interframe_delay_19201_uses_fixed() {
     assert_eq!(config.interframe_delay(), Duration::from_micros(1750));
 }
 
+// ── Inter-character Timeout Calculation ───────────────────────────
+
+#[test]
+fn intercharacter_timeout_9600_baud() {
+    // At 9600 baud: 1.5 × 11 / 9600 ≈ 1.719 ms.
+    let config = RtuConfig::default();
+    let timeout = config.intercharacter_timeout();
+    let us = timeout.as_micros();
+    assert!((1700..=1730).contains(&us), "9600 baud timeout: {us} µs");
+}
+
+#[test]
+fn intercharacter_timeout_19200_baud_still_calculated() {
+    // At 19200: 1.5 × 11 / 19200 ≈ 859 µs — still uses formula.
+    let config = RtuConfig {
+        baud_rate: 19200,
+        ..RtuConfig::default()
+    };
+    let timeout = config.intercharacter_timeout();
+    let us = timeout.as_micros();
+    assert!((840..=880).contains(&us), "19200 baud timeout: {us} µs");
+}
+
+#[test]
+fn intercharacter_timeout_above_19200_fixed_750us() {
+    // Per Modbus serial spec: at baud rates > 19200, fixed 750 µs.
+    for baud in [38400, 57600, 115200, 230400] {
+        let config = RtuConfig {
+            baud_rate: baud,
+            ..RtuConfig::default()
+        };
+        assert_eq!(
+            config.intercharacter_timeout(),
+            Duration::from_micros(750),
+            "baud {baud} should use fixed 750 µs"
+        );
+    }
+}
+
+#[test]
+fn intercharacter_timeout_boundary_19200_uses_formula() {
+    let config = RtuConfig {
+        baud_rate: 19200,
+        ..RtuConfig::default()
+    };
+
+    assert_ne!(config.intercharacter_timeout(), Duration::from_micros(750));
+}
+
+#[test]
+fn intercharacter_timeout_19201_uses_fixed() {
+    let config = RtuConfig {
+        baud_rate: 19201,
+        ..RtuConfig::default()
+    };
+
+    assert_eq!(config.intercharacter_timeout(), Duration::from_micros(750));
+}
+
 // ── RTU-over-TCP Integration ──────────────────────────────────────
 
 #[tokio::test]
