@@ -58,6 +58,42 @@ fn spec_tls_server_no_authz_callback_by_default() {
     assert!(config.authz_callback.is_none());
 }
 
+#[test]
+fn spec_r31_authorize_helper_enforces_callback() {
+    // R-24/R-31: the authorize() helper applies the configured callback, and a
+    // NotAuthorized decision is honored. With no callback it allows all.
+    use rusty_modbus_tls::config::AuthzRequest;
+    use rusty_modbus_types::{FunctionCode, UnitId};
+    use std::sync::Arc;
+
+    let req = AuthzRequest {
+        role: Some("operator".to_string()),
+        function_code: FunctionCode::ReadHoldingRegisters,
+        unit_id: UnitId(1),
+        address: None,
+        quantity: None,
+    };
+
+    // No callback → allow-all default.
+    assert_eq!(
+        TlsServerConfig::default().authorize(&req),
+        AuthzDecision::Authorized
+    );
+
+    // Callback denying the "operator" role is honored by authorize().
+    let config = TlsServerConfig {
+        authz_callback: Some(Arc::new(|r: &AuthzRequest| {
+            if r.role.as_deref() == Some("operator") {
+                AuthzDecision::NotAuthorized
+            } else {
+                AuthzDecision::Authorized
+            }
+        })),
+        ..TlsServerConfig::default()
+    };
+    assert_eq!(config.authorize(&req), AuthzDecision::NotAuthorized);
+}
+
 // ── Security Spec §5 — Port 802 ──────────────────────────────────
 
 #[test]

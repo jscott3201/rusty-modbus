@@ -97,7 +97,7 @@ pub async fn make_tls_server<S: DataStore + 'static>(
     let addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
-        while let Ok((mut sink, mut stream, _)) = listener.accept().await {
+        while let Ok((mut sink, mut stream, _, _role)) = listener.accept().await {
             let conn_store = Arc::clone(&store);
             tokio::spawn(async move {
                 while let Ok(frame) = stream.recv().await {
@@ -140,6 +140,7 @@ pub async fn make_tls_client(
         ca_cert: certs.ca_cert.path().to_path_buf(),
         client_cert: certs.client_cert.path().to_path_buf(),
         client_key: certs.client_key.path().to_path_buf(),
+        server_name: None,
         connect_timeout: Duration::from_secs(5),
         read_timeout: Some(Duration::from_secs(5)),
         write_timeout: Some(Duration::from_secs(5)),

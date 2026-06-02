@@ -30,6 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ca_cert: PathBuf::from(&args[2]),
         client_cert: PathBuf::from(&args[3]),
         client_key: PathBuf::from(&args[4]),
+        // Verify against the connection IP (an IP-SAN cert). Set to
+        // `Some("hostname".into())` to verify a DNS-SAN cert by name instead.
+        server_name: None,
         connect_timeout: Duration::from_secs(5),
         read_timeout: Some(Duration::from_secs(5)),
         write_timeout: Some(Duration::from_secs(5)),

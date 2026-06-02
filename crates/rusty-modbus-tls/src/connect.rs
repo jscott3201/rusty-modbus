@@ -43,7 +43,13 @@ impl TlsTransport {
 
         tcp_stream.set_nodelay(true)?;
 
-        let server_name = ServerName::IpAddress(addr.ip().into());
+        // Verify the server certificate against the configured hostname (SNI +
+        // DNS-SAN check) when set, otherwise against the connection IP address.
+        let server_name = match &config.server_name {
+            Some(name) => ServerName::try_from(name.clone())
+                .map_err(|_| TlsError::Certificate(format!("invalid server name: {name}")))?,
+            None => ServerName::IpAddress(addr.ip().into()),
+        };
         let tls_stream = connector
             .connect(server_name, tcp_stream)
             .await

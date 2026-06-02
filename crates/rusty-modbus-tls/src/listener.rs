@@ -34,8 +34,18 @@ impl TlsServerListener {
         })
     }
 
-    /// Accept the next TLS connection, returning split transport halves.
-    pub async fn accept(&self) -> Result<(TlsSink, TlsRecvStream, SocketAddr), TlsError> {
+    /// Accept the next TLS connection, returning split transport halves, the
+    /// peer address, and the client's Modbus role.
+    ///
+    /// The role is extracted from the client's leaf certificate (Security Spec
+    /// §8.4, R-21) — `Some(role)` if the certificate carries the Modbus role
+    /// extension, `None` for a NULL role (R-23). Pass it into an
+    /// [`AuthzRequest`](crate::AuthzRequest) and
+    /// [`TlsServerConfig::authorize`](crate::TlsServerConfig::authorize) to
+    /// enforce per-request authorization.
+    pub async fn accept(
+        &self,
+    ) -> Result<(TlsSink, TlsRecvStream, SocketAddr, Option<String>), TlsError> {
         let (tcp_stream, addr) = self.tcp_listener.accept().await.map_err(TlsError::Io)?;
         tcp_stream.set_nodelay(true)?;
 
@@ -45,6 +55,14 @@ impl TlsServerListener {
             .await
             .map_err(|e| TlsError::Handshake(e.to_string()))?;
 
+        // Extract the client role from its leaf certificate before framing.
+        let role = tls_stream
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(<[_]>::first)
+            .and_then(|cert| crate::role::extract_role(cert.as_ref()));
+
         let framed = Framed::new(tls_stream, MbapCodec);
         let (sink, stream) = framed.split();
 
@@ -52,6 +70,7 @@ impl TlsServerListener {
             TlsSink::new(sink, None),
             TlsRecvStream::new(stream, None),
             addr,
+            role,
         ))
     }
 
