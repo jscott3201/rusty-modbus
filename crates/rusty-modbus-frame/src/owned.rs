@@ -798,4 +798,36 @@ impl OwnedResponsePdu {
             FunctionCode::Custom(fc) => Ok(Self::Custom(fc, pdu.slice(1..))),
         }
     }
+
+    /// The function-code byte carried by this response.
+    ///
+    /// For [`Self::Exception`] this is the exception-flagged value
+    /// (`original_fc | 0x80`); for [`Self::Custom`] it is the raw byte. Used by
+    /// the client to verify the server echoed the requested function code.
+    #[must_use]
+    pub fn function_code(&self) -> u8 {
+        match self {
+            Self::ReadCoils(_) => FunctionCode::ReadCoils.code(),
+            Self::ReadDiscreteInputs(_) => FunctionCode::ReadDiscreteInputs.code(),
+            Self::ReadHoldingRegisters(_) => FunctionCode::ReadHoldingRegisters.code(),
+            Self::ReadInputRegisters(_) => FunctionCode::ReadInputRegisters.code(),
+            Self::WriteSingleCoil(_) => FunctionCode::WriteSingleCoil.code(),
+            Self::WriteSingleRegister(_) => FunctionCode::WriteSingleRegister.code(),
+            Self::ReadExceptionStatus(_) => FunctionCode::ReadExceptionStatus.code(),
+            Self::Diagnostics(_) => FunctionCode::Diagnostics.code(),
+            Self::GetCommEventCounter(_) => FunctionCode::GetCommEventCounter.code(),
+            Self::GetCommEventLog(_) => FunctionCode::GetCommEventLog.code(),
+            Self::WriteMultipleCoils(_) => FunctionCode::WriteMultipleCoils.code(),
+            Self::WriteMultipleRegisters(_) => FunctionCode::WriteMultipleRegisters.code(),
+            Self::ReportServerId(_) => FunctionCode::ReportServerId.code(),
+            Self::ReadFileRecord(_) => FunctionCode::ReadFileRecord.code(),
+            Self::WriteFileRecord(_) => FunctionCode::WriteFileRecord.code(),
+            Self::MaskWriteRegister(_) => FunctionCode::MaskWriteRegister.code(),
+            Self::ReadWriteMultipleRegisters(_) => FunctionCode::ReadWriteMultipleRegisters.code(),
+            Self::ReadFifoQueue(_) => FunctionCode::ReadFifoQueue.code(),
+            Self::EncapsulatedInterface(_) => FunctionCode::EncapsulatedInterfaceTransport.code(),
+            Self::Custom(fc, _) => *fc,
+            Self::Exception(e) => e.function_code.exception_code(),
+        }
+    }
 }

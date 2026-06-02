@@ -239,3 +239,156 @@ async fn shutdown_cancels_pending() {
     let result = client.read_holding_registers(UnitId(0xFF), 0, 1).await;
     assert!(matches!(result, Err(ClientError::NotConnected)));
 }
+
+// ---------------------------------------------------------------------------
+// Client/transport correctness regression tests
+// ---------------------------------------------------------------------------
+
+/// Start a server that builds each response PDU from a closure of
+/// `(function_code, request_pdu)`. Lets a test script malformed/adversarial
+/// responses (short byte counts, wrong function codes, ...).
+async fn start_scripted_server<F>(respond: F) -> SocketAddr
+where
+    F: Fn(u8, &[u8]) -> Vec<u8> + Send + Sync + 'static,
+{
+    let respond = std::sync::Arc::new(respond);
+    let listener =
+        TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
+            .await
+            .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        while let Ok((mut sink, mut stream, _, _guard)) = listener.accept().await {
+            let respond = std::sync::Arc::clone(&respond);
+            tokio::spawn(async move {
+                while let Ok(req) = stream.recv().await {
+                    let txn_id = match req.header {
+                        FrameHeader::Mbap(h) => h.transaction_id.get(),
+                        FrameHeader::Rtu { .. } => 0,
+                    };
+                    let unit_id = req.unit_id();
+                    let resp_pdu = respond(req.pdu[0], &req.pdu);
+                    let header = MbapHeader::new(txn_id, unit_id, resp_pdu.len() as u16);
+                    let resp = Frame {
+                        header: FrameHeader::Mbap(header),
+                        pdu: Bytes::from(resp_pdu),
+                    };
+                    if sink.send(resp).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    addr
+}
+
+/// The background reader must survive a benign idle read-timeout. `connect()`
+/// maps `config.timeout` onto the transport read-timeout, so an idle period
+/// longer than `timeout` previously killed the reader (cancel_all + break).
+#[tokio::test]
+async fn idle_reader_survives_read_timeout() {
+    let addr = start_register_server().await;
+    let config = ClientConfig {
+        timeout: Duration::from_millis(300),
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::connect(addr, config).await.unwrap();
+
+    // First request works.
+    let regs = client
+        .read_holding_registers(UnitId(0xFF), 0, 2)
+        .await
+        .unwrap();
+    assert_eq!(regs, vec![0x1234, 0x5678]);
+
+    // Idle well past the read timeout — the reader must NOT tear down a healthy
+    // connection (several recv() timeouts elapse during this window).
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert!(
+        client.is_connected(),
+        "reader died on a benign idle read-timeout"
+    );
+
+    // A request after the idle period still succeeds.
+    let regs = client
+        .read_holding_registers(UnitId(0xFF), 0, 2)
+        .await
+        .unwrap();
+    assert_eq!(regs, vec![0x1234, 0x5678]);
+}
+
+/// A server returning fewer coil bytes than the requested quantity needs must
+/// produce a clean error, not an out-of-bounds panic in `coil(i)`.
+#[tokio::test]
+async fn short_coil_response_is_error_not_panic() {
+    // FC01 reply with byte_count = 1 regardless of how many coils were asked.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x01 {
+            vec![0x01, 0x01, 0xFF]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    // Request 64 coils (needs 8 bytes); server returns 1.
+    let result = client.read_coils(UnitId(0xFF), 0, 64).await;
+    assert!(
+        matches!(result, Err(ClientError::ShortResponse { .. })),
+        "expected ShortResponse, got {result:?}"
+    );
+}
+
+/// A response whose function code does not echo the request (but lands on the
+/// matching transaction slot) must be rejected, not silently misinterpreted.
+#[tokio::test]
+async fn wrong_function_code_is_rejected() {
+    // Answer an FC03 request with an FC04 response body.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x03 {
+            vec![0x04, 0x02, 0x00, 0x42]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_holding_registers(UnitId(0xFF), 0, 1).await;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::UnexpectedResponse {
+                expected: 0x03,
+                got: 0x04
+            })
+        ),
+        "expected UnexpectedResponse, got {result:?}"
+    );
+}
+
+/// A register read whose response is shorter than the requested quantity must
+/// error instead of silently returning a truncated vector.
+#[tokio::test]
+async fn short_register_response_is_error() {
+    // FC03 reply with byte_count = 2 (one register) regardless of the request.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x03 {
+            vec![0x03, 0x02, 0x00, 0x42]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_holding_registers(UnitId(0xFF), 0, 10).await;
+    assert!(
+        matches!(result, Err(ClientError::ShortResponse { .. })),
+        "expected ShortResponse, got {result:?}"
+    );
+}

@@ -179,10 +179,23 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         // Await response via oneshot channel.
-        match rx.await {
-            Ok(result) => result,
-            Err(_) => Err(ClientError::ShuttingDown),
+        let response = match rx.await {
+            Ok(result) => result?,
+            Err(_) => return Err(ClientError::ShuttingDown),
+        };
+
+        // Verify the server echoed the requested function code (Modbus V1.1b3
+        // §4.4: a normal response repeats the FC; an error response sets
+        // `fc | 0x80`). Reject anything else so a stale or misrouted frame that
+        // happens to land on this transaction slot cannot be delivered as if it
+        // answered this request.
+        let expected = function_code.code();
+        let got = response.function_code();
+        if got != expected && got != (expected | 0x80) {
+            return Err(ClientError::UnexpectedResponse { expected, got });
         }
+
+        Ok(response)
     }
 
     /// Send a broadcast write (Unit ID 0x00) — no response expected.

@@ -48,4 +48,27 @@ pub enum ClientError {
     /// Client is shutting down — in-flight request was cancelled.
     #[error("client is shutting down")]
     ShuttingDown,
+
+    /// The server's response function code did not echo the request's
+    /// (Modbus V1.1b3 §4.4: a normal response repeats the FC, an error sets
+    /// `fc | 0x80`). Guards against a stale or misrouted frame being delivered
+    /// for a transaction slot it does not belong to.
+    #[error("unexpected response function code: expected {expected:#04x}, got {got:#04x}")]
+    UnexpectedResponse {
+        /// The function code that was requested.
+        expected: u8,
+        /// The function code the server actually returned.
+        got: u8,
+    },
+
+    /// The server returned fewer data bytes than the requested quantity needs.
+    /// Rejecting this prevents a malicious or buggy peer from truncating a read
+    /// (and, for bit reads, from triggering an out-of-bounds index).
+    #[error("short response: need {expected} data bytes for the request, got {actual}")]
+    ShortResponse {
+        /// Data bytes required to satisfy the request.
+        expected: usize,
+        /// Data bytes the server actually returned.
+        actual: usize,
+    },
 }

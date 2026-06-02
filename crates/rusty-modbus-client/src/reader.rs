@@ -51,6 +51,16 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                                 }
                             }
                         }
+                        Err(rusty_modbus_tcp::TransportError::Timeout) => {
+                            // A benign idle read timeout is NOT a connection
+                            // failure for a long-lived pipelined reader: the
+                            // socket simply had no frame within `read_timeout`.
+                            // Per-request deadlines are enforced by the
+                            // transaction manager's timeout sweep, and dead
+                            // peers are detected via TCP keepalive. Keep the
+                            // reader alive and wait for the next frame, rather
+                            // than tearing down a healthy idle connection.
+                        }
                         Err(rusty_modbus_tcp::TransportError::Disconnected) => {
                             connected.store(false, Ordering::Relaxed);
                             txn_mgr.cancel_all(|| ClientError::Transport(
