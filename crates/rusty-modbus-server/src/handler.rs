@@ -39,7 +39,11 @@ pub async fn process_request<S: DataStore>(
             // - Unknown function code → IllegalFunction (0x01)
             // - Known function code with bad data → IllegalDataValue (0x03)
             let exc = match e {
-                DecodeError::UnknownFunctionCode(_) => ExceptionCode::IllegalFunction,
+                // Unknown function code, and an unrecognized Diagnostics (FC 0x08)
+                // sub-function, are both illegal *functions* — not illegal data
+                // values (V1.1b3 §4.5 and §6.8, Figure 18).
+                DecodeError::UnknownFunctionCode(_)
+                | DecodeError::UnknownDiagnosticSubFunction(_) => ExceptionCode::IllegalFunction,
                 _ => {
                     // FC is recognized (otherwise decode would return UnknownFunctionCode),
                     // but the data is malformed (truncated, bad quantity, bad byte count,
