@@ -2,6 +2,10 @@
 //!
 //! Gated behind the `serial` feature. Requires `tokio-serial` for async
 //! serial port access.
+//! The write half enforces the Modbus RTU t3.5 silent interval before each
+//! subsequent transmit. Receive-side t1.5 gap-based frame aborts are not exposed
+//! by `tokio_util::codec::Framed`; malformed/gapped frames are rejected by CRC
+//! once delivered by the serial driver.
 
 use std::time::Duration;
 
@@ -11,7 +15,7 @@ use rusty_modbus_frame::frame::Frame;
 use rusty_modbus_frame::rtu::RtuCodec;
 use rusty_modbus_tcp::TransportError;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep, timeout};
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::codec::Framed;
 
@@ -51,6 +55,8 @@ impl SerialTransport {
             SerialSink {
                 inner: sink,
                 write_timeout: response_timeout,
+                interframe_delay: config.interframe_delay(),
+                last_tx_end: None,
             },
             SerialRecvStream {
                 inner: stream,
@@ -102,19 +108,28 @@ const fn convert_stop_bits(stop: StopBits) -> tokio_serial::StopBits {
 pub struct SerialSink {
     inner: InnerSink,
     write_timeout: Option<Duration>,
+    interframe_delay: Duration,
+    last_tx_end: Option<Instant>,
 }
 
 impl TransportSink for SerialSink {
     async fn send(&mut self, frame: Frame) -> Result<(), TransportError> {
+        wait_for_interframe_silence(self.last_tx_end, self.interframe_delay).await;
+
         let fut = SinkExt::send(&mut self.inner, frame);
-        if let Some(dur) = self.write_timeout {
+        let result = if let Some(dur) = self.write_timeout {
             timeout(dur, fut)
                 .await
                 .map_err(|_| TransportError::Timeout)?
                 .map_err(TransportError::Frame)
         } else {
             fut.await.map_err(TransportError::Frame)
+        };
+
+        if result.is_ok() {
+            self.last_tx_end = Some(Instant::now());
         }
+        result
     }
 }
 
@@ -140,5 +155,60 @@ impl TransportStream for SerialRecvStream {
             Some(Err(e)) => Err(TransportError::Frame(e)),
             None => Err(TransportError::Disconnected),
         }
+    }
+}
+
+fn remaining_interframe_delay(
+    last_tx_end: Option<Instant>,
+    now: Instant,
+    interframe_delay: Duration,
+) -> Duration {
+    let Some(last_tx_end) = last_tx_end else {
+        return Duration::ZERO;
+    };
+    interframe_delay.saturating_sub(now.saturating_duration_since(last_tx_end))
+}
+
+async fn wait_for_interframe_silence(last_tx_end: Option<Instant>, interframe_delay: Duration) {
+    let remaining = remaining_interframe_delay(last_tx_end, Instant::now(), interframe_delay);
+    if !remaining.is_zero() {
+        sleep(remaining).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_serial_write_needs_no_interframe_delay() {
+        let now = Instant::now();
+
+        assert_eq!(
+            remaining_interframe_delay(None, now, Duration::from_millis(4)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn serial_write_waits_remaining_interframe_delay() {
+        let now = Instant::now();
+        let last = now - Duration::from_millis(1);
+
+        assert_eq!(
+            remaining_interframe_delay(Some(last), now, Duration::from_millis(4)),
+            Duration::from_millis(3)
+        );
+    }
+
+    #[test]
+    fn serial_write_needs_no_delay_after_full_silence() {
+        let now = Instant::now();
+        let last = now - Duration::from_millis(10);
+
+        assert_eq!(
+            remaining_interframe_delay(Some(last), now, Duration::from_millis(4)),
+            Duration::ZERO
+        );
     }
 }
