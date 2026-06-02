@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
+use rusty_modbus_frame::FrameError;
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::transport::{TransportConnect, TransportSink, TransportStream};
-use rusty_modbus_tcp::{TcpConfig, TcpSink, TcpTransport};
-use rusty_modbus_types::{FunctionCode, MbapHeader, UnitId};
+use rusty_modbus_tcp::{TcpConfig, TcpSink, TcpTransport, TransportError};
+use rusty_modbus_types::{FunctionCode, MAX_PDU_SIZE, MbapHeader, UnitId};
 use tokio::sync::{Semaphore, watch};
 use tokio::time::{self, Duration};
 
@@ -28,6 +29,27 @@ pub struct ModbusClient<S: TransportSink + Send + 'static = TcpSink> {
     shutdown_tx: watch::Sender<bool>,
     reader_handle: Option<tokio::task::JoinHandle<()>>,
     sweep_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+fn checked_pdu_length(pdu_len: usize) -> Result<u16, ClientError> {
+    if pdu_len == 0 {
+        return Err(ClientError::Transport(TransportError::Frame(
+            FrameError::InvalidPduLength {
+                length: pdu_len,
+                minimum: 1,
+            },
+        )));
+    }
+    if pdu_len > MAX_PDU_SIZE {
+        return Err(ClientError::Transport(TransportError::Frame(
+            FrameError::PduLengthOverflow {
+                length: pdu_len,
+                maximum: MAX_PDU_SIZE,
+            },
+        )));
+    }
+
+    Ok(u16::try_from(pdu_len).expect("MAX_PDU_SIZE fits in u16"))
 }
 
 impl ModbusClient {
@@ -168,6 +190,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         if !self.is_connected() {
             return Err(ClientError::NotConnected);
         }
+        let pdu_len = checked_pdu_length(pdu_data.len())?;
 
         // Acquire semaphore permit (limits concurrency).
         let _permit = self
@@ -180,11 +203,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let (txn_id, rx) = self.txn_mgr.register(function_code)?;
 
         // Build MBAP frame.
-        let header = MbapHeader::new(
-            txn_id.0,
-            unit_id.0,
-            u16::try_from(pdu_data.len()).unwrap_or(u16::MAX),
-        );
+        let header = MbapHeader::new(txn_id.0, unit_id.0, pdu_len);
         let frame = Frame {
             header: FrameHeader::Mbap(header),
             pdu: Bytes::copy_from_slice(pdu_data),
@@ -229,11 +248,11 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         if !self.is_connected() {
             return Err(ClientError::NotConnected);
         }
+        let pdu_len = checked_pdu_length(pdu_data.len())?;
 
         let header = MbapHeader::new(
             0, // Transaction ID doesn't matter for broadcast.
-            0x00,
-            u16::try_from(pdu_data.len()).unwrap_or(u16::MAX),
+            0x00, pdu_len,
         );
         let frame = Frame {
             header: FrameHeader::Mbap(header),
@@ -307,5 +326,42 @@ impl<S: TransportSink + Send + 'static> std::fmt::Debug for ModbusClient<S> {
             .field("connected", &self.is_connected())
             .field("pending", &self.txn_mgr.pending_count())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_pdu_length_accepts_modbus_bounds() {
+        assert_eq!(checked_pdu_length(1).unwrap(), 1);
+        assert_eq!(checked_pdu_length(MAX_PDU_SIZE).unwrap(), 253);
+    }
+
+    #[test]
+    fn checked_pdu_length_rejects_empty_pdu() {
+        assert!(matches!(
+            checked_pdu_length(0),
+            Err(ClientError::Transport(TransportError::Frame(
+                FrameError::InvalidPduLength {
+                    length: 0,
+                    minimum: 1,
+                }
+            )))
+        ));
+    }
+
+    #[test]
+    fn checked_pdu_length_rejects_oversized_pdu() {
+        assert!(matches!(
+            checked_pdu_length(MAX_PDU_SIZE + 1),
+            Err(ClientError::Transport(TransportError::Frame(
+                FrameError::PduLengthOverflow {
+                    length,
+                    maximum: MAX_PDU_SIZE,
+                }
+            ))) if length == MAX_PDU_SIZE + 1
+        ));
     }
 }
