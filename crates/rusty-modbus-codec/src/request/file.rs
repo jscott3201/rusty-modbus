@@ -192,16 +192,12 @@ impl FileSubRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 7 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     /// Returns [`DecodeError::InvalidReferenceType`] if the reference type is not 6.
     /// Returns [`DecodeError::FileRecordOutOfRange`] if file or record fields are
     /// outside the Modbus file-record model.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 7 {
-            return Err(DecodeError::Truncated {
-                expected: 7,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 7)?;
         let reference_type = data[0];
         if reference_type != FILE_RECORD_REFERENCE_TYPE {
             return Err(DecodeError::InvalidReferenceType(reference_type));

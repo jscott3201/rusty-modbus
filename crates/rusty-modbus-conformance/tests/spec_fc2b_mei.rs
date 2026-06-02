@@ -23,8 +23,8 @@ fn spec_6_19_mei_request_decode() {
 
 #[test]
 fn spec_6_19_mei_response_decode() {
-    // Minimal response: FC=0x2B, MEI_type=0x0E, data follows
-    let pdu = [0x2B, 0x0E, 0x01, 0x00, 0x00];
+    // Minimal valid Read Device Identification response with one object.
+    let pdu = [0x2B, 0x0E, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, b'A'];
     match decode_response(&pdu).unwrap() {
         rusty_modbus_codec::ResponsePdu::EncapsulatedInterface(r) => {
             assert_eq!(

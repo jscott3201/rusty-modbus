@@ -24,15 +24,11 @@ impl ReadDeviceIdentificationRequest {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if data is too short.
+    /// Returns `DecodeError::LengthMismatch` if data has extra bytes.
     /// Returns `DecodeError::UnknownMeiType` if MEI type is not 0x0E.
     /// Returns `DecodeError::InvalidDeviceIdCode` if the access code is unrecognized.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 3 {
-            return Err(DecodeError::Truncated {
-                expected: 3,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 3)?;
         if data[0] != MeiType::ReadDeviceIdentification.code() {
             return Err(DecodeError::UnknownMeiType(data[0]));
         }

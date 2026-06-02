@@ -75,6 +75,12 @@ impl<'buf> ReadDeviceIdentificationResponse<'buf> {
                 });
             }
         }
+        if offset != object_data.len() {
+            return Err(DecodeError::LengthMismatch {
+                expected: 6 + offset,
+                actual: data.len(),
+            });
+        }
 
         Ok(Self {
             device_id_code,
