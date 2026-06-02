@@ -17,10 +17,6 @@ run() {
   "$@"
 }
 
-have() {
-  command -v "$1" >/dev/null 2>&1
-}
-
 changed_since_base() {
   local base
   if git rev-parse --verify origin/dev >/dev/null 2>&1; then
@@ -63,18 +59,7 @@ run_python_clippy() {
 run cargo fmt --all --check
 run rust-analyzer --version
 run cargo clippy --workspace --all-targets --locked -- -D warnings
-
-export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
-
-if have cargo-nextest; then
-  run cargo nextest run --workspace --locked --profile ci
-else
-  echo
-  echo "==> cargo-nextest missing; falling back to cargo test --workspace --locked"
-  run cargo test --workspace --locked
-fi
-
-run cargo test --workspace --locked --doc
+run env RUSTY_MODBUS_NEXTEST_PROFILE=ci scripts/test-local.sh
 
 case "${RUSTY_MODBUS_RUN_PYTHON:-auto}" in
   always)
