@@ -138,6 +138,17 @@ async fn file_read_two_groups_matches_spec_example() {
 }
 
 #[tokio::test]
+async fn file_read_single_register_uses_minimal_valid_response() {
+    let s = store();
+    s.set_file_record(4, 1, 0x1234).unwrap();
+    let req = [0x14, 0x07, 0x06, 0x00, 0x04, 0x00, 0x01, 0x00, 0x01];
+    assert_eq!(
+        respond(&s, &req).await,
+        vec![0x14, 0x04, 0x03, 0x06, 0x12, 0x34]
+    );
+}
+
+#[tokio::test]
 async fn file_read_bad_reference_type_is_illegal_data_address() {
     let s = store();
     s.set_file_record(4, 1, 0x1111).unwrap();
@@ -250,7 +261,9 @@ async fn file_write_record_range_crossing_spec_max_is_illegal_data_address() {
 #[tokio::test]
 async fn file_write_zero_record_length_is_illegal_data_address() {
     let s = store();
-    let req = [0x15, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00];
+    let req = [
+        0x15, 0x09, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x12, 0x34,
+    ];
     assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
 }
 
