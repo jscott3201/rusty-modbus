@@ -232,6 +232,51 @@ async fn file_write_broadcast_produces_no_response() {
 }
 
 #[tokio::test]
+async fn file_write_max_single_register_groups_echoes_and_persists() {
+    // FC15 request data is capped at 0xFB bytes; with a one-register group
+    // taking 9 bytes, the largest valid group count is 27.
+    let s = store();
+    let mut req = vec![0x15, 0xF3];
+    let mut values = Vec::new();
+    for record in 0..27u16 {
+        let value = 0x4000 + record;
+        values.push(value);
+        req.push(0x06);
+        req.extend_from_slice(&1u16.to_be_bytes());
+        req.extend_from_slice(&record.to_be_bytes());
+        req.extend_from_slice(&1u16.to_be_bytes());
+        req.extend_from_slice(&value.to_be_bytes());
+    }
+
+    assert_eq!(respond(&s, &req).await, req);
+
+    let read = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1B];
+    let mut expected = vec![0x14, 0x38, 0x37, 0x06];
+    for value in values {
+        expected.extend_from_slice(&value.to_be_bytes());
+    }
+    assert_eq!(respond(&s, &read).await, expected);
+}
+
+#[tokio::test]
+async fn file_write_invalid_later_group_does_not_commit_earlier_group() {
+    let s = store();
+    s.set_file_record(1, 0, 0xAAAA).unwrap();
+    let req = [
+        0x15, 0x12, //
+        0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x12, 0x34, //
+        0x07, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x56, 0x78,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
+
+    let read = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01];
+    assert_eq!(
+        respond(&s, &read).await,
+        vec![0x14, 0x04, 0x03, 0x06, 0xAA, 0xAA]
+    );
+}
+
+#[tokio::test]
 async fn file_write_file_zero_is_illegal_data_address() {
     let s = store();
     let req = [

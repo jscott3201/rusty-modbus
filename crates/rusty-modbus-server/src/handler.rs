@@ -699,6 +699,19 @@ async fn apply_write_file_record<S: DataStore>(
     req: &WriteFileRecordRequest<'_>,
     store: &S,
 ) -> Result<(), ExceptionCode> {
+    const MAX_WRITE_FILE_RECORD_REQUEST_BYTES: usize = 0xFB;
+    const MIN_WRITE_FILE_RECORD_SUB_REQUEST_BYTES: usize = 9;
+    const MAX_WRITE_FILE_RECORD_GROUPS: usize =
+        MAX_WRITE_FILE_RECORD_REQUEST_BYTES / MIN_WRITE_FILE_RECORD_SUB_REQUEST_BYTES;
+
+    #[derive(Clone, Copy)]
+    struct WriteFileRecordGroup<'a> {
+        file: u16,
+        record: u16,
+        length: u16,
+        value_bytes: &'a [u8],
+    }
+
     // §6.15 field table: request data length must be 0x09..=0xFB.
     if !(0x09..=0xFB).contains(&req.byte_count) {
         return Err(ExceptionCode::IllegalDataValue);
@@ -707,7 +720,13 @@ async fn apply_write_file_record<S: DataStore>(
     // a malformed later sub-request rejects the whole request without committing
     // the earlier ones (write is atomic with respect to framing errors).
     let mut subs = req.sub_requests;
-    let mut groups: Vec<(u16, u16, u16, &[u8])> = Vec::new();
+    let mut groups = [WriteFileRecordGroup {
+        file: 0,
+        record: 0,
+        length: 0,
+        value_bytes: &[],
+    }; MAX_WRITE_FILE_RECORD_GROUPS];
+    let mut group_count = 0;
     while !subs.is_empty() {
         // Sub-request header [ref_type][file Hi/Lo][record Hi/Lo][len Hi/Lo]
         // followed by len*2 data bytes (§6.15).
@@ -725,13 +744,22 @@ async fn apply_write_file_record<S: DataStore>(
             return Err(ExceptionCode::IllegalDataValue);
         }
         file_record::validate_range(file, record, usize::from(length))?;
-        groups.push((file, record, length, &subs[7..data_end]));
+        if group_count == groups.len() {
+            return Err(ExceptionCode::IllegalDataValue);
+        }
+        groups[group_count] = WriteFileRecordGroup {
+            file,
+            record,
+            length,
+            value_bytes: &subs[7..data_end],
+        };
+        group_count += 1;
         subs = &subs[data_end..];
     }
     // Pass 2: apply the validated sub-requests.
-    for &(file, record, length, value_bytes) in &groups {
+    for group in &groups[..group_count] {
         store
-            .write_file_record_be(file, record, length, value_bytes)
+            .write_file_record_be(group.file, group.record, group.length, group.value_bytes)
             .await?;
     }
     Ok(())

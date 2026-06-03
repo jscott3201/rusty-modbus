@@ -25,6 +25,13 @@ fn bench_server_process_request(c: &mut Criterion) {
         0x06, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, // file 4, record 1, len 2
         0x06, 0x00, 0x03, 0x00, 0x09, 0x00, 0x02, // file 3, record 9, len 2
     ];
+    let fc15 = [
+        0x15, 0x16, // byte count
+        0x06, 0x00, 0x04, 0x00, 0x07, 0x00, 0x03, // file 4, record 7, len 3
+        0x06, 0xAF, 0x04, 0xBE, 0x10, 0x0D, // group 1 data
+        0x06, 0x00, 0x03, 0x00, 0x0B, 0x00, 0x01, // file 3, record 11, len 1
+        0x12, 0x34, // group 2 data
+    ];
     let fc17 = read_write_multiple_registers_pdu(0, 125, 0, 121);
     let fc18 = [0x18, 0x04, 0xDE];
     let fc08 = [0x08, 0x00, 0x00, 0x12, 0x34]; // Return Query Data.
@@ -65,6 +72,14 @@ fn bench_server_process_request(c: &mut Criterion) {
         &device_id,
         "fc14_read_file_two_groups",
         &fc14,
+    );
+    bench_pdu(
+        &mut group,
+        &rt,
+        store.as_ref(),
+        &device_id,
+        "fc15_write_file_two_groups",
+        &fc15,
     );
     bench_pdu(
         &mut group,

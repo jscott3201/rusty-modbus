@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `7be0ca8` base plus this direct FC14 final response refresh |
+| Git commit | `9885387` base plus this FC15 stack-staged write refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -174,6 +174,12 @@ FC 0x14 Read File Record now builds the final response PDU directly while each
 sub-response group is filled, avoiding the previous intermediate response-data
 buffer and second encode/copy pass.
 
+FC 0x15 Write File Record now validates sub-requests into a fixed stack buffer
+bounded by the protocol's 0xFB-byte request-data cap. A one-register write group
+is the smallest valid sub-request at 9 bytes, so the largest valid request can
+contain 27 groups; this preserves the two-pass "validate before commit" behavior
+without a heap `Vec` for group staging.
+
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
 decoder overlays it onto the read buffer before slicing the PDU. The benchmark
@@ -250,6 +256,7 @@ TLS, RTU framing, and client-side work:
 | FC03 max holding-register read | 29.4 ns | Direct BE register response path keeps full-size reads small. |
 | FC10 max register write | 28.3 ns | Direct BE write path avoids the old request-payload `Vec<u16>`. |
 | FC14 two-group file read | 43.9 ns | Direct final-buffer construction removes the previous response-data buffer and encode pass. |
+| FC15 two-group file write | 50.9 ns | Stack-bounded validation staging removes the previous group `Vec` while preserving atomic framing validation. |
 | FC17 max read/write registers | 43.7 ns | Read half now writes directly into the final response bytes. |
 | FC18 FIFO two-value read | 26.5 ns | Direct FIFO response path is comparable to simple register handlers. |
 | FC08 return query data | 21.1 ns | Direct diagnostic append path echoes borrowed request bytes into the response. |
