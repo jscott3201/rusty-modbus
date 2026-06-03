@@ -16,6 +16,12 @@ name: publish
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to resume, with or without a leading v"
+        required: true
+        type: string
 
 concurrency:
   group: publish-${{ github.workflow }}-${{ github.ref }}
@@ -33,11 +39,34 @@ jobs:
   validate:
     name: validate release
     runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.release.outputs.ref }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - name: extract and validate version
+      - name: resolve release tag
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="${INPUT_VERSION#v}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "Release version could not be resolved"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ref=refs/tags/v$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.ref }}
+      - name: extract and validate version
+        env:
+          TAG_VERSION: ${{ steps.release.outputs.version }}
+        run: |
           CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
             echo "Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
@@ -51,6 +80,8 @@ jobs:
     environment: release
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.ref }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.95.0"
@@ -78,19 +109,41 @@ jobs:
             rusty-modbus-sim \
             rusty-modbus; do
             echo "::group::publish $crate"
-            # Idempotent: treat an already-published version as success so a
-            # re-run after a partial failure resumes instead of aborting.
-            cargo publish -p "$crate" --no-verify 2>&1 | tee /tmp/publish.log
-            status="${PIPESTATUS[0]}"
-            if [ "$status" -eq 0 ]; then
-              echo "published $crate; waiting for the index to update"
-              sleep 30
-            elif grep -qiE 'already (exists|uploaded)' /tmp/publish.log; then
-              echo "$crate is already on crates.io — skipping"
-            else
+            attempts=0
+            while true; do
+              attempts=$((attempts + 1))
+              set +e
+              cargo publish -p "$crate" --locked --no-verify 2>&1 | tee /tmp/publish.log
+              status="${PIPESTATUS[0]}"
+              set -e
+              if [ "$status" -eq 0 ]; then
+                echo "published $crate; waiting for the index to update"
+                sleep 30
+                break
+              fi
+              if grep -qiE 'already (exists|uploaded)' /tmp/publish.log; then
+                echo "$crate is already on crates.io — skipping"
+                break
+              fi
+              if grep -qi 'Too Many Requests' /tmp/publish.log && [ "$attempts" -lt 4 ]; then
+                retry_at=$(sed -n 's/.*try again after \(.* GMT\).*/\1/p' /tmp/publish.log | tail -n1)
+                if [ -n "$retry_at" ]; then
+                  retry_epoch=$(date -u -d "$retry_at" +%s || true)
+                  now_epoch=$(date -u +%s)
+                  sleep_seconds=$((retry_epoch - now_epoch + 15))
+                  if [ "$sleep_seconds" -lt 60 ]; then
+                    sleep_seconds=60
+                  fi
+                else
+                  sleep_seconds=480
+                fi
+                echo "crates.io rate limit hit for $crate; retrying in ${sleep_seconds}s"
+                sleep "$sleep_seconds"
+                continue
+              fi
               echo "publish failed for $crate" >&2
               exit "$status"
-            fi
+            done
             echo "::endgroup::"
           done
 
@@ -100,6 +153,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.ref }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
@@ -131,6 +186,8 @@ jobs:
             expected: cp314-cp314t-manylinux
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.ref }}
       - uses: PyO3/maturin-action@v1
         with:
           command: build
@@ -178,6 +235,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/python
+          skip-existing: true
 
   build-cli-binaries:
     name: CLI binary (${{ matrix.target }})
@@ -204,6 +262,8 @@ jobs:
             binary: modbus-windows-amd64.exe
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.ref }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.95.0"
@@ -228,10 +288,12 @@ jobs:
 
   github-release:
     name: GitHub release
-    needs: [publish-crates, publish-python, build-cli-binaries]
+    needs: [validate, publish-crates, publish-python, build-cli-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.ref }}
       - uses: actions/download-artifact@v4
         with:
           pattern: cli-*
@@ -240,6 +302,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          tag_name: v${{ needs.validate.outputs.version }}
           files: |
             dist/cli/modbus-*
         env:
