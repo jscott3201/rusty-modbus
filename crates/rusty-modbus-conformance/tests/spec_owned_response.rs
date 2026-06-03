@@ -290,7 +290,7 @@ fn owned_fc15_rejects_invalid_reference_type() {
 
 #[test]
 fn owned_fc2b_encapsulated_interface() {
-    let pdu = Bytes::from_static(&[0x2B, 0x0E, 0x01, 0x00, 0x00]);
+    let pdu = Bytes::from_static(&[0x2B, 0x0E, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, b'A']);
     match OwnedResponsePdu::from_pdu(pdu).unwrap() {
         OwnedResponsePdu::EncapsulatedInterface(r) => {
             assert_eq!(
@@ -300,6 +300,15 @@ fn owned_fc2b_encapsulated_interface() {
         }
         other => panic!("expected EncapsulatedInterface, got {other:?}"),
     }
+}
+
+#[test]
+fn owned_fc2b_rejects_malformed_device_id_payload() {
+    let pdu = Bytes::from_static(&[0x2B, 0x0E, 0x01, 0x04, 0x00, 0x00, 0x00]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::InvalidDeviceIdConformityLevel(0x04)
+    );
 }
 
 // ── Exception Response ────────────────────────────────────────────
