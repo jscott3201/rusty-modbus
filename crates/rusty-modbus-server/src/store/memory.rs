@@ -9,7 +9,7 @@ use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT}
 
 use super::{
     DataStore, MAX_DIAGNOSTIC_RESPONSE_DATA_LEN, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES,
-    pack_coils, pack_registers_be, validate_packed_coils, validate_register_values_be,
+    bits::BitTable, pack_registers_be, validate_packed_coils, validate_register_values_be,
 };
 
 /// Maximum number of entries in any Modbus data table.
@@ -96,10 +96,10 @@ pub enum StoreError {
     },
 }
 
-/// In-memory data store using flat `Vec`s with `RwLock` protection.
+/// In-memory data store using flat tables with `RwLock` protection.
 pub struct InMemoryStore {
-    coils: RwLock<Vec<bool>>,
-    discrete_inputs: RwLock<Vec<bool>>,
+    coils: RwLock<BitTable>,
+    discrete_inputs: RwLock<BitTable>,
     holding_registers: RwLock<Vec<u16>>,
     input_registers: RwLock<Vec<u16>>,
     /// File records keyed by file number; each `Vec<u16>` is indexed by record
@@ -133,8 +133,8 @@ impl InMemoryStore {
     pub fn try_new(config: StoreConfig) -> Result<Self, StoreError> {
         config.validate()?;
         Ok(Self {
-            coils: RwLock::new(vec![false; config.coil_count]),
-            discrete_inputs: RwLock::new(vec![false; config.discrete_input_count]),
+            coils: RwLock::new(BitTable::new(config.coil_count)),
+            discrete_inputs: RwLock::new(BitTable::new(config.discrete_input_count)),
             holding_registers: RwLock::new(vec![0u16; config.holding_register_count]),
             input_registers: RwLock::new(vec![0u16; config.input_register_count]),
             files: RwLock::new(HashMap::new()),
@@ -166,7 +166,7 @@ impl InMemoryStore {
     pub fn set_discrete_input(&self, address: u16, value: bool) -> Result<(), StoreError> {
         let mut inputs = self.discrete_inputs.write();
         let index = check_setup_address("discrete_inputs", address, inputs.len())?;
-        inputs[index] = value;
+        inputs.set(index, value);
         Ok(())
     }
 
@@ -192,7 +192,7 @@ impl InMemoryStore {
     pub fn set_coil(&self, address: u16, value: bool) -> Result<(), StoreError> {
         let mut coils = self.coils.write();
         let index = check_setup_address("coils", address, coils.len())?;
-        coils[index] = value;
+        coils.set(index, value);
         Ok(())
     }
 
@@ -302,11 +302,7 @@ impl DataStore for InMemoryStore {
         buf: &mut [bool],
     ) -> Result<usize, ExceptionCode> {
         let coils = self.coils.read();
-        check_range(address, usize::from(quantity), coils.len())?;
-        let start = address as usize;
-        let qty = quantity as usize;
-        buf[..qty].copy_from_slice(&coils[start..start + qty]);
-        Ok(qty)
+        coils.read_bits(address, quantity, buf)
     }
 
     async fn read_coils_packed(
@@ -316,26 +312,19 @@ impl DataStore for InMemoryStore {
         out: &mut [u8],
     ) -> Result<usize, ExceptionCode> {
         let coils = self.coils.read();
-        check_range(address, usize::from(quantity), coils.len())?;
-        let start = address as usize;
-        let qty = quantity as usize;
-        pack_coils(&coils[start..start + qty], out)?;
-        Ok(qty)
+        coils.read_packed(address, quantity, out)
     }
 
     async fn write_coil(&self, address: u16, value: bool) -> Result<(), ExceptionCode> {
         let mut coils = self.coils.write();
         check_range(address, 1, coils.len())?;
-        coils[address as usize] = value;
+        coils.set(usize::from(address), value);
         Ok(())
     }
 
     async fn write_coils(&self, address: u16, values: &[bool]) -> Result<(), ExceptionCode> {
         let mut coils = self.coils.write();
-        check_range(address, values.len(), coils.len())?;
-        let start = address as usize;
-        coils[start..start + values.len()].copy_from_slice(values);
-        Ok(())
+        coils.write_bits(address, values)
     }
 
     async fn write_coils_packed(
@@ -346,16 +335,7 @@ impl DataStore for InMemoryStore {
     ) -> Result<(), ExceptionCode> {
         let quantity = validate_packed_coils(quantity, packed_values)?;
         let mut coils = self.coils.write();
-        check_range(address, quantity, coils.len())?;
-        let start = address as usize;
-        for (byte_index, &byte) in packed_values.iter().enumerate() {
-            let offset = byte_index * 8;
-            let bit_count = (quantity - offset).min(8);
-            for bit in 0..bit_count {
-                coils[start + offset + bit] = (byte >> bit) & 1 == 1;
-            }
-        }
-        Ok(())
+        coils.write_packed(address, quantity, packed_values)
     }
 
     async fn read_discrete_inputs(
@@ -365,11 +345,7 @@ impl DataStore for InMemoryStore {
         buf: &mut [bool],
     ) -> Result<usize, ExceptionCode> {
         let inputs = self.discrete_inputs.read();
-        check_range(address, usize::from(quantity), inputs.len())?;
-        let start = address as usize;
-        let qty = quantity as usize;
-        buf[..qty].copy_from_slice(&inputs[start..start + qty]);
-        Ok(qty)
+        inputs.read_bits(address, quantity, buf)
     }
 
     async fn read_discrete_inputs_packed(
@@ -379,11 +355,7 @@ impl DataStore for InMemoryStore {
         out: &mut [u8],
     ) -> Result<usize, ExceptionCode> {
         let inputs = self.discrete_inputs.read();
-        check_range(address, usize::from(quantity), inputs.len())?;
-        let start = address as usize;
-        let qty = quantity as usize;
-        pack_coils(&inputs[start..start + qty], out)?;
-        Ok(qty)
+        inputs.read_packed(address, quantity, out)
     }
 
     async fn read_holding_registers(

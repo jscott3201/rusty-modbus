@@ -1,6 +1,7 @@
 //! Data store abstraction for the four Modbus data tables, plus optional
 //! file-record, FIFO-queue, and serial-line-diagnostic capabilities.
 
+mod bits;
 pub mod memory;
 
 use std::future::Future;
