@@ -346,6 +346,58 @@ async fn direct_packed_coil_write_reads_back() {
 }
 
 #[tokio::test]
+async fn direct_packed_coil_write_preserves_neighbor_bits() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    for address in [2, 12] {
+        store.set_coil(address, true).unwrap();
+    }
+
+    store
+        .write_coils_packed(3, 9, &[0b1000_0101, 0b0000_0001])
+        .await
+        .unwrap();
+
+    let mut read = [false; 13];
+    let count = store.read_coils(2, 13, &mut read).await.unwrap();
+    assert_eq!(count, 13);
+    assert_eq!(
+        read,
+        [
+            true,  // address 2: before the write range
+            true,  // address 3
+            false, // address 4
+            true,  // address 5
+            false, // address 6
+            false, // address 7
+            false, // address 8
+            false, // address 9
+            true,  // address 10
+            true,  // address 11
+            true,  // address 12: after the write range
+            false, // address 13
+            false, // address 14
+        ]
+    );
+}
+
+#[tokio::test]
+async fn direct_packed_coils_support_non_byte_aligned_table_size() {
+    let store = InMemoryStore::new(StoreConfig {
+        coil_count: 10,
+        discrete_input_count: 10,
+        holding_register_count: 10,
+        input_register_count: 10,
+    });
+    store.set_coil(9, true).unwrap();
+
+    let mut packed = [0xFF];
+    let count = store.read_coils_packed(8, 2, &mut packed).await.unwrap();
+
+    assert_eq!(count, 2);
+    assert_eq!(packed, [0b0000_0010]);
+}
+
+#[tokio::test]
 async fn direct_packed_coil_read_writes_wire_bytes() {
     let store = InMemoryStore::new(StoreConfig::default());
     for address in [20, 22, 27, 28] {
