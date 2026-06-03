@@ -23,8 +23,8 @@ fn spec_6_19_mei_request_decode() {
 
 #[test]
 fn spec_6_19_mei_response_decode() {
-    // Minimal response: FC=0x2B, MEI_type=0x0E, data follows
-    let pdu = [0x2B, 0x0E, 0x01, 0x00, 0x00];
+    // Minimal valid Read Device Identification response with one object.
+    let pdu = [0x2B, 0x0E, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, b'A'];
     match decode_response(&pdu).unwrap() {
         rusty_modbus_codec::ResponsePdu::EncapsulatedInterface(r) => {
             assert_eq!(
@@ -103,6 +103,29 @@ fn spec_6_21_more_follows() {
     let resp = ReadDeviceIdentificationResponse::decode(data).unwrap();
     assert!(resp.more_follows);
     assert_eq!(resp.next_object_id, 0x02);
+}
+
+#[test]
+fn spec_6_21_rejects_invalid_response_control_fields() {
+    use rusty_modbus_codec::DecodeError;
+    use rusty_modbus_codec::response::device_id::ReadDeviceIdentificationResponse;
+
+    assert!(matches!(
+        ReadDeviceIdentificationResponse::decode(&[0x0E, 0x01, 0x04, 0x00, 0x00, 0x00]),
+        Err(DecodeError::InvalidDeviceIdConformityLevel(0x04))
+    ));
+    assert!(matches!(
+        ReadDeviceIdentificationResponse::decode(&[0x0E, 0x01, 0x01, 0x01, 0x00, 0x00]),
+        Err(DecodeError::InvalidDeviceIdMoreFollows(0x01))
+    ));
+    assert!(matches!(
+        ReadDeviceIdentificationResponse::decode(&[0x0E, 0x01, 0x01, 0x00, 0x02, 0x00]),
+        Err(DecodeError::InvalidDeviceIdNextObjectId(0x02))
+    ));
+    assert!(matches!(
+        ReadDeviceIdentificationResponse::decode(&[0x0E, 0x04, 0x81, 0x00, 0x00, 0x00]),
+        Err(DecodeError::InvalidDeviceIdObjectCount(0))
+    ));
 }
 
 #[test]

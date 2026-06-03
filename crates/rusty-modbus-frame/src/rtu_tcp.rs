@@ -7,15 +7,16 @@
 //! many production RTU-over-TCP implementations work.
 
 use bytes::{BufMut, BytesMut};
-use rusty_modbus_types::MAX_RTU_ADU_SIZE;
+use rusty_modbus_types::{MAX_PDU_SIZE, MAX_RTU_ADU_SIZE};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::crc::{crc16, verify_crc};
+use crate::crc::{crc16, crc16_update};
 use crate::error::FrameError;
 use crate::frame::{Frame, FrameHeader};
 
 /// Minimum RTU frame size: `unit_id`(1) + FC(1) + CRC(2).
 const MIN_RTU_FRAME: usize = 4;
+const MIN_PDU_LENGTH: usize = 1;
 
 /// RTU-over-TCP codec.
 ///
@@ -37,13 +38,16 @@ impl Decoder for RtuOverTcpCodec {
 
         let max_len = src.len().min(MAX_RTU_ADU_SIZE);
 
-        // Scan candidate frame lengths from smallest to largest.
-        // The first length whose trailing 2 bytes form a valid CRC-16 of the
-        // preceding data is accepted as the frame boundary.
+        // Scan candidate frame lengths from smallest to largest. Keep the CRC
+        // of each candidate data prefix incrementally instead of recomputing
+        // it from the start for every possible frame boundary.
+        let mut crc = 0xFFFF;
+        crc = crc16_update(crc, src[0]);
+        crc = crc16_update(crc, src[1]);
         for candidate_len in MIN_RTU_FRAME..=max_len {
-            let candidate = &src[..candidate_len];
-
-            if verify_crc(candidate) {
+            let data_end = candidate_len - 2;
+            let actual = u16::from_le_bytes([src[data_end], src[data_end + 1]]);
+            if crc == actual {
                 let unit_id = src[0];
 
                 let adu = src.split_to(candidate_len).freeze();
@@ -53,6 +57,10 @@ impl Decoder for RtuOverTcpCodec {
                     header: FrameHeader::Rtu { unit_id },
                     pdu,
                 }));
+            }
+
+            if candidate_len < max_len {
+                crc = crc16_update(crc, src[data_end]);
             }
         }
 
@@ -75,6 +83,7 @@ impl Encoder<Frame> for RtuOverTcpCodec {
             FrameHeader::Rtu { unit_id } => unit_id,
             FrameHeader::Mbap(h) => h.unit_id,
         };
+        validate_outgoing_pdu(item.pdu.len())?;
 
         // Reserve space: unit_id(1) + PDU + CRC(2).
         dst.reserve(1 + item.pdu.len() + 2);
@@ -91,9 +100,26 @@ impl Encoder<Frame> for RtuOverTcpCodec {
     }
 }
 
+fn validate_outgoing_pdu(pdu_len: usize) -> Result<(), FrameError> {
+    if pdu_len < MIN_PDU_LENGTH {
+        return Err(FrameError::InvalidPduLength {
+            length: pdu_len,
+            minimum: MIN_PDU_LENGTH,
+        });
+    }
+    if pdu_len > MAX_PDU_SIZE {
+        return Err(FrameError::PduLengthOverflow {
+            length: pdu_len,
+            maximum: MAX_PDU_SIZE,
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crc::verify_crc;
 
     /// Build a valid RTU frame: [`unit_id`, pdu..., `crc_lo`, `crc_hi`].
     fn make_rtu_frame(unit_id: u8, pdu: &[u8]) -> Vec<u8> {
@@ -182,6 +208,34 @@ mod tests {
     }
 
     #[test]
+    fn encode_rejects_empty_pdu() {
+        let frame = Frame {
+            header: FrameHeader::Rtu { unit_id: 0x01 },
+            pdu: bytes::Bytes::new(),
+        };
+
+        let mut dst = BytesMut::new();
+        let mut codec = RtuOverTcpCodec;
+
+        let err = codec.encode(frame, &mut dst).unwrap_err();
+        assert!(matches!(err, FrameError::InvalidPduLength { .. }));
+    }
+
+    #[test]
+    fn encode_rejects_oversized_pdu() {
+        let frame = Frame {
+            header: FrameHeader::Rtu { unit_id: 0x01 },
+            pdu: bytes::Bytes::from(vec![0x03; MAX_PDU_SIZE + 1]),
+        };
+
+        let mut dst = BytesMut::new();
+        let mut codec = RtuOverTcpCodec;
+
+        let err = codec.encode(frame, &mut dst).unwrap_err();
+        assert!(matches!(err, FrameError::PduLengthOverflow { .. }));
+    }
+
+    #[test]
     fn decode_exception_response() {
         // Exception: unit_id=0x01, FC=0x83 (0x03|0x80), exception_code=0x02
         let raw = make_rtu_frame(0x01, &[0x83, 0x02]);
@@ -203,5 +257,30 @@ mod tests {
 
         let err = codec.decode(&mut buf).unwrap_err();
         assert!(matches!(err, FrameError::Truncated));
+    }
+
+    #[test]
+    fn max_len_crc_miss_keeps_buffering() {
+        let raw = crc_miss_buffer(MAX_RTU_ADU_SIZE);
+        let mut buf = BytesMut::from(&raw[..]);
+        let mut codec = RtuOverTcpCodec;
+
+        assert!(codec.decode(&mut buf).unwrap().is_none());
+        assert_eq!(buf.len(), MAX_RTU_ADU_SIZE);
+    }
+
+    fn crc_miss_buffer(len: usize) -> Vec<u8> {
+        for salt in 0u8..=u8::MAX {
+            let candidate: Vec<u8> = (0..len)
+                .map(|i| {
+                    let byte = u8::try_from(i % 251).expect("modulo 251 fits u8");
+                    byte.wrapping_mul(37).wrapping_add(0xA5 ^ salt)
+                })
+                .collect();
+            if (MIN_RTU_FRAME..=len).all(|candidate_len| !verify_crc(&candidate[..candidate_len])) {
+                return candidate;
+            }
+        }
+        unreachable!("salted deterministic buffers should produce a CRC-miss case");
     }
 }

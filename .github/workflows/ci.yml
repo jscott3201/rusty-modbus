@@ -39,6 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       deps: ${{ steps.filter.outputs.deps }}
+      python: ${{ steps.filter.outputs.python }}
     steps:
       - uses: actions/checkout@v4
       - id: filter
@@ -51,6 +52,22 @@ jobs:
               - 'crates/*/Cargo.toml'
               - 'benchmarks/Cargo.toml'
               - 'deny.toml'
+            python:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/python.yml'
+              - 'scripts/ci-python.sh'
+              - 'scripts/ci-pr.sh'
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'deny.toml'
+              - 'crates/rusty-modbus-client/**'
+              - 'crates/rusty-modbus-codec/**'
+              - 'crates/rusty-modbus-frame/**'
+              - 'crates/rusty-modbus-python/**'
+              - 'crates/rusty-modbus-server/**'
+              - 'crates/rusty-modbus-tcp/**'
+              - 'crates/rusty-modbus-tls/**'
+              - 'crates/rusty-modbus-types/**'
 
   fmt:
     name: fmt
@@ -95,12 +112,15 @@ jobs:
           tool: nextest
       - name: cargo nextest + doctests
         run: |
-          cargo nextest run --workspace --locked
+          cargo nextest run --workspace --locked --profile ci
           cargo test --workspace --locked --doc
 
   python:
     name: python bindings
-    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: |
+      (github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch')
+      && (needs.changes.outputs.python == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,20 +128,19 @@ jobs:
         with:
           toolchain: "1.95.0"
           components: clippy
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/rusty-modbus-python
       # The python crate is excluded from the workspace (it needs Python headers
-      # to build the cdylib), so none of the jobs above compile it. It is the
-      # only exhaustive consumer of ClientError, so a new ClientError variant
-      # silently breaks it. Compile it here to catch that class of regression.
-      # (Its Cargo.lock is gitignored, so no --locked.)
+      # to build the cdylib), so none of the jobs above compile it. The dedicated
+      # python.yml gate runs maturin/pytest/wheels/stubs; keep this fast compile
+      # here to catch Rust API drift in ordinary CI.
       - name: clippy (python bindings)
         working-directory: crates/rusty-modbus-python
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
   deny:
     name: cargo-deny

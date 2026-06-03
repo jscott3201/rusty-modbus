@@ -21,6 +21,7 @@ tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net"] }
 bytes = "1"
 parking_lot = "0.12"
 thiserror = "2"
+tracing = { version = "0.1.44", features = ["attributes"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

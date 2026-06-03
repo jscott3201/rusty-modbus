@@ -8,8 +8,10 @@ use rusty_modbus_server::config::{DeviceIdentification, ServerConfig};
 use rusty_modbus_server::store::memory::{InMemoryStore, StoreConfig};
 use rusty_modbus_types::UnitId;
 
-use crate::config::{RegisterConfig, SimConfig};
+use crate::config::{CoilBlock, RegisterBlock, RegisterConfig, SimConfig};
 use crate::error::SimError;
+
+const MODBUS_ADDRESS_SPACE: usize = 65_536;
 
 /// Device simulator wrapping a `ModbusServer` with preconfigured register maps.
 pub struct ModbusSimulator {
@@ -23,23 +25,30 @@ impl ModbusSimulator {
     ///
     /// # Errors
     ///
-    /// Returns [`SimError::ConfigParse`] if the YAML is invalid.
+    /// Returns [`SimError::ConfigParse`] if the YAML is invalid, or
+    /// [`SimError::Config`] if any configured block is out of range.
     pub fn from_yaml(yaml: &str) -> Result<Self, SimError> {
         let config: SimConfig = serde_yaml_ng::from_str(yaml).map_err(SimError::ConfigParse)?;
-        Ok(Self::from_config(config))
+        Self::from_config(config)
     }
 
     /// Create a simulator from a programmatic configuration.
-    #[must_use]
-    pub fn from_config(config: SimConfig) -> Self {
-        let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimError::Config`] if any configured block exceeds the Modbus
+    /// 16-bit address space.
+    pub fn from_config(config: SimConfig) -> Result<Self, SimError> {
+        validate_register_config(&config.registers)?;
+
+        let store = Arc::new(InMemoryStore::try_new(StoreConfig::default())?);
         apply_register_config(&store, &config.registers);
 
-        Self {
+        Ok(Self {
             config,
             store,
             server: None,
-        }
+        })
     }
 
     /// Start the simulator server. Returns the bound address.
@@ -85,18 +94,22 @@ impl ModbusSimulator {
     }
 
     /// Update a holding register at runtime.
-    pub fn set_holding_register(&self, address: u16, value: u16) {
-        self.store.set_holding_register(address, value);
+    pub fn set_holding_register(&self, address: u16, value: u16) -> Result<(), SimError> {
+        self.store
+            .set_holding_register(address, value)
+            .map_err(SimError::Store)
     }
 
     /// Update an input register at runtime.
-    pub fn set_input_register(&self, address: u16, value: u16) {
-        self.store.set_input_register(address, value);
+    pub fn set_input_register(&self, address: u16, value: u16) -> Result<(), SimError> {
+        self.store
+            .set_input_register(address, value)
+            .map_err(SimError::Store)
     }
 
     /// Update a coil at runtime.
-    pub fn set_coil(&self, address: u16, value: bool) {
-        self.store.set_coil(address, value);
+    pub fn set_coil(&self, address: u16, value: bool) -> Result<(), SimError> {
+        self.store.set_coil(address, value).map_err(SimError::Store)
     }
 
     /// Get the bound address (only valid after `start()`).
@@ -122,37 +135,82 @@ impl std::fmt::Debug for ModbusSimulator {
     }
 }
 
+fn validate_register_config(config: &RegisterConfig) -> Result<(), SimError> {
+    for block in &config.holding {
+        check_block_range("holding", block.address, block.count)?;
+    }
+    for block in &config.input {
+        check_block_range("input", block.address, block.count)?;
+    }
+    for block in &config.coils {
+        check_block_range("coils", block.address, block.count)?;
+    }
+    for block in &config.discrete_inputs {
+        check_block_range("discrete_inputs", block.address, block.count)?;
+    }
+    Ok(())
+}
+
+fn check_block_range(kind: &str, address: u16, count: u16) -> Result<(), SimError> {
+    let end = usize::from(address) + usize::from(count);
+    if end <= MODBUS_ADDRESS_SPACE {
+        Ok(())
+    } else {
+        Err(SimError::Config(format!(
+            "{kind} block at address {address} with count {count} exceeds Modbus address space"
+        )))
+    }
+}
+
 /// Apply register configuration to the in-memory store.
 fn apply_register_config(store: &InMemoryStore, config: &RegisterConfig) {
-    for block in &config.holding {
-        for (i, &val) in block.initial.iter().enumerate() {
-            if i < block.count as usize {
-                store.set_holding_register(block.address + u16::try_from(i).unwrap(), val);
-            }
-        }
-    }
+    apply_register_blocks(&config.holding, |address, value| {
+        store
+            .set_holding_register(address, value)
+            .expect("validated holding register config should fit store");
+    });
+    apply_register_blocks(&config.input, |address, value| {
+        store
+            .set_input_register(address, value)
+            .expect("validated input register config should fit store");
+    });
+    apply_coil_blocks(&config.coils, |address, value| {
+        store
+            .set_coil(address, value)
+            .expect("validated coil config should fit store");
+    });
+    apply_coil_blocks(&config.discrete_inputs, |address, value| {
+        store
+            .set_discrete_input(address, value)
+            .expect("validated discrete input config should fit store");
+    });
+}
 
-    for block in &config.input {
+fn apply_register_blocks(blocks: &[RegisterBlock], mut set: impl FnMut(u16, u16)) {
+    for block in blocks {
         for (i, &val) in block.initial.iter().enumerate() {
-            if i < block.count as usize {
-                store.set_input_register(block.address + u16::try_from(i).unwrap(), val);
+            if i < usize::from(block.count)
+                && let Some(address) = offset_address(block.address, i)
+            {
+                set(address, val);
             }
         }
     }
+}
 
-    for block in &config.coils {
+fn apply_coil_blocks(blocks: &[CoilBlock], mut set: impl FnMut(u16, bool)) {
+    for block in blocks {
         for (i, &val) in block.initial.iter().enumerate() {
-            if i < block.count as usize {
-                store.set_coil(block.address + u16::try_from(i).unwrap(), val);
+            if i < usize::from(block.count)
+                && let Some(address) = offset_address(block.address, i)
+            {
+                set(address, val);
             }
         }
     }
+}
 
-    for block in &config.discrete_inputs {
-        for (i, &val) in block.initial.iter().enumerate() {
-            if i < block.count as usize {
-                store.set_discrete_input(block.address + u16::try_from(i).unwrap(), val);
-            }
-        }
-    }
+fn offset_address(address: u16, offset: usize) -> Option<u16> {
+    let offset = u16::try_from(offset).ok()?;
+    address.checked_add(offset)
 }

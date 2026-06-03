@@ -1,6 +1,6 @@
 //! File record access methods — FC 0x14, 0x15.
 
-use rusty_modbus_codec::request::{Encode, ReadFileRecordRequest, WriteFileRecordRequest};
+use rusty_modbus_codec::request::{ReadFileRecordRequest, WriteFileRecordRequest};
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_frame::owned::{OwnedReadFileRecordResponse, OwnedWriteFileRecordResponse};
 use rusty_modbus_types::{FunctionCode, UnitId};
@@ -9,6 +9,7 @@ use rusty_modbus_tcp::transport::TransportSink;
 
 use crate::client::ModbusClient;
 use crate::error::ClientError;
+use crate::methods::{checked_file_record_byte_count, encode_request};
 
 impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read file records (FC 0x14).
@@ -30,17 +31,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         let req = ReadFileRecordRequest {
-            byte_count: u8::try_from(sub_request_data.len()).unwrap_or(u8::MAX),
+            byte_count: checked_file_record_byte_count(sub_request_data.len())?,
             sub_requests: sub_request_data,
         };
 
         let mut buf = [0u8; 256];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(unit_id, FunctionCode::ReadFileRecord, &buf[..len])
@@ -74,17 +70,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         let req = WriteFileRecordRequest {
-            byte_count: u8::try_from(sub_request_data.len()).unwrap_or(u8::MAX),
+            byte_count: checked_file_record_byte_count(sub_request_data.len())?,
             sub_requests: sub_request_data,
         };
 
         let mut buf = [0u8; 256];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(unit_id, FunctionCode::WriteFileRecord, &buf[..len])

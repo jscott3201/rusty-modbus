@@ -9,13 +9,16 @@
 #![allow(clippy::missing_errors_doc)] // Error conditions documented at trait level
 
 pub mod config;
+mod device_id;
 pub mod error;
+mod file_record;
 pub mod handler;
+mod response_encode;
 pub mod server;
 pub mod store;
 
 pub use config::{DeviceIdentification, ServerConfig};
 pub use error::ServerError;
 pub use server::ModbusServer;
-pub use store::memory::{InMemoryStore, StoreConfig};
-pub use store::{CommEventLog, DataStore};
+pub use store::memory::{InMemoryStore, StoreConfig, StoreError};
+pub use store::{CommEventLog, CommEventLogMeta, DataStore};

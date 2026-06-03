@@ -2,7 +2,7 @@
 
 use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
-use rusty_modbus_types::{Address, CoilValue, FunctionCode, Quantity};
+use rusty_modbus_types::{Address, CoilValue, FunctionCode, MAX_WRITE_COILS, Quantity};
 
 /// Response to a Write Single Coil request (FC 0x05).
 ///
@@ -21,15 +21,11 @@ impl WriteSingleCoilResponse {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
+    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
     /// Returns `DecodeError::InvalidCoilValue` if the coil value is not
     /// 0xFF00 or 0x0000.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let raw_value = u16::from_be_bytes([data[2], data[3]]);
         let value =
@@ -47,6 +43,7 @@ impl Encode for WriteSingleCoilResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteSingleCoil.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -77,13 +74,9 @@ impl WriteMultipleCoilsResponse {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
+    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let quantity = Quantity(u16::from_be_bytes([data[2], data[3]]));
         Ok(Self { address, quantity })
@@ -99,6 +92,8 @@ impl Encode for WriteMultipleCoilsResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, MAX_WRITE_COILS)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteMultipleCoils.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];

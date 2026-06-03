@@ -1,7 +1,7 @@
 //! Client error types.
 
-use rusty_modbus_codec::DecodeError;
 use rusty_modbus_codec::response::ExceptionResponse;
+use rusty_modbus_codec::{DecodeError, EncodeError};
 use rusty_modbus_tcp::TransportError;
 use rusty_modbus_types::TransactionId;
 
@@ -23,6 +23,11 @@ pub enum ClientError {
     /// Codec encode/decode error.
     #[error("codec error: {0}")]
     Codec(#[from] DecodeError),
+
+    /// Request could not be encoded because caller-supplied arguments violate
+    /// Modbus wire limits.
+    #[error("request encode error: {0}")]
+    Encode(#[from] EncodeError),
 
     /// Transaction ID collision — slot already occupied.
     #[error("transaction ID conflict: {0:?}")]
@@ -61,6 +66,20 @@ pub enum ClientError {
         got: u8,
     },
 
+    /// The server's write response did not echo a request field required by
+    /// the Modbus function definition. Write responses for FC05, FC06, FC0F,
+    /// FC10, and FC16 are confirmations of the requested address/value/masks;
+    /// accepting a different echo would report success for the wrong mutation.
+    #[error("unexpected response echo for {field}: expected {expected:#06x}, got {got:#06x}")]
+    UnexpectedResponseEcho {
+        /// Field that failed to echo, such as `address`, `value`, or `quantity`.
+        field: &'static str,
+        /// Requested field value.
+        expected: u16,
+        /// Field value returned by the server.
+        got: u16,
+    },
+
     /// The server returned fewer data bytes than the requested quantity needs.
     /// Rejecting this prevents a malicious or buggy peer from truncating a read
     /// (and, for bit reads, from triggering an out-of-bounds index).
@@ -70,5 +89,26 @@ pub enum ClientError {
         expected: usize,
         /// Data bytes the server actually returned.
         actual: usize,
+    },
+
+    /// A Read Device Identification continuation did not advance to a higher
+    /// object ID. Without this guard, a malformed peer can keep the client in
+    /// an unbounded `more_follows` loop.
+    #[error(
+        "invalid device identification continuation: next object ID {next_object_id:#04x} did not advance past {previous_object_id:#04x}"
+    )]
+    InvalidDeviceIdentificationContinuation {
+        /// Object ID used for the request that produced the response.
+        previous_object_id: u8,
+        /// Continuation object ID returned by the server.
+        next_object_id: u8,
+    },
+
+    /// A Read Device Identification response chain exceeded the maximum number
+    /// of Basic identification pages the client will follow.
+    #[error("device identification pagination exceeded {limit} response pages")]
+    DeviceIdentificationPaginationLimit {
+        /// Maximum number of response pages followed for the request.
+        limit: u8,
     },
 }

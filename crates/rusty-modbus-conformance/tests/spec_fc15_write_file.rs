@@ -33,3 +33,86 @@ fn spec_6_15_response_is_echo() {
         other => panic!("expected WriteFileRecord response, got {other:?}"),
     }
 }
+
+#[test]
+fn request_byte_count_must_be_in_spec_range() {
+    assert!(matches!(
+        decode_request(&[0x15, 0x08, 0, 0, 0, 0, 0, 0, 0, 0]),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 8,
+            minimum: 9,
+            maximum: 251,
+        })
+    ));
+
+    let mut pdu = vec![0x15, 0xFC];
+    pdu.extend_from_slice(&[0; 252]);
+    assert!(matches!(
+        decode_request(&pdu),
+        Err(rusty_modbus_codec::DecodeError::PduTooLarge {
+            length: 254,
+            maximum: 253,
+        })
+    ));
+}
+
+#[test]
+fn response_byte_count_must_be_in_spec_range() {
+    assert!(matches!(
+        decode_response(&[0x15, 0x08, 0, 0, 0, 0, 0, 0, 0, 0]),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 8,
+            minimum: 9,
+            maximum: 251,
+        })
+    ));
+
+    let mut pdu = vec![0x15, 0xFC];
+    pdu.extend_from_slice(&[0; 252]);
+    assert!(matches!(
+        decode_response(&pdu),
+        Err(rusty_modbus_codec::DecodeError::PduTooLarge {
+            length: 254,
+            maximum: 253,
+        })
+    ));
+}
+
+#[test]
+fn request_reference_type_must_be_6() {
+    assert_eq!(
+        decode_request(&[0x15, 0x09, 0x07, 0, 1, 0, 0, 0, 1, 0x12, 0x34]).unwrap_err(),
+        rusty_modbus_codec::DecodeError::InvalidReferenceType(0x07)
+    );
+}
+
+#[test]
+fn request_record_length_must_match_payload() {
+    assert_eq!(
+        decode_request(&[0x15, 0x09, 0x06, 0, 1, 0, 0, 0, 2, 0x12, 0x34]).unwrap_err(),
+        rusty_modbus_codec::DecodeError::ByteCountMismatch {
+            declared: 11,
+            actual: 9,
+        }
+    );
+}
+
+#[test]
+fn request_file_record_range_must_be_valid() {
+    assert_eq!(
+        decode_request(&[0x15, 0x09, 0x06, 0, 0, 0, 0, 0, 1, 0x12, 0x34]).unwrap_err(),
+        rusty_modbus_codec::DecodeError::FileRecordOutOfRange {
+            file_number: 0,
+            record_number: 0,
+            record_length: 1,
+        }
+    );
+}
+
+#[test]
+fn response_is_validated_as_echo_payload() {
+    assert_eq!(
+        decode_response(&[0x15, 0x09, 0x07, 0, 1, 0, 0, 0, 1, 0x12, 0x34]).unwrap_err(),
+        rusty_modbus_codec::DecodeError::InvalidReferenceType(0x07)
+    );
+}

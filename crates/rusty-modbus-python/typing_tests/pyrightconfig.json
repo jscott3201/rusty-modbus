@@ -1,0 +1,7 @@
+{
+  "include": ["."],
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "strict",
+  "reportUnusedFunction": "none",
+  "reportUnnecessaryTypeIgnoreComment": "error"
+}

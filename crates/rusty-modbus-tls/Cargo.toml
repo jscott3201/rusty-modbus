@@ -27,6 +27,7 @@ thiserror = "2"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 webpki-roots = "1"
+tracing = { version = "0.1.44", features = ["attributes"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient, RetryConfig};
+use rusty_modbus_codec::EncodeError;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::config::TcpServerConfig;
 use rusty_modbus_tcp::listener::TcpServerListener;
@@ -118,6 +119,55 @@ fn default_config() -> ClientConfig {
         timeout: Duration::from_secs(2),
         ..ClientConfig::default()
     }
+}
+
+fn assert_quantity_encode_error<T>(result: Result<T, ClientError>, quantity: u16) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Encode(EncodeError::QuantityOutOfRange { quantity: got }))
+                if got == quantity
+        ),
+        "expected quantity encode error for {quantity}"
+    );
+}
+
+fn assert_file_byte_count_encode_error<T>(
+    result: Result<T, ClientError>,
+    count: usize,
+    minimum: usize,
+    maximum: usize,
+) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Encode(EncodeError::ByteCountOutOfRange {
+                count: got,
+                minimum: got_minimum,
+                maximum: got_maximum,
+            })) if got == count && got_minimum == minimum && got_maximum == maximum
+        ),
+        "expected file byte-count encode error for {count}"
+    );
+}
+
+fn assert_echo_mismatch<T>(
+    result: Result<T, ClientError>,
+    field: &'static str,
+    expected: u16,
+    got: u16,
+) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::UnexpectedResponseEcho {
+                field: got_field,
+                expected: got_expected,
+                got: got_value,
+            }) if got_field == field && got_expected == expected && got_value == got
+        ),
+        "expected echo mismatch for {field}: {expected:#06x} != {got:#06x}"
+    );
 }
 
 #[tokio::test]
@@ -240,6 +290,53 @@ async fn shutdown_cancels_pending() {
     assert!(matches!(result, Err(ClientError::NotConnected)));
 }
 
+#[tokio::test]
+async fn invalid_request_arguments_return_encode_errors_before_send() {
+    let addr = start_register_server().await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_quantity_encode_error(client.read_coils(UnitId(0xFF), 0, 2001).await, 2001);
+    assert_quantity_encode_error(client.read_holding_registers(UnitId(0xFF), 0, 0).await, 0);
+    assert_quantity_encode_error(client.read_input_registers(UnitId(0xFF), 0, 126).await, 126);
+
+    assert_quantity_encode_error(client.write_multiple_coils(UnitId(0xFF), 0, &[]).await, 0);
+    let too_many_coils = vec![false; 1969];
+    assert_quantity_encode_error(
+        client
+            .write_multiple_coils(UnitId(0xFF), 0, &too_many_coils)
+            .await,
+        1969,
+    );
+
+    let too_many_registers = vec![0; 124];
+    assert_quantity_encode_error(
+        client
+            .write_multiple_registers(UnitId(0xFF), 0, &too_many_registers)
+            .await,
+        124,
+    );
+
+    assert_quantity_encode_error(
+        client
+            .read_write_multiple_registers(UnitId(0xFF), 0, 126, 0, &[0x0001])
+            .await,
+        126,
+    );
+
+    assert_file_byte_count_encode_error(
+        client.read_file_record(UnitId(0xFF), &[0; 6]).await,
+        6,
+        7,
+        245,
+    );
+    assert_file_byte_count_encode_error(
+        client.write_file_record(UnitId(0xFF), &[0; 246]).await,
+        246,
+        7,
+        245,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Client/transport correctness regression tests
 // ---------------------------------------------------------------------------
@@ -283,6 +380,20 @@ where
     });
 
     addr
+}
+
+fn device_id_basic_response(more_follows: bool, next_object_id: u8, object_id: u8) -> Vec<u8> {
+    vec![
+        0x2B,
+        0x0E,
+        0x01,
+        0x81,
+        if more_follows { 0xFF } else { 0x00 },
+        if more_follows { next_object_id } else { 0x00 },
+        0x01,
+        object_id,
+        0x00,
+    ]
 }
 
 /// The background reader must survive a benign idle read-timeout. `connect()`
@@ -483,6 +594,119 @@ async fn matching_exception_surfaces_as_exception() {
 }
 
 #[tokio::test]
+async fn write_single_register_rejects_mismatched_echo() {
+    // FC06 response must echo the requested address and value.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x06 {
+            vec![0x06, 0x00, 0x02, 0xBE, 0xEF]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client
+            .write_single_register(UnitId(0xFF), 0x0001, 0xBEEF)
+            .await,
+        "address",
+        0x0001,
+        0x0002,
+    );
+}
+
+#[tokio::test]
+async fn write_single_coil_rejects_mismatched_echo() {
+    // FC05 response must echo 0xFF00 for an ON write.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x05 {
+            vec![0x05, 0x00, 0x05, 0x00, 0x00]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client.write_single_coil(UnitId(0xFF), 0x0005, true).await,
+        "value",
+        0xFF00,
+        0x0000,
+    );
+}
+
+#[tokio::test]
+async fn write_multiple_coils_rejects_mismatched_echo() {
+    // FC0F response must echo the starting address and quantity written.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x0F {
+            vec![0x0F, 0x00, 0x10, 0x00, 0x03]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client
+            .write_multiple_coils(UnitId(0xFF), 0x0010, &[true, false])
+            .await,
+        "quantity",
+        0x0002,
+        0x0003,
+    );
+}
+
+#[tokio::test]
+async fn write_multiple_registers_rejects_mismatched_echo() {
+    // FC10 response must echo the starting address and quantity written.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x10 {
+            vec![0x10, 0x00, 0x20, 0x00, 0x01]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client
+            .write_multiple_registers(UnitId(0xFF), 0x0020, &[0x0001, 0x0002])
+            .await,
+        "quantity",
+        0x0002,
+        0x0001,
+    );
+}
+
+#[tokio::test]
+async fn mask_write_register_rejects_mismatched_echo() {
+    // FC16 response must echo address, AND mask, and OR mask.
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x16 {
+            vec![0x16, 0x00, 0x04, 0x00, 0xF2, 0x00, 0x24]
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_echo_mismatch(
+        client
+            .mask_write_register(UnitId(0xFF), 0x0004, 0x00F2, 0x0025)
+            .await,
+        "or_mask",
+        0x0025,
+        0x0024,
+    );
+}
+
+#[tokio::test]
 async fn short_input_register_response_is_error() {
     // FC04 reply with byte_count=2 (one register) while 10 were requested.
     let addr = start_scripted_server(|fc, _req| {
@@ -542,5 +766,53 @@ async fn short_raw_register_response_is_error() {
     assert!(
         matches!(result, Err(ClientError::ShortResponse { .. })),
         "expected ShortResponse, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn device_identification_rejects_non_advancing_continuation() {
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x2B {
+            device_id_basic_response(true, 0x00, 0x00)
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_device_identification(UnitId(0xFF)).await;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::InvalidDeviceIdentificationContinuation {
+                previous_object_id: 0x00,
+                next_object_id: 0x00,
+            })
+        ),
+        "expected invalid continuation, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn device_identification_rejects_too_many_basic_pages() {
+    let addr = start_scripted_server(|fc, req| {
+        if fc == 0x2B {
+            let object_id = req[3];
+            device_id_basic_response(true, object_id.wrapping_add(1), object_id)
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_device_identification(UnitId(0xFF)).await;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::DeviceIdentificationPaginationLimit { limit: 3 })
+        ),
+        "expected pagination limit, got {result:?}"
     );
 }

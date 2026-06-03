@@ -22,13 +22,9 @@ impl WriteSingleRegisterRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 4 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let value = u16::from_be_bytes([data[2], data[3]]);
         Ok(Self { address, value })
@@ -44,6 +40,7 @@ impl Encode for WriteSingleRegisterRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteSingleRegister.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.value.to_be_bytes());
@@ -129,6 +126,11 @@ impl Encode for WriteMultipleRegistersRequest<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        let expected_bytes = usize::from(self.quantity.0) * 2;
+        EncodeError::check_byte_count(usize::from(self.byte_count), expected_bytes)?;
+        EncodeError::check_byte_count(expected_bytes, self.register_values.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteMultipleRegisters.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());
@@ -163,13 +165,9 @@ impl MaskWriteRegisterRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 6 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 6 {
-            return Err(DecodeError::Truncated {
-                expected: 6,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 6)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let and_mask = u16::from_be_bytes([data[2], data[3]]);
         let or_mask = u16::from_be_bytes([data[4], data[5]]);
@@ -190,6 +188,7 @@ impl Encode for MaskWriteRegisterRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::MaskWriteRegister.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.and_mask.to_be_bytes());
@@ -294,6 +293,12 @@ impl Encode for ReadWriteMultipleRegistersRequest<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.read_quantity.0, Self::MAX_READ_QUANTITY)?;
+        EncodeError::check_quantity(self.write_quantity.0, Self::MAX_WRITE_QUANTITY)?;
+        let expected_bytes = usize::from(self.write_quantity.0) * 2;
+        EncodeError::check_byte_count(usize::from(self.write_byte_count), expected_bytes)?;
+        EncodeError::check_byte_count(expected_bytes, self.write_register_values.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadWriteMultipleRegisters.code();
         buf[1..3].copy_from_slice(&self.read_address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.read_quantity.0.to_be_bytes());

@@ -38,12 +38,9 @@ fn function_code_all_19_variants_round_trip() {
 }
 
 #[test]
-fn function_code_zero_is_custom() {
-    // §4.1: "Function code '0' is not valid" — represented as Custom, rejected by server
-    assert_eq!(
-        FunctionCode::from_raw(0x00),
-        Some(FunctionCode::Custom(0x00))
-    );
+fn function_code_zero_is_invalid() {
+    // §4.1: "Function code '0' is not valid".
+    assert_eq!(FunctionCode::from_raw(0x00), None);
 }
 
 #[test]

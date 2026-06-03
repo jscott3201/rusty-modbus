@@ -1,6 +1,6 @@
 //! FIFO queue access method — FC 0x18.
 
-use rusty_modbus_codec::request::{Encode, ReadFifoQueueRequest};
+use rusty_modbus_codec::request::ReadFifoQueueRequest;
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_types::{Address, FunctionCode, UnitId};
 
@@ -8,6 +8,7 @@ use rusty_modbus_tcp::transport::TransportSink;
 
 use crate::client::ModbusClient;
 use crate::error::ClientError;
+use crate::methods::encode_request;
 
 impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read FIFO queue (FC 0x18).
@@ -32,12 +33,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         };
 
         let mut buf = [0u8; 3];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 3,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(unit_id, FunctionCode::ReadFifoQueue, &buf[..len])

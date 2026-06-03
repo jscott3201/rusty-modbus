@@ -2,6 +2,7 @@
 
 use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
+use crate::response::device_id::ReadDeviceIdentificationResponse;
 use rusty_modbus_types::{FunctionCode, MeiType};
 
 /// Response to an Encapsulated Interface Transport request (FC 0x2B).
@@ -21,6 +22,7 @@ impl<'buf> EncapsulatedInterfaceResponse<'buf> {
     /// Returns `DecodeError::Truncated` if `data` is too short.
     /// Returns `DecodeError::UnknownMeiType` if the MEI type byte is not
     /// recognized.
+    /// Returns `DecodeError` if a known MEI response payload is malformed.
     pub fn decode(data: &'buf [u8]) -> Result<Self, DecodeError> {
         if data.is_empty() {
             return Err(DecodeError::Truncated {
@@ -29,6 +31,9 @@ impl<'buf> EncapsulatedInterfaceResponse<'buf> {
             });
         }
         let mei_type = MeiType::from_raw(data[0]).ok_or(DecodeError::UnknownMeiType(data[0]))?;
+        if mei_type == MeiType::ReadDeviceIdentification {
+            ReadDeviceIdentificationResponse::decode(data)?;
+        }
         Ok(Self {
             mei_type,
             data: &data[1..],
@@ -45,6 +50,7 @@ impl Encode for EncapsulatedInterfaceResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::EncapsulatedInterfaceTransport.code();
         buf[1] = self.mei_type.code();
         buf[2..2 + self.data.len()].copy_from_slice(self.data);

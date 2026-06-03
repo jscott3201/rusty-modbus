@@ -1,6 +1,6 @@
 //! Top-level PDU decode dispatchers.
 
-use rusty_modbus_types::FunctionCode;
+use rusty_modbus_types::{FunctionCode, MAX_PDU_SIZE};
 
 use crate::error::DecodeError;
 use crate::pdu::{PduRef, RequestPdu, ResponsePdu};
@@ -27,8 +27,15 @@ use crate::response::{
 ///
 /// # Errors
 ///
-/// Returns [`DecodeError::Truncated`] if the slice is empty.
+/// Returns [`DecodeError::PduTooLarge`] if `pdu` exceeds the Modbus 253-byte
+/// PDU ceiling. Returns [`DecodeError::Truncated`] if the slice is empty.
 pub fn decode_pdu_ref(pdu: &[u8]) -> Result<PduRef<'_>, DecodeError> {
+    if pdu.len() > MAX_PDU_SIZE {
+        return Err(DecodeError::PduTooLarge {
+            length: pdu.len(),
+            maximum: MAX_PDU_SIZE,
+        });
+    }
     if pdu.is_empty() {
         return Err(DecodeError::Truncated {
             expected: 1,
@@ -72,17 +79,29 @@ pub fn decode_request(pdu: &[u8]) -> Result<RequestPdu<'_>, DecodeError> {
         FunctionCode::WriteSingleRegister => {
             WriteSingleRegisterRequest::decode(data).map(RequestPdu::WriteSingleRegister)
         }
-        FunctionCode::ReadExceptionStatus => Ok(RequestPdu::ReadExceptionStatus),
+        FunctionCode::ReadExceptionStatus => {
+            DecodeError::check_exact_len(data, 0)?;
+            Ok(RequestPdu::ReadExceptionStatus)
+        }
         FunctionCode::Diagnostics => DiagnosticsRequest::decode(data).map(RequestPdu::Diagnostics),
-        FunctionCode::GetCommEventCounter => Ok(RequestPdu::GetCommEventCounter),
-        FunctionCode::GetCommEventLog => Ok(RequestPdu::GetCommEventLog),
+        FunctionCode::GetCommEventCounter => {
+            DecodeError::check_exact_len(data, 0)?;
+            Ok(RequestPdu::GetCommEventCounter)
+        }
+        FunctionCode::GetCommEventLog => {
+            DecodeError::check_exact_len(data, 0)?;
+            Ok(RequestPdu::GetCommEventLog)
+        }
         FunctionCode::WriteMultipleCoils => {
             WriteMultipleCoilsRequest::decode(data).map(RequestPdu::WriteMultipleCoils)
         }
         FunctionCode::WriteMultipleRegisters => {
             WriteMultipleRegistersRequest::decode(data).map(RequestPdu::WriteMultipleRegisters)
         }
-        FunctionCode::ReportServerId => Ok(RequestPdu::ReportServerId),
+        FunctionCode::ReportServerId => {
+            DecodeError::check_exact_len(data, 0)?;
+            Ok(RequestPdu::ReportServerId)
+        }
         FunctionCode::ReadFileRecord => {
             ReadFileRecordRequest::decode(data).map(RequestPdu::ReadFileRecord)
         }
@@ -121,10 +140,9 @@ pub fn decode_response(pdu: &[u8]) -> Result<ResponsePdu<'_>, DecodeError> {
         return ExceptionResponse::decode(fc, data).map(ResponsePdu::Exception);
     }
 
-    // Exception-flagged bytes handled above. from_raw returns Some for all
-    // non-exception bytes (known → named, unknown → Custom). The unwrap_or_else
-    // is a safety net for the impossible case where fc has the high bit set.
-    let fc_enum = FunctionCode::from_raw(fc).unwrap_or(FunctionCode::Custom(fc));
+    // Exception-flagged bytes handled above. from_raw returns named variants for
+    // public codes and Custom for nonzero vendor codes.
+    let fc_enum = FunctionCode::from_raw(fc).ok_or(DecodeError::UnknownFunctionCode(fc))?;
 
     match fc_enum {
         FunctionCode::ReadCoils => ReadCoilsResponse::decode(data).map(ResponsePdu::ReadCoils),

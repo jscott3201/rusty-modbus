@@ -5,6 +5,7 @@
 //! This codec validates the CRC-16 and extracts the PDU from a complete frame.
 
 use bytes::{BufMut, BytesMut};
+use rusty_modbus_types::{MAX_PDU_SIZE, MAX_RTU_ADU_SIZE};
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::crc::{crc16, verify_crc};
@@ -13,6 +14,7 @@ use crate::frame::{Frame, FrameHeader};
 
 /// Minimum RTU frame size: `unit_id`(1) + FC(1) + CRC(2).
 const MIN_RTU_FRAME: usize = 4;
+const MIN_PDU_LENGTH: usize = 1;
 
 /// RTU codec for serial Modbus framing.
 ///
@@ -29,6 +31,12 @@ impl Decoder for RtuCodec {
         // Need at least unit_id + FC + CRC_lo + CRC_hi.
         if src.len() < MIN_RTU_FRAME {
             return Ok(None);
+        }
+        if src.len() > MAX_RTU_ADU_SIZE {
+            return Err(FrameError::PduLengthOverflow {
+                length: src.len() - 3,
+                maximum: MAX_PDU_SIZE,
+            });
         }
 
         // For serial transport the entire frame is in the buffer (the transport
@@ -64,6 +72,7 @@ impl Encoder<Frame> for RtuCodec {
             FrameHeader::Rtu { unit_id } => unit_id,
             FrameHeader::Mbap(h) => h.unit_id,
         };
+        validate_outgoing_pdu(item.pdu.len())?;
 
         // Reserve space: unit_id(1) + PDU + CRC(2).
         dst.reserve(1 + item.pdu.len() + 2);
@@ -79,6 +88,22 @@ impl Encoder<Frame> for RtuCodec {
 
         Ok(())
     }
+}
+
+fn validate_outgoing_pdu(pdu_len: usize) -> Result<(), FrameError> {
+    if pdu_len < MIN_PDU_LENGTH {
+        return Err(FrameError::InvalidPduLength {
+            length: pdu_len,
+            minimum: MIN_PDU_LENGTH,
+        });
+    }
+    if pdu_len > MAX_PDU_SIZE {
+        return Err(FrameError::PduLengthOverflow {
+            length: pdu_len,
+            maximum: MAX_PDU_SIZE,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -144,5 +169,43 @@ mod tests {
         let decoded = codec.decode(&mut dst).unwrap().unwrap();
         assert_eq!(decoded.unit_id(), 0x01);
         assert_eq!(&decoded.pdu[..], &original_pdu[..]);
+    }
+
+    #[test]
+    fn encode_rejects_empty_pdu() {
+        let frame = Frame {
+            header: FrameHeader::Rtu { unit_id: 0x01 },
+            pdu: bytes::Bytes::new(),
+        };
+
+        let mut dst = BytesMut::new();
+        let mut codec = RtuCodec;
+
+        let err = codec.encode(frame, &mut dst).unwrap_err();
+        assert!(matches!(err, FrameError::InvalidPduLength { .. }));
+    }
+
+    #[test]
+    fn encode_rejects_oversized_pdu() {
+        let frame = Frame {
+            header: FrameHeader::Rtu { unit_id: 0x01 },
+            pdu: bytes::Bytes::from(vec![0x03; MAX_PDU_SIZE + 1]),
+        };
+
+        let mut dst = BytesMut::new();
+        let mut codec = RtuCodec;
+
+        let err = codec.encode(frame, &mut dst).unwrap_err();
+        assert!(matches!(err, FrameError::PduLengthOverflow { .. }));
+    }
+
+    #[test]
+    fn decode_rejects_oversized_frame_even_with_valid_crc() {
+        let raw = make_rtu_frame(0x01, &vec![0x03; MAX_PDU_SIZE + 1]);
+        let mut buf = BytesMut::from(&raw[..]);
+        let mut codec = RtuCodec;
+
+        let err = codec.decode(&mut buf).unwrap_err();
+        assert!(matches!(err, FrameError::PduLengthOverflow { .. }));
     }
 }

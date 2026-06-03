@@ -43,9 +43,103 @@ fn spec_6_14_response_decode() {
 }
 
 #[test]
+fn response_accepts_single_register_sub_response() {
+    let resp: &[u8] = &[0x14, 0x04, 0x03, 0x06, 0x12, 0x34];
+    match decode_response(resp).unwrap() {
+        rusty_modbus_codec::ResponsePdu::ReadFileRecord(r) => {
+            assert_eq!(r.byte_count, 0x04);
+            assert_eq!(r.data, &[0x03, 0x06, 0x12, 0x34]);
+        }
+        other => panic!("expected ReadFileRecord response, got {other:?}"),
+    }
+}
+
+#[test]
 fn truncated() {
     assert!(matches!(
         decode_request(&[0x14]),
         Err(rusty_modbus_codec::DecodeError::Truncated { .. })
     ));
+}
+
+#[test]
+fn request_byte_count_must_be_in_spec_range() {
+    assert!(matches!(
+        decode_request(&[0x14, 0x06, 0, 0, 0, 0, 0, 0]),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 6,
+            minimum: 7,
+            maximum: 245,
+        })
+    ));
+
+    let mut pdu = vec![0x14, 0xF6];
+    pdu.extend_from_slice(&[0; 246]);
+    assert!(matches!(
+        decode_request(&pdu),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 246,
+            minimum: 7,
+            maximum: 245,
+        })
+    ));
+}
+
+#[test]
+fn request_sub_requests_must_be_7_byte_groups() {
+    assert_eq!(
+        decode_request(&[0x14, 0x08, 0x06, 0, 1, 0, 0, 0, 1, 0]).unwrap_err(),
+        rusty_modbus_codec::DecodeError::InvalidFileRecordLength { length: 8 }
+    );
+}
+
+#[test]
+fn request_reference_type_must_be_6() {
+    assert_eq!(
+        decode_request(&[0x14, 0x07, 0x07, 0, 1, 0, 0, 0, 1]).unwrap_err(),
+        rusty_modbus_codec::DecodeError::InvalidReferenceType(0x07)
+    );
+}
+
+#[test]
+fn request_file_record_range_must_be_valid() {
+    assert_eq!(
+        decode_request(&[0x14, 0x07, 0x06, 0, 0, 0, 0, 0, 1]).unwrap_err(),
+        rusty_modbus_codec::DecodeError::FileRecordOutOfRange {
+            file_number: 0,
+            record_number: 0,
+            record_length: 1,
+        }
+    );
+}
+
+#[test]
+fn response_byte_count_must_be_in_spec_range() {
+    assert!(matches!(
+        decode_response(&[0x14, 0x03, 0, 0, 0]),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 3,
+            minimum: 4,
+            maximum: 250,
+        })
+    ));
+
+    let mut pdu = vec![0x14, 0xFB];
+    pdu.extend_from_slice(&[0; 251]);
+    assert!(matches!(
+        decode_response(&pdu),
+        Err(rusty_modbus_codec::DecodeError::ByteCountOutOfRange {
+            count: 251,
+            minimum: 4,
+            maximum: 250,
+        })
+    ));
+}
+
+#[test]
+fn response_sub_responses_must_have_reference_type_6() {
+    assert_eq!(
+        decode_response(&[0x14, 0x04, 0x03, 0x07, 0x12, 0x34]).unwrap_err(),
+        rusty_modbus_codec::DecodeError::InvalidReferenceType(0x07)
+    );
 }

@@ -21,10 +21,10 @@ pub fn make_store() -> Arc<InMemoryStore> {
 /// Fill store with test data: holding registers 0..99 and coils 0..999.
 pub fn populate_store(store: &InMemoryStore) {
     for i in 0u16..100 {
-        store.set_holding_register(i, 1000 + i);
+        store.set_holding_register(i, 1000 + i).unwrap();
     }
     for i in 0u16..1000 {
-        store.set_coil(i, i % 2 == 0);
+        store.set_coil(i, i % 2 == 0).unwrap();
     }
 }
 

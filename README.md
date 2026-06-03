@@ -1,6 +1,10 @@
 # Rusty Modbus
 
-A complete Modbus protocol stack written in Rust, covering TCP, RTU, and TLS transports with pipelined async client, pluggable server, TCP-RTU gateway, connection pooling, YAML-driven simulator, and CLI tool.
+A complete Modbus protocol stack written in Rust, with Python bindings for
+client and server workflows. The workspace covers TCP, RTU, RTU-over-TCP, TLS,
+pipelined async clients, pluggable servers, TCP-RTU gatewaying, connection
+pooling, YAML-driven simulation, Docker packaging, benchmarks, and a diagnostic
+CLI.
 
 [![CI](https://github.com/jscott3201/rusty-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/jscott3201/rusty-modbus/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -13,13 +17,14 @@ A complete Modbus protocol stack written in Rust, covering TCP, RTU, and TLS tra
 - **TCP-RTU gateway** — transparent protocol translation bridge
 - **Connection pooling** — two-pool architecture with health checks and backoff
 - **YAML simulator** — device profiles with scenario-driven register behavior
-- **CLI tool** — read/write/shell/discover commands with JSON output
-- **Spec conformance** — 537+ tests, validation order per V1.1b3 section 4.5
+- **CLI tool** — read/write/server/shell/dashboard/discover commands with JSON output
+- **Python bindings** — CPython 3.14/3.14t wheels with typed async/sync clients and server stores
+- **Spec conformance** — Rust conformance tests plus Python wheel, stub, and typing gates
 - **`no_std` foundation** — types and codec crates work without allocator
 - **Zero `unsafe`** — `#![forbid(unsafe_code)]` on all crates
-- **Zero clippy warnings**, CI on Linux/macOS/Windows
+- **Zero clippy warnings**, fast `dev` CI and broader release-gate CI
 
-## Quick Start
+## Rust Quick Start
 
 ```toml
 [dependencies]
@@ -53,10 +58,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+The `rusty-modbus` facade crate enables the `tcp` client feature by default.
+Enable `server`, `rtu`, `tls`, `pool`, `gateway`, or `full` when those modules
+are needed.
+
+## Python Quick Start
+
+The Python package is built from `crates/rusty-modbus-python` with PyO3 and
+maturin. It requires Python 3.14 or newer and is validated against both standard
+CPython 3.14 and free-threaded 3.14t.
+
+```bash
+scripts/ci-python.sh
+```
+
+That command builds a fresh wheel, installs it into an isolated uv environment,
+runs pytest, runs stubtest, and runs pyright type checks.
+
+```python
+import asyncio
+
+import rusty_modbus
+
+
+async def main() -> None:
+    client = await rusty_modbus.ModbusClient.connect("127.0.0.1:502")
+    try:
+        registers = await client.read_holding_registers(1, 0, 10)
+        print(registers)
+    finally:
+        await client.shutdown()
+
+
+asyncio.run(main())
+```
+
+For non-async scripts, use `rusty_modbus.SyncModbusClient`. For server tests or
+simulators, use `rusty_modbus.ModbusServer.start()` with either
+`rusty_modbus.InMemoryStore` or a Python object matching the `DataStore`
+protocols described in [docs/api.md](docs/api.md).
+
 ## CLI Tool
 
 ```bash
-cargo install rusty-modbus-cli
+# From a source checkout
+cargo run -p rusty-modbus-cli -- --help
+
+# After a tagged release, download the prebuilt modbus binary from GitHub Releases.
+modbus --help
 
 # Read holding registers
 modbus read -H 192.168.1.100 holding 0 10
@@ -70,8 +119,61 @@ modbus shell -H 192.168.1.100
 # Discover devices on a subnet
 modbus discover --range 192.168.1.0/24
 
+# Run an in-memory Modbus/TCP server
+modbus server --listen 0.0.0.0:5502 --holding 0=0x1234
+
 # JSON output (for scripting)
 modbus read -H 192.168.1.100 holding 0 10 --format json
+
+# Structured diagnostics stay on stderr; command output stays on stdout
+modbus --log-filter rusty_modbus_client=debug --log-format json \
+  read -H 192.168.1.100 holding 0 10 --format json
+
+# Write diagnostics to a file instead of stderr
+modbus --log-filter info --log-file modbus.log discover --range 192.168.1.0/24
+```
+
+## Docker
+
+The Docker image packages the `modbus` CLI. By default it runs an in-memory
+server on port 5502 as a non-root user; override the command to run client,
+shell, dashboard, or discovery modes.
+
+```bash
+# Build the Alpine runtime image
+scripts/docker-build.sh
+
+# Build the distroless runtime image
+RUSTY_MODBUS_DOCKER_TARGET=distroless \
+RUSTY_MODBUS_DOCKER_TAG=rusty-modbus:distroless \
+  scripts/docker-build.sh
+
+# Run the default server
+docker run --rm -p 5502:5502 rusty-modbus:local
+
+# Run client commands from the same image
+docker run --rm rusty-modbus:local \
+  --host host.docker.internal --port 5502 --unit-id 1 read hr 0 1
+
+# Run the interactive shell
+docker run --rm -it rusty-modbus:local \
+  --host host.docker.internal --port 5502 --unit-id 1 shell
+
+# Docker-only e2e smoke: server container + client containers
+scripts/docker-smoke.sh
+
+# Build and run the Alpine benchmark target
+scripts/docker-bench.sh --duration 5 --clients 1 --in-flight 8 --json
+
+# Build and run the distroless benchmark target
+RUSTY_MODBUS_DOCKER_TARGET=benchmark-distroless \
+  scripts/docker-bench.sh --duration 5 --clients 1 --in-flight 8 --json
+
+# Full local Docker check: Alpine smoke, distroless smoke, benchmark smoke
+scripts/docker-ci.sh
+
+# Comparable local + Docker benchmark matrix
+scripts/bench-suite.sh all
 ```
 
 ## Workspace Structure
@@ -89,9 +191,10 @@ crates/
   rusty-modbus-server/      Pluggable DataStore server
   rusty-modbus-gateway/     TCP <-> RTU bridge
   rusty-modbus-sim/         YAML simulator + device profiles
-  rusty-modbus-cli/         CLI binary (read/write/shell/discover)
+  rusty-modbus-cli/         CLI binary (read/write/server/shell/dashboard/discover)
   rusty-modbus/             Facade crate with feature flags
   rusty-modbus-conformance/ Spec compliance test suite
+  rusty-modbus-python/      PyO3 bindings, excluded from the Rust workspace
 benchmarks/                 Criterion benchmarks + stress-test binary
 ```
 
@@ -145,17 +248,34 @@ The serial-line diagnostics codes (0x07/0x08/0x0B/0x0C/0x11) are accepted over
 Modbus/TCP through `DataStore` methods with conformant defaults — override them
 for device-specific behavior.
 
+## API Documentation
+
+- [docs/api.md](docs/api.md) summarizes the current Rust and Python public API
+  surfaces, including feature flags, server stores, typing contracts, and the
+  release branch model.
+- Rust crates are documented with rustdoc and are configured for docs.rs with
+  all facade features enabled once the 0.1.0 crates are published.
+- Python typing is shipped through `py.typed` and `rusty_modbus.pyi`, with
+  `stubtest`, `pyright --verifytypes`, and a strict pyright public-contract test
+  in CI.
+
 ## Development
 
 ```bash
 # Build entire workspace
 cargo build --workspace
 
-# Run all tests (537+)
-cargo test --workspace
+# Run the workspace test gate with nextest + doctests
+scripts/test-local.sh
+
+# Run the Python binding wheel, pytest, stubtest, and pyright gate
+scripts/ci-python.sh
 
 # Lint (must be zero warnings)
 cargo clippy --workspace -- -D warnings
+
+# Install local hooks: fmt on commit, rust-analyzer + clippy on push
+bash scripts/install-hooks.sh
 
 # Check facade with all features
 cargo check -p rusty-modbus --features full --examples
@@ -163,11 +283,41 @@ cargo check -p rusty-modbus --features full --examples
 # License/advisory checks
 cargo deny check
 
-# Benchmarks
-cargo bench -p rusty-modbus-benchmarks --bench codec
-cargo bench -p rusty-modbus-benchmarks --bench tcp_latency
-cargo run -p rusty-modbus-benchmarks --bin stress-test -- --help
+# Fast benchmark smoke: codec microbenches + single-connection pipelined TCP
+scripts/bench-local.sh smoke
+
+# Focused benchmark runs
+scripts/bench-local.sh codec --quick --noplot
+scripts/bench-local.sh tcp-pipelined --quick --noplot
+scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --operation mixed --json
+
+# Docker benchmark target
+scripts/docker-bench.sh --duration 5 --clients 1 --in-flight 8 --json
+
+# Docker image validation
+scripts/docker-ci.sh
+
+# Comparable stress matrix: local release + Alpine Docker + distroless Docker
+scripts/bench-suite.sh all
+
+# Local-only / Docker-only matrices
+scripts/bench-suite.sh local
+scripts/bench-suite.sh docker
+
+# Full benchmark suite
+scripts/bench-local.sh all --quick --noplot
 ```
+
+See [benchmarks.md](benchmarks.md) for the current local stress-test baseline
+and follow-up benchmark targets.
+
+Release flow:
+
+1. Work lands on `dev` through ordinary PRs.
+2. Releases are cut by opening a `dev` -> `main` PR and passing `release.yml`.
+3. A `v0.1.0` tag on `main` triggers `publish.yml`, which publishes crates in
+   dependency order, publishes Python distributions to PyPI, and builds CLI
+   release binaries.
 
 Minimum Rust version: 1.95 (pinned in `rust-toolchain.toml`)
 

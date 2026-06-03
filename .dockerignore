@@ -1,0 +1,13 @@
+.git
+.github
+target
+crates/rusty-modbus-python/target
+criterion
+_*
+.venv
+__pycache__
+*.pyc
+*.pyo
+.DS_Store
+*.log
+bench-output

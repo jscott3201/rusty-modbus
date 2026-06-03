@@ -39,8 +39,17 @@ impl TransactionManager {
     /// Create a new transaction manager.
     pub fn new() -> Self {
         Self {
-            next_id: AtomicU16::new(1), // Start at 1; 0 is sometimes special.
+            next_id: AtomicU16::new(1), // Keep 0 reserved; some devices treat it specially.
             slots: std::array::from_fn(|_| Mutex::new(None)),
+        }
+    }
+
+    fn next_transaction_id(&self) -> TransactionId {
+        loop {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            if id != 0 {
+                return TransactionId(id);
+            }
         }
     }
 
@@ -65,13 +74,19 @@ impl TransactionManager {
         ),
         ClientError,
     > {
-        for _ in 0..MAX_SLOTS {
-            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let slot_idx = id as usize % MAX_SLOTS;
+        let mut seen_slots = [false; MAX_SLOTS];
+        let mut seen_count = 0;
+
+        while seen_count < MAX_SLOTS {
+            let txn_id = self.next_transaction_id();
+            let slot_idx = txn_id.0 as usize % MAX_SLOTS;
+            if !seen_slots[slot_idx] {
+                seen_slots[slot_idx] = true;
+                seen_count += 1;
+            }
 
             let mut slot = self.slots[slot_idx].lock();
             if slot.is_none() {
-                let txn_id = TransactionId(id);
                 let (tx, rx) = oneshot::channel();
 
                 *slot = Some(PendingTransaction {
@@ -175,5 +190,62 @@ impl TransactionManager {
     #[must_use]
     pub fn pending_count(&self) -> usize {
         self.slots.iter().filter(|s| s.lock().is_some()).count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn register(manager: &TransactionManager) -> TransactionId {
+        let (txn_id, _rx) = manager
+            .register(FunctionCode::ReadHoldingRegisters)
+            .expect("transaction slot should be available");
+        txn_id
+    }
+
+    #[test]
+    fn transaction_ids_skip_zero_after_wraparound() {
+        let manager = TransactionManager::new();
+        manager.next_id.store(u16::MAX, Ordering::Relaxed);
+
+        assert_eq!(register(&manager), TransactionId(u16::MAX));
+        assert_eq!(register(&manager), TransactionId(1));
+    }
+
+    #[test]
+    fn register_fills_ring_across_wrap_without_allocating_zero() {
+        let manager = TransactionManager::new();
+        manager.next_id.store(u16::MAX - 1, Ordering::Relaxed);
+
+        let mut ids = Vec::with_capacity(MAX_SLOTS);
+        for _ in 0..MAX_SLOTS {
+            ids.push(register(&manager).0);
+        }
+
+        assert!(!ids.contains(&0));
+        assert_eq!(manager.pending_count(), MAX_SLOTS);
+        assert!(
+            manager
+                .register(FunctionCode::ReadHoldingRegisters)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn register_does_not_false_conflict_when_wrap_duplicates_occupied_slots() {
+        let manager = TransactionManager::new();
+
+        for _ in 1..MAX_SLOTS {
+            register(&manager);
+        }
+        assert_eq!(manager.pending_count(), MAX_SLOTS - 1);
+
+        manager.next_id.store(u16::MAX - 1, Ordering::Relaxed);
+
+        let txn_id = register(&manager);
+        assert_eq!(txn_id.0 as usize % MAX_SLOTS, 0);
+        assert_ne!(txn_id, TransactionId(0));
+        assert_eq!(manager.pending_count(), MAX_SLOTS);
     }
 }

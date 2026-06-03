@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --workspace              # Build everything
-cargo test --workspace               # Run all 537+ tests
+scripts/test-local.sh                # Run workspace tests via nextest + doctests
 cargo test -p rusty-modbus-codec     # Test a single crate
 cargo test -p rusty-modbus-conformance -- spec_fc01  # Run specific conformance tests
 cargo clippy --workspace --all-targets  # Lint (must be zero warnings; CI uses -Dwarnings)
@@ -17,7 +17,7 @@ cargo audit                          # Advisory / vulnerability scan
 cargo check -p rusty-modbus --features full  # Verify facade with all features
 ```
 
-Install local git hooks once per clone (pre-commit fmt, pre-push clippy):
+Install local git hooks once per clone (pre-commit fmt, pre-push rust-analyzer + clippy):
 ```bash
 bash scripts/install-hooks.sh
 ```
@@ -99,7 +99,7 @@ Four GitHub Actions workflows model a `feature → dev → main` flow plus tag r
 - **`nightly.yml`** (06:30 UTC daily + push to `main`): clippy + tests on macOS, and a cargo-audit advisory-db drift scan against the pinned `Cargo.lock`.
 - **`publish.yml`** (`v*` tags): validate tag matches version → publish crates sequentially → build CLI binaries for 5 targets → GitHub release.
 
-All CI commands use `--locked` to enforce `Cargo.lock`. The toolchain is pinned to 1.95.0 in both `rust-toolchain.toml` and each workflow. `cargo-deny` enforces supply-chain policy (bans/licenses/sources, incl. a rustls-only TLS posture); `cargo-audit` enforces advisories. Local hooks (`scripts/install-hooks.sh`) mirror the cheap gate.
+All CI commands use `--locked` to enforce `Cargo.lock`. The toolchain is pinned to 1.95.0 in both `rust-toolchain.toml` and each workflow. `cargo-deny` enforces supply-chain policy (bans/licenses/sources, incl. a rustls-only TLS posture); `cargo-audit` enforces advisories. Local hooks (`scripts/install-hooks.sh`) mirror the cheap gate. Use `scripts/test-local.sh` for the local nextest + doctest test gate and `scripts/ci-pr.sh` for the full PR mirror.
 
 Crate publish order matters due to inter-crate dependencies: types → codec → frame → tcp → rtu → tls → pool → client → server → gateway → sim → facade.
 

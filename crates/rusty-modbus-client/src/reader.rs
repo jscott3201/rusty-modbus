@@ -10,6 +10,7 @@ use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_frame::frame::FrameHeader;
 use rusty_modbus_tcp::transport::TransportStream;
 use tokio::sync::watch;
+use tracing::{debug, trace, warn};
 
 use crate::error::ClientError;
 use crate::transaction::TransactionManager;
@@ -34,12 +35,18 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                     match result {
                         Ok(frame) => {
                             let header = frame.header;
-                            let result = OwnedResponsePdu::from_pdu(frame.pdu)
-                                .map_err(ClientError::Codec);
+                            let pdu_len = frame.pdu.len();
+                            trace!(pdu_len, "received Modbus response frame");
+                            let result = OwnedResponsePdu::from_pdu(frame.pdu).map_err(|err| {
+                                warn!(error = %err, pdu_len, "failed to decode Modbus response PDU");
+                                ClientError::Codec(err)
+                            });
                             match header {
                                 FrameHeader::Mbap(h) => {
+                                    let txn_id = h.transaction_id.get();
+                                    trace!(txn_id, pdu_len, "matching Modbus/TCP response to transaction");
                                     txn_mgr.complete(
-                                        TransactionId(h.transaction_id.get()),
+                                        TransactionId(txn_id),
                                         result,
                                     );
                                 }
@@ -48,6 +55,7 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                                     // client is single-in-flight for RTU (see
                                     // ModbusClient::from_rtu_transport), so match
                                     // the response to the one outstanding request.
+                                    trace!(pdu_len, "matching RTU response to oldest transaction");
                                     txn_mgr.complete_oldest(result);
                                 }
                             }
@@ -69,6 +77,7 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                             // keepalive-driven error arrives.
                         }
                         Err(rusty_modbus_tcp::TransportError::Disconnected) => {
+                            debug!("Modbus reader observed transport disconnect");
                             connected.store(false, Ordering::Relaxed);
                             txn_mgr.cancel_all(|| ClientError::Transport(
                                 rusty_modbus_tcp::TransportError::Disconnected,
@@ -76,6 +85,7 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                             break;
                         }
                         Err(e) => {
+                            warn!(error = %e, "Modbus reader stopped after transport error");
                             connected.store(false, Ordering::Relaxed);
                             // Preserve the actual error description for all
                             // pending callers instead of fabricating a generic Timeout.
@@ -92,6 +102,7 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                 }
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
+                        debug!("Modbus reader received shutdown signal");
                         break;
                     }
                 }

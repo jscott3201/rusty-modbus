@@ -2,7 +2,7 @@
 
 use crate::error::{DecodeError, EncodeError};
 use crate::request::Encode;
-use rusty_modbus_types::{Address, FunctionCode, Quantity};
+use rusty_modbus_types::{Address, FunctionCode, MAX_WRITE_REGISTERS, Quantity};
 
 /// Response to a Write Single Register request (FC 0x06).
 ///
@@ -21,13 +21,9 @@ impl WriteSingleRegisterResponse {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
+    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let value = u16::from_be_bytes([data[2], data[3]]);
         Ok(Self { address, value })
@@ -43,6 +39,7 @@ impl Encode for WriteSingleRegisterResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteSingleRegister.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -73,13 +70,9 @@ impl WriteMultipleRegistersResponse {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
+    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let quantity = Quantity(u16::from_be_bytes([data[2], data[3]]));
         Ok(Self { address, quantity })
@@ -95,6 +88,8 @@ impl Encode for WriteMultipleRegistersResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, MAX_WRITE_REGISTERS)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteMultipleRegisters.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -129,13 +124,9 @@ impl MaskWriteRegisterResponse {
     /// # Errors
     ///
     /// Returns `DecodeError::Truncated` if `data` is too short.
+    /// Returns `DecodeError::LengthMismatch` if `data` has extra bytes.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 6 {
-            return Err(DecodeError::Truncated {
-                expected: 6,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 6)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let and_mask = u16::from_be_bytes([data[2], data[3]]);
         let or_mask = u16::from_be_bytes([data[4], data[5]]);
@@ -156,6 +147,7 @@ impl Encode for MaskWriteRegisterResponse {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::MaskWriteRegister.code();
         let addr = self.address.0.to_be_bytes();
         buf[1] = addr[0];
@@ -252,6 +244,8 @@ impl Encode for ReadWriteMultipleRegistersResponse<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_byte_count(usize::from(self.byte_count), self.register_data.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadWriteMultipleRegisters.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.register_data);

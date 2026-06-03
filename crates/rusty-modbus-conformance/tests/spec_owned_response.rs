@@ -4,8 +4,9 @@
 //! PDUs to the right owned types with correct field values.
 
 use bytes::Bytes;
+use rusty_modbus_codec::DecodeError;
 use rusty_modbus_frame::OwnedResponsePdu;
-use rusty_modbus_types::{ExceptionCode, FunctionCode};
+use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, FunctionCode};
 
 // ── FC 01 Read Coils ───────────────────────────────────────────────
 
@@ -110,6 +111,38 @@ fn owned_fc07_read_exception_status() {
     }
 }
 
+// ── FC 08 Diagnostics ─────────────────────────────────────────────
+
+#[test]
+fn owned_fc08_diagnostics() {
+    let pdu = Bytes::from_static(&[0x08, 0x00, 0x00, 0xA5, 0x37]);
+    match OwnedResponsePdu::from_pdu(pdu).unwrap() {
+        OwnedResponsePdu::Diagnostics(r) => {
+            assert_eq!(r.sub_function, DiagnosticSubFunction::ReturnQueryData);
+            assert_eq!(r.data, Bytes::from_static(&[0xA5, 0x37]));
+        }
+        other => panic!("expected Diagnostics, got {other:?}"),
+    }
+}
+
+#[test]
+fn owned_fc08_odd_data_length_errors() {
+    let pdu = Bytes::from_static(&[0x08, 0x00, 0x00, 0xA5]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::InvalidDiagnosticDataLength { length: 1 }
+    );
+}
+
+#[test]
+fn owned_fc08_unknown_subfunction_errors() {
+    let pdu = Bytes::from_static(&[0x08, 0x00, 0x05, 0x00, 0x00]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::UnknownDiagnosticSubFunction(0x0005)
+    );
+}
+
 // ── FC 0B Get Comm Event Counter ──────────────────────────────────
 
 #[test]
@@ -122,6 +155,35 @@ fn owned_fc0b_get_comm_event_counter() {
         }
         other => panic!("expected GetCommEventCounter, got {other:?}"),
     }
+}
+
+// ── FC 0C Get Comm Event Log ─────────────────────────────────────
+
+#[test]
+fn owned_fc0c_get_comm_event_log() {
+    let pdu = Bytes::from_static(&[0x0C, 0x08, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x20, 0x00]);
+    match OwnedResponsePdu::from_pdu(pdu).unwrap() {
+        OwnedResponsePdu::GetCommEventLog(r) => {
+            assert_eq!(r.byte_count, 0x08);
+            assert_eq!(r.status, 0x0000);
+            assert_eq!(r.event_count, 0x0108);
+            assert_eq!(r.message_count, 0x0121);
+            assert_eq!(r.events, Bytes::from_static(&[0x20, 0x00]));
+        }
+        other => panic!("expected GetCommEventLog, got {other:?}"),
+    }
+}
+
+#[test]
+fn owned_fc0c_rejects_byte_count_under_fixed_fields() {
+    let pdu = Bytes::from_static(&[0x0C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::ByteCountMismatch {
+            declared: 0,
+            actual: 6,
+        }
+    );
 }
 
 // ── FC 0F Write Multiple Coils ────────────────────────────────────
@@ -181,11 +243,54 @@ fn owned_fc18_read_fifo_queue() {
     }
 }
 
+#[test]
+fn owned_fc18_rejects_fifo_count_data_mismatch() {
+    let pdu = Bytes::from_static(&[0x18, 0x00, 0x02, 0x00, 0x01]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::ByteCountMismatch {
+            declared: 2,
+            actual: 0,
+        }
+    );
+}
+
+#[test]
+fn owned_fc18_rejects_fifo_count_out_of_range() {
+    let mut pdu = vec![0x18, 0x00, 0x42, 0x00, 0x20];
+    pdu.extend([0; 64]);
+
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(Bytes::from(pdu)).unwrap_err(),
+        DecodeError::QuantityOutOfRange { quantity: 32 }
+    );
+}
+
+// ── FC 14/15 File Record ─────────────────────────────────────────
+
+#[test]
+fn owned_fc14_rejects_invalid_reference_type() {
+    let pdu = Bytes::from_static(&[0x14, 0x04, 0x03, 0x07, 0x12, 0x34]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::InvalidReferenceType(0x07)
+    );
+}
+
+#[test]
+fn owned_fc15_rejects_invalid_reference_type() {
+    let pdu = Bytes::from_static(&[0x15, 0x09, 0x07, 0, 1, 0, 0, 0, 1, 0x12, 0x34]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::InvalidReferenceType(0x07)
+    );
+}
+
 // ── FC 2B Encapsulated Interface ──────────────────────────────────
 
 #[test]
 fn owned_fc2b_encapsulated_interface() {
-    let pdu = Bytes::from_static(&[0x2B, 0x0E, 0x01, 0x00, 0x00]);
+    let pdu = Bytes::from_static(&[0x2B, 0x0E, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, b'A']);
     match OwnedResponsePdu::from_pdu(pdu).unwrap() {
         OwnedResponsePdu::EncapsulatedInterface(r) => {
             assert_eq!(
@@ -195,6 +300,15 @@ fn owned_fc2b_encapsulated_interface() {
         }
         other => panic!("expected EncapsulatedInterface, got {other:?}"),
     }
+}
+
+#[test]
+fn owned_fc2b_rejects_malformed_device_id_payload() {
+    let pdu = Bytes::from_static(&[0x2B, 0x0E, 0x01, 0x04, 0x00, 0x00, 0x00]);
+    assert_eq!(
+        OwnedResponsePdu::from_pdu(pdu).unwrap_err(),
+        DecodeError::InvalidDeviceIdConformityLevel(0x04)
+    );
 }
 
 // ── Exception Response ────────────────────────────────────────────

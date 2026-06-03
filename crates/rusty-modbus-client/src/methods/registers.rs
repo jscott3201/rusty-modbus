@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use rusty_modbus_codec::request::{
-    Encode, MaskWriteRegisterRequest, ReadHoldingRegistersRequest, ReadInputRegistersRequest,
+    MaskWriteRegisterRequest, ReadHoldingRegistersRequest, ReadInputRegistersRequest,
     ReadWriteMultipleRegistersRequest, WriteMultipleRegistersRequest, WriteSingleRegisterRequest,
 };
 use rusty_modbus_frame::OwnedResponsePdu;
@@ -12,6 +12,10 @@ use rusty_modbus_tcp::transport::TransportSink;
 
 use crate::client::ModbusClient;
 use crate::error::ClientError;
+use crate::methods::{
+    MAX_READ_WRITE_MULTIPLE_WRITE_REGISTERS, MAX_WRITE_MULTIPLE_REGISTERS, checked_byte_count_len,
+    checked_quantity_len, encode_request,
+};
 
 impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read holding registers (FC 0x03).
@@ -34,12 +38,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             quantity: Quantity(quantity),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 5,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(unit_id, FunctionCode::ReadHoldingRegisters, &buf[..len])
@@ -83,12 +82,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             quantity: Quantity(quantity),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 5,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(unit_id, FunctionCode::ReadHoldingRegisters, &buf[..len])
@@ -132,12 +126,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             quantity: Quantity(quantity),
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 5,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(unit_id, FunctionCode::ReadInputRegisters, &buf[..len])
@@ -177,12 +166,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             value,
         };
         let mut buf = [0u8; 5];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 5,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         if unit_id.is_broadcast() {
             return self.send_broadcast(&buf[..len]).await;
@@ -193,7 +177,10 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::WriteSingleRegister(_) => Ok(()),
+            OwnedResponsePdu::WriteSingleRegister(resp) => {
+                expect_echo("address", address, resp.address.0)?;
+                expect_echo("value", value, resp.value)
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -212,7 +199,8 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         address: u16,
         values: &[u16],
     ) -> Result<(), ClientError> {
-        let byte_count = u8::try_from(values.len() * 2).unwrap_or(u8::MAX);
+        let quantity = checked_quantity_len(values.len(), MAX_WRITE_MULTIPLE_REGISTERS)?;
+        let byte_count = checked_byte_count_len(values.len() * 2)?;
         let mut value_bytes = vec![0u8; values.len() * 2];
         for (i, &v) in values.iter().enumerate() {
             value_bytes[i * 2..i * 2 + 2].copy_from_slice(&v.to_be_bytes());
@@ -220,18 +208,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         let req = WriteMultipleRegistersRequest {
             address: Address(address),
-            quantity: Quantity(u16::try_from(values.len()).unwrap_or(u16::MAX)),
+            quantity: Quantity(quantity),
             byte_count,
             register_values: &value_bytes,
         };
 
         let mut buf = [0u8; 256];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         if unit_id.is_broadcast() {
             return self.send_broadcast(&buf[..len]).await;
@@ -242,7 +225,10 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::WriteMultipleRegisters(_) => Ok(()),
+            OwnedResponsePdu::WriteMultipleRegisters(resp) => {
+                expect_echo("address", address, resp.address.0)?;
+                expect_echo("quantity", quantity, resp.quantity.0)
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -268,12 +254,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             or_mask,
         };
         let mut buf = [0u8; 7];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 7,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         if unit_id.is_broadcast() {
             return self.send_broadcast(&buf[..len]).await;
@@ -284,7 +265,11 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .await?;
 
         match response {
-            OwnedResponsePdu::MaskWriteRegister(_) => Ok(()),
+            OwnedResponsePdu::MaskWriteRegister(resp) => {
+                expect_echo("address", address, resp.address.0)?;
+                expect_echo("and_mask", and_mask, resp.and_mask)?;
+                expect_echo("or_mask", or_mask, resp.or_mask)
+            }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
@@ -311,7 +296,9 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             return Err(ClientError::BroadcastReadNotAllowed);
         }
 
-        let write_byte_count = u8::try_from(write_values.len() * 2).unwrap_or(u8::MAX);
+        let write_quantity =
+            checked_quantity_len(write_values.len(), MAX_READ_WRITE_MULTIPLE_WRITE_REGISTERS)?;
+        let write_byte_count = checked_byte_count_len(write_values.len() * 2)?;
         let mut value_bytes = vec![0u8; write_values.len() * 2];
         for (i, &v) in write_values.iter().enumerate() {
             value_bytes[i * 2..i * 2 + 2].copy_from_slice(&v.to_be_bytes());
@@ -321,18 +308,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             read_address: Address(read_address),
             read_quantity: Quantity(read_quantity),
             write_address: Address(write_address),
-            write_quantity: Quantity(u16::try_from(write_values.len()).unwrap_or(u16::MAX)),
+            write_quantity: Quantity(write_quantity),
             write_byte_count,
             write_register_values: &value_bytes,
         };
 
         let mut buf = [0u8; 256];
-        let len = req.encode_into(&mut buf).map_err(|_| {
-            ClientError::Codec(rusty_modbus_codec::DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            })
-        })?;
+        let len = encode_request(&req, &mut buf)?;
 
         let response = self
             .send_with_retry(
@@ -358,5 +340,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
         }
+    }
+}
+
+fn expect_echo(field: &'static str, expected: u16, got: u16) -> Result<(), ClientError> {
+    if expected == got {
+        Ok(())
+    } else {
+        Err(ClientError::UnexpectedResponseEcho {
+            field,
+            expected,
+            got,
+        })
     }
 }

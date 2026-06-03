@@ -22,14 +22,10 @@ impl WriteSingleCoilRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 4 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     /// Returns [`DecodeError::InvalidCoilValue`] if the value is not 0xFF00 or 0x0000.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let raw_value = u16::from_be_bytes([data[2], data[3]]);
         let value =
@@ -47,6 +43,7 @@ impl Encode for WriteSingleCoilRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteSingleCoil.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.value.to_wire().to_be_bytes());
@@ -134,6 +131,11 @@ impl Encode for WriteMultipleCoilsRequest<'_> {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        let expected_bytes = usize::from(self.quantity.0.div_ceil(8));
+        EncodeError::check_byte_count(usize::from(self.byte_count), expected_bytes)?;
+        EncodeError::check_byte_count(expected_bytes, self.coil_values.len())?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::WriteMultipleCoils.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());

@@ -10,9 +10,9 @@
 
 use rusty_modbus_server::handler::process_request;
 use rusty_modbus_server::{
-    CommEventLog, DataStore, DeviceIdentification, InMemoryStore, StoreConfig,
+    CommEventLog, CommEventLogMeta, DataStore, DeviceIdentification, InMemoryStore, StoreConfig,
 };
-use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, UnitId};
+use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, MAX_PDU_SIZE, UnitId};
 
 const UNIT: UnitId = UnitId(1);
 
@@ -116,10 +116,10 @@ async fn fifo_broadcast_produces_no_response() {
 async fn file_read_two_groups_matches_spec_example() {
     // Spec §6.14 p.33: read file 4 record 1 (len 2) and file 3 record 9 (len 2).
     let s = store();
-    s.set_file_record(4, 1, 0x0DFE);
-    s.set_file_record(4, 2, 0x0020);
-    s.set_file_record(3, 9, 0x33CD);
-    s.set_file_record(3, 10, 0x0040);
+    s.set_file_record(4, 1, 0x0DFE).unwrap();
+    s.set_file_record(4, 2, 0x0020).unwrap();
+    s.set_file_record(3, 9, 0x33CD).unwrap();
+    s.set_file_record(3, 10, 0x0040).unwrap();
     let req = [
         0x14, 0x0E, // FC, byte count
         0x06, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, // group 1
@@ -138,9 +138,20 @@ async fn file_read_two_groups_matches_spec_example() {
 }
 
 #[tokio::test]
+async fn file_read_single_register_uses_minimal_valid_response() {
+    let s = store();
+    s.set_file_record(4, 1, 0x1234).unwrap();
+    let req = [0x14, 0x07, 0x06, 0x00, 0x04, 0x00, 0x01, 0x00, 0x01];
+    assert_eq!(
+        respond(&s, &req).await,
+        vec![0x14, 0x04, 0x03, 0x06, 0x12, 0x34]
+    );
+}
+
+#[tokio::test]
 async fn file_read_bad_reference_type_is_illegal_data_address() {
     let s = store();
-    s.set_file_record(4, 1, 0x1111);
+    s.set_file_record(4, 1, 0x1111).unwrap();
     // reference type 0x07 instead of the required 0x06
     let req = [0x14, 0x07, 0x07, 0x00, 0x04, 0x00, 0x01, 0x00, 0x01];
     assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
@@ -157,9 +168,30 @@ async fn file_read_bad_byte_count_is_illegal_data_value() {
 #[tokio::test]
 async fn file_read_out_of_range_record_is_illegal_data_address() {
     let s = store();
-    s.set_file_record(4, 1, 0x1111); // file 4 holds records 0..=1
+    s.set_file_record(4, 1, 0x1111).unwrap(); // file 4 holds records 0..=1
     // start record 5, length 2 — beyond the file
     let req = [0x14, 0x07, 0x06, 0x00, 0x04, 0x00, 0x05, 0x00, 0x02];
+    assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
+}
+
+#[tokio::test]
+async fn file_read_file_zero_is_illegal_data_address() {
+    let s = store();
+    let req = [0x14, 0x07, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+    assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
+}
+
+#[tokio::test]
+async fn file_read_record_above_spec_max_is_illegal_data_address() {
+    let s = store();
+    let req = [0x14, 0x07, 0x06, 0x00, 0x01, 0x27, 0x10, 0x00, 0x01];
+    assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
+}
+
+#[tokio::test]
+async fn file_read_record_range_crossing_spec_max_is_illegal_data_address() {
+    let s = store();
+    let req = [0x14, 0x07, 0x06, 0x00, 0x01, 0x27, 0x0F, 0x00, 0x02];
     assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
 }
 
@@ -197,6 +229,87 @@ async fn file_write_broadcast_produces_no_response() {
         0x06, 0xAF, 0x04, 0xBE, 0x10, 0x0D,
     ];
     assert!(respond_opt(&s, &req, UnitId(0)).await.is_none());
+}
+
+#[tokio::test]
+async fn file_write_max_single_register_groups_echoes_and_persists() {
+    // FC15 request data is capped at 0xFB bytes; with a one-register group
+    // taking 9 bytes, the largest valid group count is 27.
+    let s = store();
+    let mut req = vec![0x15, 0xF3];
+    let mut values = Vec::new();
+    for record in 0..27u16 {
+        let value = 0x4000 + record;
+        values.push(value);
+        req.push(0x06);
+        req.extend_from_slice(&1u16.to_be_bytes());
+        req.extend_from_slice(&record.to_be_bytes());
+        req.extend_from_slice(&1u16.to_be_bytes());
+        req.extend_from_slice(&value.to_be_bytes());
+    }
+
+    assert_eq!(respond(&s, &req).await, req);
+
+    let read = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1B];
+    let mut expected = vec![0x14, 0x38, 0x37, 0x06];
+    for value in values {
+        expected.extend_from_slice(&value.to_be_bytes());
+    }
+    assert_eq!(respond(&s, &read).await, expected);
+}
+
+#[tokio::test]
+async fn file_write_invalid_later_group_does_not_commit_earlier_group() {
+    let s = store();
+    s.set_file_record(1, 0, 0xAAAA).unwrap();
+    let req = [
+        0x15, 0x12, //
+        0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x12, 0x34, //
+        0x07, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x56, 0x78,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
+
+    let read = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01];
+    assert_eq!(
+        respond(&s, &read).await,
+        vec![0x14, 0x04, 0x03, 0x06, 0xAA, 0xAA]
+    );
+}
+
+#[tokio::test]
+async fn file_write_file_zero_is_illegal_data_address() {
+    let s = store();
+    let req = [
+        0x15, 0x09, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x12, 0x34,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
+}
+
+#[tokio::test]
+async fn file_write_record_above_spec_max_is_illegal_data_address() {
+    let s = store();
+    let req = [
+        0x15, 0x09, 0x06, 0x00, 0x01, 0x27, 0x10, 0x00, 0x01, 0x12, 0x34,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
+}
+
+#[tokio::test]
+async fn file_write_record_range_crossing_spec_max_is_illegal_data_address() {
+    let s = store();
+    let req = [
+        0x15, 0x0B, 0x06, 0x00, 0x01, 0x27, 0x0F, 0x00, 0x02, 0x12, 0x34, 0x56, 0x78,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
+}
+
+#[tokio::test]
+async fn file_write_zero_record_length_is_illegal_data_address() {
+    let s = store();
+    let req = [
+        0x15, 0x09, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x12, 0x34,
+    ];
+    assert_eq!(respond(&s, &req).await, vec![0x95, 0x02]);
 }
 
 // ── Diagnostics family (FC 0x07, 0x08, 0x0B, 0x0C, 0x11) ───────────
@@ -369,6 +482,59 @@ impl DataStore for DiagCapableStore {
     }
 }
 
+/// Returns a configured number of communication event bytes.
+struct SizedEventLogStore {
+    len: usize,
+}
+impl DataStore for SizedEventLogStore {
+    stub_core_tables!();
+
+    async fn get_comm_event_log(&self) -> Result<CommEventLog, ExceptionCode> {
+        Ok(CommEventLog {
+            status: 0x0000,
+            event_count: 0x0001,
+            message_count: 0x0002,
+            events: vec![0x5A; self.len],
+        })
+    }
+}
+
+/// Appends event-log bytes directly into the response buffer.
+struct AppendEventLogStore {
+    len: usize,
+}
+impl DataStore for AppendEventLogStore {
+    stub_core_tables!();
+
+    async fn append_comm_event_log(
+        &self,
+        out: &mut Vec<u8>,
+    ) -> Result<CommEventLogMeta, ExceptionCode> {
+        out.extend(std::iter::repeat_n(0x5A, self.len));
+        Ok(CommEventLogMeta {
+            status: 0x0000,
+            event_count: 0x0108,
+            message_count: 0x0121,
+        })
+    }
+}
+
+/// Returns a diagnostic payload of a configured length, regardless of request data.
+struct SizedDiagnosticStore {
+    len: usize,
+}
+impl DataStore for SizedDiagnosticStore {
+    stub_core_tables!();
+
+    async fn diagnostic(
+        &self,
+        _: DiagnosticSubFunction,
+        _: &[u8],
+    ) -> Result<Option<Vec<u8>>, ExceptionCode> {
+        Ok(Some(vec![0x5A; self.len]))
+    }
+}
+
 /// A misbehaving store that claims to have written more registers than the
 /// caller's buffer holds — the handler must not panic.
 struct LyingFileStore;
@@ -435,7 +601,7 @@ async fn fifo_boundary_31_values_payload_matches() {
 async fn file_read_accumulated_over_pdu_cap_is_illegal_data_value() {
     let s = store();
     for r in 0..4 {
-        s.set_file_record(1, r, 0x1111);
+        s.set_file_record(1, r, 0x1111).unwrap();
     }
     // 30 sub-requests × 4 registers each → ~10 response bytes apiece, past the cap.
     let mut req = vec![0x14, 30 * 7];
@@ -448,7 +614,7 @@ async fn file_read_accumulated_over_pdu_cap_is_illegal_data_value() {
 #[tokio::test]
 async fn file_read_length_over_scratch_is_illegal_data_address() {
     let s = store();
-    s.set_file_record(1, 199, 0x2222); // file 1 spans records 0..=199
+    s.set_file_record(1, 199, 0x2222).unwrap(); // file 1 spans records 0..=199
     // length 200 (0xC8) exceeds the handler's 122-register scratch buffer
     let req = [0x14, 0x07, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0xC8];
     assert_eq!(respond(&s, &req).await, vec![0x94, 0x02]);
@@ -465,8 +631,8 @@ async fn file_read_lying_store_count_is_server_device_failure() {
 #[tokio::test]
 async fn file_write_grows_existing_file_preserving_records() {
     let s = store();
-    s.set_file_record(1, 0, 0xAAAA);
-    s.set_file_record(1, 1, 0xBBBB);
+    s.set_file_record(1, 0, 0xAAAA).unwrap();
+    s.set_file_record(1, 1, 0xBBBB).unwrap();
     // write records 5..=6, leaving a 2..4 gap
     let write = [
         0x15, 0x0B, 0x06, 0x00, 0x01, 0x00, 0x05, 0x00, 0x02, 0xCC, 0xCC, 0xDD, 0xDD,
@@ -496,6 +662,40 @@ async fn fc08_return_query_data_empty_payload() {
 }
 
 #[tokio::test]
+async fn fc08_odd_request_payload_is_illegal_data_value() {
+    let s = store();
+    assert_eq!(
+        respond(&s, &[0x08, 0x00, 0x00, 0x12]).await,
+        vec![0x88, 0x03]
+    );
+}
+
+#[tokio::test]
+async fn fc08_diagnostic_response_payload_at_pdu_cap_is_ok() {
+    let resp = respond(&SizedDiagnosticStore { len: 250 }, &[0x08, 0x00, 0x00]).await;
+
+    assert_eq!(resp.len(), MAX_PDU_SIZE);
+    assert_eq!(&resp[..3], &[0x08, 0x00, 0x00]);
+    assert!(resp[3..].iter().all(|&b| b == 0x5A));
+}
+
+#[tokio::test]
+async fn fc08_odd_response_payload_is_server_device_failure() {
+    assert_eq!(
+        respond(&SizedDiagnosticStore { len: 249 }, &[0x08, 0x00, 0x00]).await,
+        vec![0x88, 0x04]
+    );
+}
+
+#[tokio::test]
+async fn fc08_diagnostic_response_payload_over_pdu_cap_is_server_device_failure() {
+    assert_eq!(
+        respond(&SizedDiagnosticStore { len: 251 }, &[0x08, 0x00, 0x00]).await,
+        vec![0x88, 0x04]
+    );
+}
+
+#[tokio::test]
 async fn fc08_broadcast_produces_no_response() {
     let s = store();
     assert!(
@@ -520,6 +720,63 @@ async fn fc0c_get_comm_event_log_matches_spec_example() {
         respond(&DiagCapableStore, &[0x0C]).await,
         vec![0x0C, 0x08, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x20, 0x00]
     );
+}
+
+#[tokio::test]
+async fn fc0c_event_log_boundary_64_events_ok() {
+    let resp = respond(&SizedEventLogStore { len: 64 }, &[0x0C]).await;
+
+    assert_eq!(resp.len(), 1 + 1 + 6 + 64);
+    assert_eq!(resp[0], 0x0C);
+    assert_eq!(resp[1], 70); // byte_count = status/event/message fields + events
+    assert!(resp[8..].iter().all(|&b| b == 0x5A));
+}
+
+#[tokio::test]
+async fn fc0c_direct_event_log_append_matches_spec_example() {
+    let resp = respond(&AppendEventLogStore { len: 2 }, &[0x0C]).await;
+
+    assert_eq!(
+        resp,
+        vec![0x0C, 0x08, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x5A, 0x5A]
+    );
+}
+
+#[tokio::test]
+async fn fc0c_event_log_over_64_events_is_server_device_failure() {
+    assert_eq!(
+        respond(&SizedEventLogStore { len: 65 }, &[0x0C]).await,
+        vec![0x8C, 0x04]
+    );
+}
+
+#[tokio::test]
+async fn fc0c_direct_event_log_append_over_64_events_is_server_device_failure() {
+    assert_eq!(
+        respond(&AppendEventLogStore { len: 65 }, &[0x0C]).await,
+        vec![0x8C, 0x04]
+    );
+}
+
+#[tokio::test]
+async fn fc11_report_server_id_boundary_251_bytes_ok() {
+    let s = store();
+    s.set_server_id(vec![0x5A; 251]);
+
+    let resp = respond(&s, &[0x11]).await;
+
+    assert_eq!(resp.len(), MAX_PDU_SIZE);
+    assert_eq!(resp[0], 0x11);
+    assert_eq!(resp[1], 251);
+    assert!(resp[2..].iter().all(|&b| b == 0x5A));
+}
+
+#[tokio::test]
+async fn fc11_report_server_id_over_pdu_cap_is_server_device_failure() {
+    let s = store();
+    s.set_server_id(vec![0x5A; 252]);
+
+    assert_eq!(respond(&s, &[0x11]).await, vec![0x91, 0x04]);
 }
 
 #[tokio::test]

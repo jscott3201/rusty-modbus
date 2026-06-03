@@ -16,6 +16,8 @@ use crate::frame::{Frame, FrameHeader};
 /// Maximum value of the MBAP length field: `MAX_PDU_SIZE` (253) + 1 byte for unit ID.
 #[allow(clippy::cast_possible_truncation)]
 const MAX_MBAP_LENGTH: u16 = MAX_PDU_SIZE as u16 + 1;
+/// Minimum MBAP length field: Unit Identifier (1) + function code (1).
+const MIN_MBAP_LENGTH: u16 = 2;
 
 /// MBAP codec for Modbus/TCP framing.
 ///
@@ -36,7 +38,7 @@ impl Decoder for MbapCodec {
         }
 
         // Step 2: peek at the header fields via zero-copy overlay.
-        let header = MbapHeader::ref_from_bytes(&src[..MBAP_HEADER_LEN])
+        let header = *MbapHeader::ref_from_bytes(&src[..MBAP_HEADER_LEN])
             .map_err(|_| FrameError::Truncated)?;
 
         // Step 3: validate protocol identifier.
@@ -47,12 +49,15 @@ impl Decoder for MbapCodec {
 
         // Step 4: validate length field bounds.
         // The length field includes the unit ID byte, so the PDU portion is length - 1.
-        // Minimum: 1 (unit ID only, zero-length PDU). A value of 0 would underflow
-        // the ADU size calculation and panic on the subsequent header slice.
+        // Minimum: 2 (unit ID + one-byte function code). A value of 0 or 1 would
+        // leave no complete MODBUS PDU, which always starts with a function code.
         // Maximum allowed: MAX_PDU_SIZE (253) bytes of PDU + 1 byte unit ID = 254.
         let length = header.length.get();
-        if length < 1 {
-            return Err(FrameError::Truncated);
+        if length < MIN_MBAP_LENGTH {
+            return Err(FrameError::InvalidLength {
+                declared: length,
+                minimum: MIN_MBAP_LENGTH,
+            });
         }
         if length > MAX_MBAP_LENGTH {
             return Err(FrameError::LengthOverflow(length));
@@ -72,14 +77,10 @@ impl Decoder for MbapCodec {
         // Step 7: split the complete ADU from the buffer — O(1), no copy.
         let adu = src.split_to(total).freeze();
 
-        // Step 8: copy the 7-byte header (MbapHeader is Copy).
-        let header =
-            *MbapHeader::ref_from_bytes(&adu[..MBAP_HEADER_LEN]).expect("header already validated");
-
-        // Step 9: slice the PDU (function code + data) — zero-copy via Bytes::slice.
+        // Step 8: slice the PDU (function code + data) — zero-copy via Bytes::slice.
         let pdu = adu.slice(MBAP_HEADER_LEN..);
 
-        // Step 10: return the decoded frame.
+        // Step 9: return the decoded frame.
         Ok(Some(Frame {
             header: FrameHeader::Mbap(header),
             pdu,
@@ -97,6 +98,7 @@ impl Encoder<Frame> for MbapCodec {
                 return Err(FrameError::InvalidProtocolId(0xFFFF));
             }
         };
+        validate_outgoing_header(header, frame.pdu.len())?;
 
         dst.reserve(MBAP_HEADER_LEN + frame.pdu.len());
         dst.put_slice(header.as_bytes());
@@ -114,6 +116,7 @@ impl Encoder<(MbapHeader, Bytes)> for MbapCodec {
 
     fn encode(&mut self, item: (MbapHeader, Bytes), dst: &mut BytesMut) -> Result<(), Self::Error> {
         let (header, pdu) = item;
+        validate_outgoing_header(header, pdu.len())?;
 
         dst.reserve(MBAP_HEADER_LEN + pdu.len());
         dst.put_slice(header.as_bytes());
@@ -121,6 +124,42 @@ impl Encoder<(MbapHeader, Bytes)> for MbapCodec {
 
         Ok(())
     }
+}
+
+fn validate_outgoing_header(header: MbapHeader, pdu_len: usize) -> Result<(), FrameError> {
+    let proto = header.protocol_id.get();
+    if proto != MODBUS_PROTOCOL_ID {
+        return Err(FrameError::InvalidProtocolId(proto));
+    }
+    if pdu_len > MAX_PDU_SIZE {
+        return Err(FrameError::LengthOverflow(
+            u16::try_from(pdu_len).unwrap_or(u16::MAX),
+        ));
+    }
+
+    let actual = u16::try_from(pdu_len + 1).expect("MAX_PDU_SIZE guarantees u16 length");
+    if actual < MIN_MBAP_LENGTH {
+        return Err(FrameError::InvalidLength {
+            declared: actual,
+            minimum: MIN_MBAP_LENGTH,
+        });
+    }
+
+    let declared = header.length.get();
+    if declared < MIN_MBAP_LENGTH {
+        return Err(FrameError::InvalidLength {
+            declared,
+            minimum: MIN_MBAP_LENGTH,
+        });
+    }
+    if declared > MAX_MBAP_LENGTH {
+        return Err(FrameError::LengthOverflow(declared));
+    }
+    if declared != actual {
+        return Err(FrameError::LengthMismatch { declared, actual });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -279,8 +318,8 @@ mod tests {
     }
 
     #[test]
-    fn decode_empty_pdu() {
-        // length = 1 means unit_id only, zero-length PDU.
+    fn decode_rejects_zero_length_pdu() {
+        // length = 1 means unit_id only, leaving no function-code byte.
         let header = MbapHeader {
             transaction_id: U16::new(0),
             protocol_id: U16::new(0),
@@ -290,14 +329,13 @@ mod tests {
         let mut buf = BytesMut::from(header.as_bytes());
         let mut codec = MbapCodec;
 
-        let frame = codec.decode(&mut buf).unwrap().expect("should decode");
-        assert!(frame.pdu.is_empty());
+        let err = codec.decode(&mut buf).unwrap_err();
+        assert!(matches!(err, FrameError::InvalidLength { .. }));
     }
 
     #[test]
     fn decode_length_zero_returns_error() {
         // length = 0 is invalid: even the unit_id byte wouldn't fit.
-        // Must not panic (prior to fix, this caused an index-out-of-bounds).
         let header = MbapHeader {
             transaction_id: U16::new(0),
             protocol_id: U16::new(0),
@@ -308,6 +346,42 @@ mod tests {
         let mut codec = MbapCodec;
 
         let err = codec.decode(&mut buf).unwrap_err();
-        assert!(matches!(err, FrameError::Truncated));
+        assert!(matches!(err, FrameError::InvalidLength { .. }));
+    }
+
+    #[test]
+    fn encode_rejects_zero_length_pdu() {
+        let frame = Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(1, 1, 0)),
+            pdu: Bytes::new(),
+        };
+
+        let mut buf = BytesMut::new();
+        let mut codec = MbapCodec;
+
+        let err = codec.encode(frame, &mut buf).unwrap_err();
+        assert!(matches!(err, FrameError::InvalidLength { .. }));
+    }
+
+    #[test]
+    fn encode_rejects_length_mismatch() {
+        let pdu = Bytes::from_static(&[0x03, 0x00, 0x00, 0x00, 0x01]);
+        let header = MbapHeader::new(1, 1, 3);
+        let frame = Frame {
+            header: FrameHeader::Mbap(header),
+            pdu,
+        };
+
+        let mut buf = BytesMut::new();
+        let mut codec = MbapCodec;
+
+        let err = codec.encode(frame, &mut buf).unwrap_err();
+        assert!(matches!(
+            err,
+            FrameError::LengthMismatch {
+                declared: 4,
+                actual: 6
+            }
+        ));
     }
 }

@@ -25,14 +25,10 @@ impl ReadHoldingRegistersRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 4 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     /// Returns [`DecodeError::QuantityOutOfRange`] if the quantity is not in 1..=125.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let quantity = u16::from_be_bytes([data[2], data[3]]);
         if quantity == 0 || quantity > Self::MAX_QUANTITY {
@@ -54,6 +50,8 @@ impl Encode for ReadHoldingRegistersRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadHoldingRegisters.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());
@@ -85,14 +83,10 @@ impl ReadInputRegistersRequest {
     /// # Errors
     ///
     /// Returns [`DecodeError::Truncated`] if `data` is shorter than 4 bytes.
+    /// Returns [`DecodeError::LengthMismatch`] if `data` has extra bytes.
     /// Returns [`DecodeError::QuantityOutOfRange`] if the quantity is not in 1..=125.
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
-        if data.len() < 4 {
-            return Err(DecodeError::Truncated {
-                expected: 4,
-                actual: data.len(),
-            });
-        }
+        DecodeError::check_exact_len(data, 4)?;
         let address = Address(u16::from_be_bytes([data[0], data[1]]));
         let quantity = u16::from_be_bytes([data[2], data[3]]);
         if quantity == 0 || quantity > Self::MAX_QUANTITY {
@@ -114,6 +108,8 @@ impl Encode for ReadInputRegistersRequest {
                 available: buf.len(),
             });
         }
+        EncodeError::check_quantity(self.quantity.0, Self::MAX_QUANTITY)?;
+        EncodeError::check_pdu_len(len)?;
         buf[0] = FunctionCode::ReadInputRegisters.code();
         buf[1..3].copy_from_slice(&self.address.0.to_be_bytes());
         buf[3..5].copy_from_slice(&self.quantity.0.to_be_bytes());

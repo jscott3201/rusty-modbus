@@ -18,6 +18,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rusty-modbus-client = { path = "../rusty-modbus-client" }
+rusty-modbus-server = { path = "../rusty-modbus-server" }
 rusty-modbus-tcp = { path = "../rusty-modbus-tcp" }
 rusty-modbus-tls = { path = "../rusty-modbus-tls" }
 rusty-modbus-types = { path = "../rusty-modbus-types" }

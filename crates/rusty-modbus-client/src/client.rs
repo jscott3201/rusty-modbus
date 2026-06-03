@@ -5,13 +5,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
+use rusty_modbus_frame::FrameError;
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::transport::{TransportConnect, TransportSink, TransportStream};
-use rusty_modbus_tcp::{TcpConfig, TcpSink, TcpTransport};
-use rusty_modbus_types::{FunctionCode, MbapHeader, UnitId};
+use rusty_modbus_tcp::{TcpConfig, TcpSink, TcpTransport, TransportError};
+use rusty_modbus_types::{FunctionCode, MAX_PDU_SIZE, MbapHeader, UnitId};
 use tokio::sync::{Semaphore, watch};
 use tokio::time::{self, Duration};
+use tracing::{debug, trace, warn};
 
 use crate::config::ClientConfig;
 use crate::error::ClientError;
@@ -30,6 +32,27 @@ pub struct ModbusClient<S: TransportSink + Send + 'static = TcpSink> {
     sweep_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+fn checked_pdu_length(pdu_len: usize) -> Result<u16, ClientError> {
+    if pdu_len == 0 {
+        return Err(ClientError::Transport(TransportError::Frame(
+            FrameError::InvalidPduLength {
+                length: pdu_len,
+                minimum: 1,
+            },
+        )));
+    }
+    if pdu_len > MAX_PDU_SIZE {
+        return Err(ClientError::Transport(TransportError::Frame(
+            FrameError::PduLengthOverflow {
+                length: pdu_len,
+                maximum: MAX_PDU_SIZE,
+            },
+        )));
+    }
+
+    Ok(u16::try_from(pdu_len).expect("MAX_PDU_SIZE fits in u16"))
+}
+
 impl ModbusClient {
     /// Connect to a Modbus/TCP server.
     ///
@@ -39,6 +62,7 @@ impl ModbusClient {
     /// # Errors
     ///
     /// Returns [`ClientError::Transport`] if the connection fails.
+    #[tracing::instrument(level = "debug", skip(config), fields(addr = %addr, timeout = ?config.timeout))]
     pub async fn connect(addr: SocketAddr, config: ClientConfig) -> Result<Self, ClientError> {
         let tcp_config = TcpConfig {
             connect_timeout: config.timeout,
@@ -47,7 +71,9 @@ impl ModbusClient {
             ..TcpConfig::default()
         };
 
+        debug!("connecting Modbus/TCP client");
         let (sink, stream) = TcpTransport::connect(tcp_config, addr).await?;
+        debug!("Modbus/TCP client connected");
 
         Ok(Self::from_transport(sink, stream, config))
     }
@@ -71,6 +97,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let semaphore = Arc::new(Semaphore::new(max_in_flight));
         let connected = Arc::new(AtomicBool::new(true));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        debug!(
+            max_in_flight,
+            timeout = ?config.timeout,
+            shutdown_timeout = ?config.shutdown_timeout,
+            "initializing Modbus client transport"
+        );
 
         let reader_handle = reader::spawn_reader(
             stream,
@@ -142,6 +175,10 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
     /// Graceful shutdown: stop new requests, drain in-flight, cancel remaining.
     pub async fn shutdown(&self) {
+        debug!(
+            pending = self.txn_mgr.pending_count(),
+            "shutting down Modbus client"
+        );
         // Signal reader to stop.
         let _ = self.shutdown_tx.send(true);
         self.connected.store(false, Ordering::Relaxed);
@@ -153,12 +190,29 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         // Cancel any remaining.
+        let remaining = self.txn_mgr.pending_count();
+        if remaining > 0 {
+            warn!(
+                pending = remaining,
+                "cancelling pending Modbus transactions"
+            );
+        }
         self.txn_mgr.cancel_all(|| ClientError::ShuttingDown);
     }
 
     /// Send a raw request PDU and await the owned response.
     ///
     /// This is the core method used by all typed request methods.
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, pdu_data),
+        fields(
+            unit_id = unit_id.0,
+            function_code = function_code.code(),
+            pdu_len = pdu_data.len(),
+            txn_id = tracing::field::Empty,
+        )
+    )]
     pub(crate) async fn send_request(
         &self,
         unit_id: UnitId,
@@ -166,8 +220,10 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         pdu_data: &[u8],
     ) -> Result<OwnedResponsePdu, ClientError> {
         if !self.is_connected() {
+            warn!("request rejected because client is disconnected");
             return Err(ClientError::NotConnected);
         }
+        let pdu_len = checked_pdu_length(pdu_data.len())?;
 
         // Acquire semaphore permit (limits concurrency).
         let _permit = self
@@ -178,13 +234,11 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         // Register transaction.
         let (txn_id, rx) = self.txn_mgr.register(function_code)?;
+        tracing::Span::current().record("txn_id", txn_id.0);
+        trace!(txn_id = txn_id.0, "registered Modbus transaction");
 
         // Build MBAP frame.
-        let header = MbapHeader::new(
-            txn_id.0,
-            unit_id.0,
-            u16::try_from(pdu_data.len()).unwrap_or(u16::MAX),
-        );
+        let header = MbapHeader::new(txn_id.0, unit_id.0, pdu_len);
         let frame = Frame {
             header: FrameHeader::Mbap(header),
             pdu: Bytes::copy_from_slice(pdu_data),
@@ -195,6 +249,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         {
             let mut sink = self.sink.lock().await;
             if let Err(e) = sink.send(frame).await {
+                warn!(txn_id = txn_id.0, error = %e, "failed to send Modbus request");
                 self.txn_mgr
                     .complete(txn_id, Err(ClientError::Transport(e)));
                 return match rx.await {
@@ -203,11 +258,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 };
             }
         }
+        trace!(txn_id = txn_id.0, "sent Modbus request frame");
 
         // Await response via oneshot channel.
-        let response = match rx.await {
-            Ok(result) => result?,
-            Err(_) => return Err(ClientError::ShuttingDown),
+        let response = if let Ok(result) = rx.await {
+            result?
+        } else {
+            warn!(
+                txn_id = txn_id.0,
+                "response channel closed before completion"
+            );
+            return Err(ClientError::ShuttingDown);
         };
 
         // Verify the server echoed the requested function code (Modbus V1.1b3
@@ -218,22 +279,37 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let expected = function_code.code();
         let got = response.function_code();
         if got != expected && got != (expected | 0x80) {
+            warn!(
+                txn_id = txn_id.0,
+                expected, got, "server response function code did not match request"
+            );
             return Err(ClientError::UnexpectedResponse { expected, got });
         }
 
+        debug!(
+            txn_id = txn_id.0,
+            response_function_code = got,
+            "received Modbus response"
+        );
         Ok(response)
     }
 
     /// Send a broadcast write (Unit ID 0x00) — no response expected.
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, pdu_data),
+        fields(unit_id = 0u8, pdu_len = pdu_data.len())
+    )]
     pub(crate) async fn send_broadcast(&self, pdu_data: &[u8]) -> Result<(), ClientError> {
         if !self.is_connected() {
+            warn!("broadcast rejected because client is disconnected");
             return Err(ClientError::NotConnected);
         }
+        let pdu_len = checked_pdu_length(pdu_data.len())?;
 
         let header = MbapHeader::new(
             0, // Transaction ID doesn't matter for broadcast.
-            0x00,
-            u16::try_from(pdu_data.len()).unwrap_or(u16::MAX),
+            0x00, pdu_len,
         );
         let frame = Frame {
             header: FrameHeader::Mbap(header),
@@ -242,11 +318,21 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         let mut sink = self.sink.lock().await;
         sink.send(frame).await.map_err(ClientError::Transport)?;
+        debug!("sent Modbus broadcast frame");
 
         Ok(())
     }
 
     /// Send a request with retry logic.
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, pdu_data),
+        fields(
+            unit_id = unit_id.0,
+            function_code = function_code.code(),
+            max_retries = self.config.retry.max_retries
+        )
+    )]
     pub(crate) async fn send_with_retry(
         &self,
         unit_id: UnitId,
@@ -257,6 +343,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         for attempt in 0..=self.config.retry.max_retries {
             if attempt > 0 {
+                debug!(attempt, "retrying Modbus request");
                 time::sleep(self.config.retry.retry_delay).await;
             }
 
@@ -265,6 +352,11 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                     // Check if it's an exception response we should retry.
                     if let OwnedResponsePdu::Exception(exc) = response {
                         if self.config.retry.is_retryable(exc.exception_code) {
+                            warn!(
+                                attempt,
+                                exception_code = exc.exception_code.code(),
+                                "received retryable Modbus exception"
+                            );
                             last_error = Some(ClientError::Exception(exc));
                             continue;
                         }
@@ -273,6 +365,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                     return Ok(response);
                 }
                 Err(ClientError::Timeout) if attempt < self.config.retry.max_retries => {
+                    warn!(attempt, "Modbus request timed out; retrying");
                     last_error = Some(ClientError::Timeout);
                 }
                 Err(e) => {
@@ -307,5 +400,42 @@ impl<S: TransportSink + Send + 'static> std::fmt::Debug for ModbusClient<S> {
             .field("connected", &self.is_connected())
             .field("pending", &self.txn_mgr.pending_count())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_pdu_length_accepts_modbus_bounds() {
+        assert_eq!(checked_pdu_length(1).unwrap(), 1);
+        assert_eq!(checked_pdu_length(MAX_PDU_SIZE).unwrap(), 253);
+    }
+
+    #[test]
+    fn checked_pdu_length_rejects_empty_pdu() {
+        assert!(matches!(
+            checked_pdu_length(0),
+            Err(ClientError::Transport(TransportError::Frame(
+                FrameError::InvalidPduLength {
+                    length: 0,
+                    minimum: 1,
+                }
+            )))
+        ));
+    }
+
+    #[test]
+    fn checked_pdu_length_rejects_oversized_pdu() {
+        assert!(matches!(
+            checked_pdu_length(MAX_PDU_SIZE + 1),
+            Err(ClientError::Transport(TransportError::Frame(
+                FrameError::PduLengthOverflow {
+                    length,
+                    maximum: MAX_PDU_SIZE,
+                }
+            ))) if length == MAX_PDU_SIZE + 1
+        ));
     }
 }

@@ -31,7 +31,7 @@ pub struct DiscoverConfig {
 }
 
 /// A discovered device.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DiscoveredDevice {
     /// Unit ID that responded.
     pub unit_id: u8,
@@ -44,12 +44,21 @@ pub struct DiscoveredDevice {
 }
 
 /// Result for a single host.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HostResult {
     /// Host address.
     pub address: String,
     /// Devices found at this host.
     pub devices: Vec<DiscoveredDevice>,
+}
+
+/// Reusable discovery scan report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryReport {
+    /// Number of target hosts considered by the scan.
+    pub hosts_scanned: usize,
+    /// Hosts with an open Modbus port and their responding unit IDs.
+    pub results: Vec<HostResult>,
 }
 
 /// Run the discovery process.
@@ -58,38 +67,46 @@ pub struct HostResult {
 ///
 /// Returns an error if arguments are invalid or a fatal I/O error occurs.
 pub async fn run(config: DiscoverConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let report = scan(&config).await?;
+
+    match config.format {
+        OutputFormat::Human => print!("{}", format_human(&report)),
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report.results)?),
+    }
+
+    Ok(())
+}
+
+/// Scan the configured network targets and return structured discovery results.
+///
+/// # Errors
+///
+/// Returns an error if arguments are invalid or target host/range parsing fails.
+pub async fn scan(config: &DiscoverConfig) -> Result<DiscoveryReport, Box<dyn std::error::Error>> {
+    validate_targets(config)?;
+    validate_concurrency(config.concurrency)?;
     let timeout = Duration::from_secs(config.timeout);
     let unit_ids = parse_unit_id_range(&config.unit_id_range)?;
     let semaphore = Arc::new(Semaphore::new(config.concurrency));
 
-    // Phase 1: Determine target hosts.
-    let hosts: Vec<SocketAddr> = if let Some(ref host) = config.host {
+    let (hosts_scanned, hosts): (usize, Vec<SocketAddr>) = if let Some(ref host) = config.host {
         let ip: IpAddr = host.parse()?;
-        vec![SocketAddr::new(ip, config.port)]
+        (1, vec![SocketAddr::new(ip, config.port)])
     } else if let Some(ref range) = config.range {
         let ips = expand_range(range)?;
-        if config.format == OutputFormat::Human {
-            eprintln!("Scanning {} hosts on port {}...", ips.len(), config.port);
-        }
-        sweep_hosts(&ips, config.port, timeout, &semaphore).await
+        let hosts = sweep_hosts(&ips, config.port, timeout, &semaphore).await;
+        (ips.len(), hosts)
     } else {
         return Err("either --range or --host is required".into());
     };
 
     if hosts.is_empty() {
-        if config.format == OutputFormat::Human {
-            println!("No hosts found with open Modbus port.");
-        } else {
-            println!("[]");
-        }
-        return Ok(());
+        return Ok(DiscoveryReport {
+            hosts_scanned,
+            results: Vec::new(),
+        });
     }
 
-    if config.format == OutputFormat::Human {
-        eprintln!("Found {} hosts with open Modbus port\n", hosts.len());
-    }
-
-    // Phase 2 + 3: Probe unit IDs and get device identification.
     let mut results = Vec::new();
     for addr in &hosts {
         let devices = probe_host(*addr, &unit_ids, timeout, &semaphore).await;
@@ -99,15 +116,26 @@ pub async fn run(config: DiscoverConfig) -> Result<(), Box<dyn std::error::Error
         });
     }
 
-    // Output results.
-    match config.format {
-        OutputFormat::Human => print_human(&results),
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&results)?);
-        }
-    }
+    Ok(DiscoveryReport {
+        hosts_scanned,
+        results,
+    })
+}
 
-    Ok(())
+fn validate_targets(config: &DiscoverConfig) -> Result<(), Box<dyn std::error::Error>> {
+    match (&config.host, &config.range) {
+        (Some(_), Some(_)) => Err("use either --host or --range, not both".into()),
+        (None, None) => Err("either --range or --host is required".into()),
+        _ => Ok(()),
+    }
+}
+
+fn validate_concurrency(concurrency: usize) -> Result<(), Box<dyn std::error::Error>> {
+    if concurrency == 0 {
+        Err("--concurrency must be greater than 0".into())
+    } else {
+        Ok(())
+    }
 }
 
 /// Phase 1: TCP connect sweep to find open Modbus ports.
@@ -204,30 +232,50 @@ async fn probe_host(
     devices
 }
 
-fn print_human(results: &[HostResult]) {
+/// Render discovery results in the CLI human-readable format.
+#[must_use]
+pub fn format_human(report: &DiscoveryReport) -> String {
+    if report.results.is_empty() {
+        return format!(
+            "No hosts found with open Modbus port. Scanned {} hosts.\n",
+            report.hosts_scanned
+        );
+    }
+
+    let mut output = String::new();
     let mut total_devices = 0;
-    for result in results {
-        println!("{}", result.address);
+    for result in &report.results {
+        output.push_str(&result.address);
+        output.push('\n');
         if result.devices.is_empty() {
-            println!("  No responding unit IDs");
+            output.push_str("  No responding unit IDs\n");
         } else {
             for dev in &result.devices {
                 total_devices += 1;
                 if let (Some(vendor), Some(product), Some(rev)) =
                     (&dev.vendor_name, &dev.product_code, &dev.revision)
                 {
-                    println!("  Unit {:>3}: [{vendor}] {product} rev {rev}", dev.unit_id);
+                    output.push_str(&format!(
+                        "  Unit {:>3}: [{vendor}] {product} rev {rev}\n",
+                        dev.unit_id
+                    ));
                 } else {
-                    println!("  Unit {:>3}: (no device identification)", dev.unit_id);
+                    output.push_str(&format!(
+                        "  Unit {:>3}: (no device identification)\n",
+                        dev.unit_id
+                    ));
                 }
             }
         }
     }
-    println!(
+
+    output.push_str(&format!(
         "\nScan complete: {} hosts, {} devices",
-        results.len(),
+        report.results.len(),
         total_devices
-    );
+    ));
+    output.push('\n');
+    output
 }
 
 /// Expand a CIDR notation or dash-range into a list of IPv4 addresses.
@@ -246,14 +294,12 @@ pub fn expand_range(range: &str) -> Result<Vec<Ipv4Addr>, Box<dyn std::error::Er
         }
         let start: Ipv4Addr = parts[0].parse()?;
         let end: Ipv4Addr = parts[1].parse()?;
-        let mut ips = Vec::new();
-        let mut current = u32::from(start);
+        let start_u32 = u32::from(start);
         let end_u32 = u32::from(end);
-        while current <= end_u32 {
-            ips.push(Ipv4Addr::from(current));
-            current += 1;
+        if start_u32 > end_u32 {
+            return Err(format!("invalid range: start '{start}' is after end '{end}'").into());
         }
-        Ok(ips)
+        Ok((start_u32..=end_u32).map(Ipv4Addr::from).collect())
     } else {
         let ip: Ipv4Addr = range.parse()?;
         Ok(vec![ip])
@@ -270,6 +316,9 @@ pub fn parse_unit_id_range(range: &str) -> Result<Vec<u8>, Box<dyn std::error::E
         let parts: Vec<&str> = range.splitn(2, '-').collect();
         let start: u8 = parts[0].parse()?;
         let end: u8 = parts[1].parse()?;
+        if start > end {
+            return Err(format!("invalid unit ID range: start {start} is after end {end}").into());
+        }
         Ok((start..=end).collect())
     } else {
         let id: u8 = range.parse()?;
@@ -279,7 +328,21 @@ pub fn parse_unit_id_range(range: &str) -> Result<Vec<u8>, Box<dyn std::error::E
 
 #[cfg(test)]
 mod tests {
+    use rusty_modbus_sim::{ModbusSimulator, generic_io};
+
     use super::*;
+
+    fn config_for_host(addr: SocketAddr) -> DiscoverConfig {
+        DiscoverConfig {
+            range: None,
+            host: Some(addr.ip().to_string()),
+            port: addr.port(),
+            unit_id_range: "1".to_string(),
+            timeout: 1,
+            concurrency: 4,
+            format: OutputFormat::Human,
+        }
+    }
 
     #[test]
     fn parse_cidr_range() {
@@ -292,6 +355,18 @@ mod tests {
     fn parse_dash_range() {
         let ips = expand_range("10.0.0.1-10.0.0.3").unwrap();
         assert_eq!(ips.len(), 3);
+    }
+
+    #[test]
+    fn parse_dash_range_rejects_reversed_bounds() {
+        let error = expand_range("10.0.0.3-10.0.0.1").unwrap_err();
+        assert!(error.to_string().contains("start '10.0.0.3' is after end"));
+    }
+
+    #[test]
+    fn parse_dash_range_includes_max_ipv4_without_overflow() {
+        let ips = expand_range("255.255.255.255-255.255.255.255").unwrap();
+        assert_eq!(ips, vec![Ipv4Addr::new(255, 255, 255, 255)]);
     }
 
     #[test]
@@ -308,8 +383,99 @@ mod tests {
     }
 
     #[test]
+    fn parse_unit_id_range_rejects_reversed_bounds() {
+        let error = parse_unit_id_range("10-1").unwrap_err();
+        assert!(error.to_string().contains("start 10 is after end 1"));
+    }
+
+    #[test]
     fn parse_single_unit_id() {
         let ids = parse_unit_id_range("5").unwrap();
         assert_eq!(ids, vec![5]);
+    }
+
+    #[test]
+    fn format_human_reports_no_open_hosts() {
+        let report = DiscoveryReport {
+            hosts_scanned: 3,
+            results: Vec::new(),
+        };
+
+        assert_eq!(
+            format_human(&report),
+            "No hosts found with open Modbus port. Scanned 3 hosts.\n"
+        );
+    }
+
+    #[test]
+    fn format_human_reports_devices_and_missing_identification() {
+        let report = DiscoveryReport {
+            hosts_scanned: 1,
+            results: vec![HostResult {
+                address: "127.0.0.1:502".to_string(),
+                devices: vec![
+                    DiscoveredDevice {
+                        unit_id: 1,
+                        vendor_name: Some("ACME".to_string()),
+                        product_code: Some("IO".to_string()),
+                        revision: Some("1.0".to_string()),
+                    },
+                    DiscoveredDevice {
+                        unit_id: 2,
+                        vendor_name: None,
+                        product_code: None,
+                        revision: None,
+                    },
+                ],
+            }],
+        };
+
+        let output = format_human(&report);
+        assert!(output.contains("127.0.0.1:502"));
+        assert!(output.contains("Unit   1: [ACME] IO rev 1.0"));
+        assert!(output.contains("Unit   2: (no device identification)"));
+        assert!(output.contains("Scan complete: 1 hosts, 2 devices"));
+    }
+
+    #[tokio::test]
+    async fn scan_rejects_zero_concurrency() {
+        let mut config = config_for_host("127.0.0.1:502".parse().unwrap());
+        config.concurrency = 0;
+
+        let error = scan(&config).await.unwrap_err();
+        assert!(error.to_string().contains("concurrency"));
+    }
+
+    #[tokio::test]
+    async fn scan_rejects_host_and_range_together() {
+        let mut config = config_for_host("127.0.0.1:502".parse().unwrap());
+        config.range = Some("127.0.0.1".to_string());
+
+        let error = scan(&config).await.unwrap_err();
+        assert!(error.to_string().contains("either --host or --range"));
+    }
+
+    #[tokio::test]
+    async fn scan_rejects_missing_target() {
+        let mut config = config_for_host("127.0.0.1:502".parse().unwrap());
+        config.host = None;
+
+        let error = scan(&config).await.unwrap_err();
+        assert!(error.to_string().contains("either --range or --host"));
+    }
+
+    #[tokio::test]
+    async fn scan_host_finds_simulator_unit() {
+        let mut sim = ModbusSimulator::from_config(generic_io()).unwrap();
+        let addr = sim.start().await.unwrap();
+
+        let report = scan(&config_for_host(addr)).await.unwrap();
+
+        assert_eq!(report.hosts_scanned, 1);
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].address, addr.to_string());
+        assert_eq!(report.results[0].devices[0].unit_id, 1);
+
+        sim.stop().await;
     }
 }

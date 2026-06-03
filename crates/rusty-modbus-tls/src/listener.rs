@@ -8,6 +8,7 @@ use rusty_modbus_frame::mbap::MbapCodec;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::codec::Framed;
+use tracing::{debug, trace};
 
 use crate::config::TlsServerConfig;
 use crate::connect::{TlsRecvStream, TlsSink};
@@ -22,11 +23,13 @@ pub struct TlsServerListener {
 
 impl TlsServerListener {
     /// Bind and prepare for TLS-secured Modbus connections.
+    #[tracing::instrument(level = "debug", skip(config), fields(addr = %addr))]
     pub async fn bind(addr: SocketAddr, config: &TlsServerConfig) -> Result<Self, TlsError> {
         let rustls_config = tls_config::build_server_config(config)?;
         let tls_acceptor = TlsAcceptor::from(Arc::new(rustls_config));
 
         let tcp_listener = TcpListener::bind(addr).await.map_err(TlsError::Io)?;
+        debug!(addr = %tcp_listener.local_addr()?, "TLS Modbus listener bound");
 
         Ok(Self {
             tcp_listener,
@@ -47,8 +50,10 @@ impl TlsServerListener {
         &self,
     ) -> Result<(TlsSink, TlsRecvStream, SocketAddr, Option<String>), TlsError> {
         let (tcp_stream, addr) = self.tcp_listener.accept().await.map_err(TlsError::Io)?;
+        trace!(peer_addr = %addr, "accepted TCP socket for TLS Modbus connection");
         tcp_stream.set_nodelay(true)?;
 
+        debug!(peer_addr = %addr, "starting TLS server handshake");
         let tls_stream = self
             .tls_acceptor
             .accept(tcp_stream)
@@ -62,6 +67,11 @@ impl TlsServerListener {
             .peer_certificates()
             .and_then(<[_]>::first)
             .and_then(|cert| crate::role::extract_role(cert.as_ref()));
+        debug!(
+            peer_addr = %addr,
+            role = role.as_deref().unwrap_or("null"),
+            "TLS server handshake complete"
+        );
 
         let framed = Framed::new(tls_stream, MbapCodec);
         let (sink, stream) = framed.split();
