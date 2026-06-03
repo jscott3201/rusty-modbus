@@ -111,6 +111,16 @@ impl DataStore for BadCountStore {
         out.push(0x42);
         Ok(self.count)
     }
+
+    async fn append_diagnostic_response(
+        &self,
+        _: DiagnosticSubFunction,
+        _: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<Option<usize>, ExceptionCode> {
+        out.extend_from_slice(&[0x12, 0x34]);
+        Ok(Some(self.count))
+    }
 }
 
 async fn respond(store: &BadCountStore, pdu: &[u8]) -> Vec<u8> {
@@ -247,5 +257,13 @@ async fn report_server_id_mismatched_append_count_is_server_device_failure() {
     assert_eq!(
         respond(&BadCountStore::new(2), &[0x11]).await,
         vec![0x91, 0x04]
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_mismatched_append_count_is_server_device_failure() {
+    assert_eq!(
+        respond(&BadCountStore::new(1), &[0x08, 0x00, 0x00]).await,
+        vec![0x88, 0x04]
     );
 }

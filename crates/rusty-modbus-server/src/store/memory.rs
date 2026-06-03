@@ -3,13 +3,14 @@
 use std::collections::HashMap;
 
 use parking_lot::RwLock;
-use rusty_modbus_types::ExceptionCode;
+use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode};
 
 use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT};
 
 use super::{
-    DataStore, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES, pack_coils, pack_registers_be,
-    packed_coil_value, validate_packed_coils, validate_register_values_be,
+    DataStore, MAX_DIAGNOSTIC_RESPONSE_DATA_LEN, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES,
+    pack_coils, pack_registers_be, packed_coil_value, validate_packed_coils,
+    validate_register_values_be,
 };
 
 /// Maximum number of entries in any Modbus data table.
@@ -614,5 +615,23 @@ impl DataStore for InMemoryStore {
         }
         out.extend_from_slice(&server_id);
         Ok(server_id.len())
+    }
+
+    async fn append_diagnostic_response(
+        &self,
+        sub_function: DiagnosticSubFunction,
+        data: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<Option<usize>, ExceptionCode> {
+        match sub_function {
+            DiagnosticSubFunction::ReturnQueryData => {
+                if data.len() > MAX_DIAGNOSTIC_RESPONSE_DATA_LEN {
+                    return Err(ExceptionCode::ServerDeviceFailure);
+                }
+                out.extend_from_slice(data);
+                Ok(Some(data.len()))
+            }
+            _ => Err(ExceptionCode::IllegalFunction),
+        }
     }
 }

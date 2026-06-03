@@ -2,14 +2,15 @@
 
 use rusty_modbus_codec::request::{ReadFileRecordRequest, WriteFileRecordRequest};
 use rusty_modbus_codec::response::{
-    DiagnosticsResponse, GetCommEventCounterResponse, GetCommEventLogResponse,
-    MaskWriteRegisterResponse, ReadExceptionStatusResponse, ReadFileRecordResponse,
-    WriteFileRecordResponse, WriteMultipleCoilsResponse, WriteMultipleRegistersResponse,
-    WriteSingleCoilResponse, WriteSingleRegisterResponse,
+    GetCommEventCounterResponse, GetCommEventLogResponse, MaskWriteRegisterResponse,
+    ReadExceptionStatusResponse, ReadFileRecordResponse, WriteFileRecordResponse,
+    WriteMultipleCoilsResponse, WriteMultipleRegistersResponse, WriteSingleCoilResponse,
+    WriteSingleRegisterResponse,
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
-    Address, ExceptionCode, FunctionCode, MAX_FIFO_VALUES, MAX_PDU_SIZE, MeiType, Quantity, UnitId,
+    Address, DiagnosticSubFunction, ExceptionCode, FunctionCode, MAX_FIFO_VALUES, MeiType,
+    Quantity, UnitId,
 };
 use tracing::debug;
 
@@ -17,9 +18,9 @@ use crate::config::DeviceIdentification;
 use crate::device_id::build_device_id_response;
 use crate::file_record;
 use crate::response_encode::encode_response;
-use crate::store::{DataStore, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES};
-
-const MAX_DIAGNOSTIC_DATA_LEN: usize = MAX_PDU_SIZE - 3;
+use crate::store::{
+    DataStore, MAX_DIAGNOSTIC_RESPONSE_DATA_LEN, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES,
+};
 
 /// Process a request PDU and return a response PDU (or `None` for broadcast writes).
 ///
@@ -289,29 +290,11 @@ async fn dispatch_request<S: DataStore>(
             // Run the sub-function first (it may mutate device state, e.g. clear
             // counters), then suppress the reply on broadcast — mirroring the
             // write arms. Ok(None) is the spec "no reply" path (Force Listen Only).
-            let result = store.diagnostic(req.sub_function, req.data).await;
+            let result = handle_diagnostics(req.sub_function, req.data, store).await;
             if is_broadcast {
                 return None;
             }
-            match result {
-                // Response PDU is FC + sub-function(u16) + data, capped at 253
-                // bytes. A store returning more would make the TCP/RTU frame
-                // encoder reject the response after the handler has already
-                // accepted the request.
-                Ok(Some(data)) if data.len() > MAX_DIAGNOSTIC_DATA_LEN => Some(encode_exception(
-                    FunctionCode::Diagnostics.exception_code(),
-                    ExceptionCode::ServerDeviceFailure,
-                )),
-                Ok(Some(data)) => Some(encode_response(&DiagnosticsResponse {
-                    sub_function: req.sub_function,
-                    data: &data,
-                })),
-                Ok(None) => None,
-                Err(ec) => Some(encode_exception(
-                    FunctionCode::Diagnostics.exception_code(),
-                    ec,
-                )),
-            }
+            result
         }
         RequestPdu::GetCommEventCounter => {
             if is_broadcast {
@@ -380,6 +363,41 @@ async fn dispatch_request<S: DataStore>(
             let fc = pdu.first().copied().unwrap_or(0);
             Some(encode_exception(fc | 0x80, ExceptionCode::IllegalFunction))
         }
+    }
+}
+
+async fn handle_diagnostics<S: DataStore>(
+    sub_function: DiagnosticSubFunction,
+    data: &[u8],
+    store: &S,
+) -> Option<Vec<u8>> {
+    let mut response = Vec::with_capacity(3 + MAX_DIAGNOSTIC_RESPONSE_DATA_LEN);
+    response.push(FunctionCode::Diagnostics.code());
+    response.extend_from_slice(&sub_function.code().to_be_bytes());
+
+    let data_start = response.len();
+    let result = store
+        .append_diagnostic_response(sub_function, data, &mut response)
+        .await;
+    match result {
+        Ok(Some(count)) => {
+            let actual_count = response.len().saturating_sub(data_start);
+            if count != actual_count
+                || actual_count > MAX_DIAGNOSTIC_RESPONSE_DATA_LEN
+                || !actual_count.is_multiple_of(2)
+            {
+                return Some(encode_exception(
+                    FunctionCode::Diagnostics.exception_code(),
+                    ExceptionCode::ServerDeviceFailure,
+                ));
+            }
+            Some(response)
+        }
+        Ok(None) => None,
+        Err(ec) => Some(encode_exception(
+            FunctionCode::Diagnostics.exception_code(),
+            ec,
+        )),
     }
 }
 
