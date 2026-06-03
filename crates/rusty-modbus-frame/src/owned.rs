@@ -11,10 +11,11 @@
 use bytes::Bytes;
 use rusty_modbus_codec::error::DecodeError;
 use rusty_modbus_codec::response::{
-    ExceptionResponse, GetCommEventCounterResponse, GetCommEventLogResponse,
-    MaskWriteRegisterResponse, ReadExceptionStatusResponse, ReadFifoQueueResponse,
-    ReadFileRecordResponse, WriteFileRecordResponse, WriteMultipleCoilsResponse,
-    WriteMultipleRegistersResponse, WriteSingleCoilResponse, WriteSingleRegisterResponse,
+    EncapsulatedInterfaceResponse, ExceptionResponse, GetCommEventCounterResponse,
+    GetCommEventLogResponse, MaskWriteRegisterResponse, ReadExceptionStatusResponse,
+    ReadFifoQueueResponse, ReadFileRecordResponse, WriteFileRecordResponse,
+    WriteMultipleCoilsResponse, WriteMultipleRegistersResponse, WriteSingleCoilResponse,
+    WriteSingleRegisterResponse,
 };
 use rusty_modbus_types::{DiagnosticSubFunction, FunctionCode, MeiType};
 
@@ -577,16 +578,10 @@ impl OwnedEncapsulatedInterfaceResponse {
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
         let data = pdu_data(&pdu)?;
-        if data.is_empty() {
-            return Err(DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            });
-        }
-        let mei_type = MeiType::from_raw(data[0]).ok_or(DecodeError::UnknownMeiType(data[0]))?;
+        let decoded = EncapsulatedInterfaceResponse::decode(data)?;
         let owned_data = pdu.slice(2..);
         Ok(Self {
-            mei_type,
+            mei_type: decoded.mei_type,
             data: owned_data,
         })
     }

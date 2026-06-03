@@ -4,6 +4,10 @@ use rusty_modbus_types::{DeviceIdCode, MeiType};
 
 use crate::error::DecodeError;
 
+fn valid_conformity_level(level: u8) -> bool {
+    matches!(level, 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83)
+}
+
 /// A single identification object parsed from the response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceIdObjectEntry<'buf> {
@@ -52,9 +56,24 @@ impl<'buf> ReadDeviceIdentificationResponse<'buf> {
         let device_id_code =
             DeviceIdCode::from_raw(data[1]).ok_or(DecodeError::InvalidDeviceIdCode(data[1]))?;
         let conformity_level = data[2];
-        let more_follows = data[3] == 0xFF;
+        if !valid_conformity_level(conformity_level) {
+            return Err(DecodeError::InvalidDeviceIdConformityLevel(
+                conformity_level,
+            ));
+        }
+        let more_follows = match data[3] {
+            0x00 => false,
+            0xFF => true,
+            value => return Err(DecodeError::InvalidDeviceIdMoreFollows(value)),
+        };
         let next_object_id = data[4];
+        if !more_follows && next_object_id != 0 {
+            return Err(DecodeError::InvalidDeviceIdNextObjectId(next_object_id));
+        }
         let num_objects = data[5];
+        if device_id_code == DeviceIdCode::Individual && num_objects != 1 {
+            return Err(DecodeError::InvalidDeviceIdObjectCount(num_objects));
+        }
 
         // Validate that object data is well-formed.
         let object_data = &data[6..];
@@ -187,6 +206,42 @@ mod tests {
         assert!(matches!(
             ReadDeviceIdentificationResponse::decode(&data),
             Err(DecodeError::Truncated { .. })
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_invalid_conformity_level() {
+        let data = [0x0E, 0x01, 0x04, 0x00, 0x00, 0x00];
+        assert!(matches!(
+            ReadDeviceIdentificationResponse::decode(&data),
+            Err(DecodeError::InvalidDeviceIdConformityLevel(0x04))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_invalid_more_follows_value() {
+        let data = [0x0E, 0x01, 0x01, 0x01, 0x00, 0x00];
+        assert!(matches!(
+            ReadDeviceIdentificationResponse::decode(&data),
+            Err(DecodeError::InvalidDeviceIdMoreFollows(0x01))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_next_object_id_without_more_follows() {
+        let data = [0x0E, 0x01, 0x01, 0x00, 0x02, 0x00];
+        assert!(matches!(
+            ReadDeviceIdentificationResponse::decode(&data),
+            Err(DecodeError::InvalidDeviceIdNextObjectId(0x02))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_individual_response_without_one_object() {
+        let data = [0x0E, 0x04, 0x81, 0x00, 0x00, 0x00];
+        assert!(matches!(
+            ReadDeviceIdentificationResponse::decode(&data),
+            Err(DecodeError::InvalidDeviceIdObjectCount(0))
         ));
     }
 

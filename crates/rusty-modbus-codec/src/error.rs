@@ -78,6 +78,14 @@ pub enum DecodeError {
     },
     /// Device ID code byte is not recognized (FC 0x2B / MEI 0x0E).
     InvalidDeviceIdCode(u8),
+    /// Device ID conformity level byte is not recognized (FC 0x2B / MEI 0x0E).
+    InvalidDeviceIdConformityLevel(u8),
+    /// Device ID More Follows byte is neither 0x00 nor 0xFF.
+    InvalidDeviceIdMoreFollows(u8),
+    /// Device ID Next Object ID must be zero when More Follows is 0x00.
+    InvalidDeviceIdNextObjectId(u8),
+    /// Individual Device ID access must return exactly one object.
+    InvalidDeviceIdObjectCount(u8),
 }
 
 impl DecodeError {
@@ -155,6 +163,19 @@ impl core::fmt::Display for DecodeError {
                 )
             }
             Self::InvalidDeviceIdCode(code) => write!(f, "invalid device ID code: {code:#04X}"),
+            Self::InvalidDeviceIdConformityLevel(level) => {
+                write!(f, "invalid device ID conformity level: {level:#04X}")
+            }
+            Self::InvalidDeviceIdMoreFollows(value) => {
+                write!(f, "invalid device ID More Follows value: {value:#04X}")
+            }
+            Self::InvalidDeviceIdNextObjectId(object_id) => write!(
+                f,
+                "invalid device ID Next Object ID with More Follows = 0x00: {object_id:#04X}"
+            ),
+            Self::InvalidDeviceIdObjectCount(count) => {
+                write!(f, "invalid individual device ID object count: {count}")
+            }
         }
     }
 }
