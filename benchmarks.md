@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `d72a9df` base plus this byte-backed bit-table refresh |
+| Git commit | `e776964` on `dev` |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -36,7 +36,7 @@ scripts/bench-suite.sh all \
   --clients 1 \
   --depths 1,2,4,8,16 \
   --operations read,mixed \
-  --output-dir bench-output/stress-20260602-docker-local-suite
+  --output-dir bench-output/stress-20260603-full-suite
 ```
 
 The same script can run either side independently:
@@ -58,7 +58,13 @@ Codec/framing microbenchmarks are run with:
 scripts/bench-local.sh codec --quick --noplot
 scripts/bench-local.sh store --quick --noplot
 scripts/bench-local.sh handler --quick --noplot
+scripts/bench-local.sh tcp-pipelined --quick --noplot
 ```
+
+Criterion quick-mode rows are run through the individual script modes instead
+of `scripts/bench-local.sh all --quick --noplot` because Cargo runs the library
+bench harness first in package-wide mode, and that harness rejects Criterion's
+`--quick` flag.
 
 ## Results
 
@@ -68,21 +74,21 @@ Workload: repeated FC 0x03 reads of 10 holding registers.
 
 | Runtime | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Local release | 1 | 57,788 | 288,939 | 0.016 | 0.021 | 0.031 | 0.036 | 0.087 | 0 | 0 |
-| Local release | 2 | 102,866 | 514,331 | 0.018 | 0.028 | 0.033 | 0.040 | 0.093 | 0 | 0 |
-| Local release | 4 | 167,054 | 835,268 | 0.023 | 0.032 | 0.040 | 0.066 | 0.741 | 0 | 1 |
-| Local release | 8 | 250,918 | 1,254,591 | 0.031 | 0.043 | 0.050 | 0.064 | 0.126 | 0 | 1 |
-| Local release | 16 | 288,162 | 1,440,810 | 0.055 | 0.079 | 0.091 | 0.114 | 0.316 | 0 | 1 |
-| Alpine container | 1 | 101,274 | 506,368 | 0.008 | 0.024 | 0.025 | 0.030 | 0.519 | 0 | 0 |
-| Alpine container | 2 | 153,820 | 769,098 | 0.011 | 0.022 | 0.029 | 0.037 | 0.109 | 0 | 0 |
-| Alpine container | 4 | 176,964 | 884,821 | 0.023 | 0.030 | 0.038 | 0.044 | 0.166 | 0 | 0 |
-| Alpine container | 8 | 250,919 | 1,254,596 | 0.031 | 0.045 | 0.052 | 0.061 | 0.091 | 0 | 0 |
-| Alpine container | 16 | 288,122 | 1,440,611 | 0.052 | 0.082 | 0.092 | 0.103 | 0.188 | 0 | 0 |
-| Distroless container | 1 | 96,004 | 480,020 | 0.008 | 0.024 | 0.025 | 0.030 | 0.362 | 0 | 0 |
-| Distroless container | 2 | 155,690 | 778,448 | 0.011 | 0.022 | 0.029 | 0.035 | 0.125 | 0 | 0 |
-| Distroless container | 4 | 176,732 | 883,661 | 0.023 | 0.030 | 0.037 | 0.044 | 0.076 | 0 | 0 |
-| Distroless container | 8 | 252,216 | 1,261,081 | 0.031 | 0.045 | 0.052 | 0.061 | 0.112 | 0 | 0 |
-| Distroless container | 16 | 288,198 | 1,440,988 | 0.052 | 0.082 | 0.092 | 0.103 | 0.728 | 0 | 0 |
+| Local release | 1 | 62,096 | 310,480 | 0.015 | 0.021 | 0.031 | 0.047 | 0.109 | 0 | 0 |
+| Local release | 2 | 120,735 | 603,675 | 0.015 | 0.024 | 0.031 | 0.052 | 0.096 | 0 | 1 |
+| Local release | 4 | 159,272.6 | 796,363 | 0.021 | 0.047 | 0.069 | 0.099 | 0.978 | 0 | 1 |
+| Local release | 8 | 200,458 | 1,002,290 | 0.035 | 0.073 | 0.103 | 0.158 | 3.329 | 0 | 1 |
+| Local release | 16 | 230,327.6 | 1,151,638 | 0.064 | 0.113 | 0.147 | 0.204 | 3.519 | 0 | 1 |
+| Alpine container | 1 | 62,492.2 | 312,461 | 0.008 | 0.055 | 0.089 | 0.126 | 0.216 | 0 | 0 |
+| Alpine container | 2 | 74,327.2 | 371,636 | 0.017 | 0.072 | 0.107 | 0.147 | 0.277 | 0 | 0 |
+| Alpine container | 4 | 90,633.6 | 453,168 | 0.037 | 0.102 | 0.137 | 0.190 | 0.775 | 0 | 0 |
+| Alpine container | 8 | 125,461.8 | 627,309 | 0.058 | 0.127 | 0.165 | 0.217 | 0.514 | 0 | 0 |
+| Alpine container | 16 | 275,310.2 | 1,376,551 | 0.054 | 0.089 | 0.122 | 0.177 | 0.640 | 0 | 0 |
+| Distroless container | 1 | 94,829.6 | 474,148 | 0.008 | 0.024 | 0.026 | 0.032 | 11.967 | 0 | 0 |
+| Distroless container | 2 | 158,864.6 | 794,323 | 0.011 | 0.022 | 0.029 | 0.039 | 0.142 | 0 | 0 |
+| Distroless container | 4 | 178,032.4 | 890,162 | 0.023 | 0.031 | 0.039 | 0.050 | 0.144 | 0 | 0 |
+| Distroless container | 8 | 247,732.4 | 1,238,662 | 0.031 | 0.046 | 0.054 | 0.065 | 0.294 | 0 | 0 |
+| Distroless container | 16 | 286,203 | 1,431,015 | 0.053 | 0.083 | 0.094 | 0.108 | 0.241 | 0 | 0 |
 
 ### Mixed Read/Write
 
@@ -90,21 +96,21 @@ Workload: alternating FC 0x03 reads and FC 0x06 write-single-register requests.
 
 | Runtime | In-flight | Throughput ops/s | Total ops | p50 ms | p95 ms | p99 ms | p99.9 ms | Max ms | Errors | RSS delta MiB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Local release | 1 | 58,873 | 294,364 | 0.016 | 0.021 | 0.031 | 0.041 | 0.108 | 0 | 0 |
-| Local release | 2 | 106,344 | 531,718 | 0.017 | 0.028 | 0.033 | 0.045 | 0.129 | 0 | 1 |
-| Local release | 4 | 170,552 | 852,758 | 0.022 | 0.031 | 0.038 | 0.054 | 0.122 | 0 | 1 |
-| Local release | 8 | 246,170 | 1,230,850 | 0.031 | 0.045 | 0.055 | 0.080 | 0.170 | 0 | 1 |
-| Local release | 16 | 288,579 | 1,442,897 | 0.055 | 0.079 | 0.092 | 0.115 | 0.285 | 0 | 1 |
-| Alpine container | 1 | 99,387 | 496,935 | 0.008 | 0.024 | 0.025 | 0.029 | 0.082 | 0 | 0 |
-| Alpine container | 2 | 159,425 | 797,123 | 0.011 | 0.021 | 0.028 | 0.035 | 0.129 | 0 | 0 |
-| Alpine container | 4 | 177,539 | 887,695 | 0.023 | 0.030 | 0.037 | 0.043 | 0.353 | 0 | 0 |
-| Alpine container | 8 | 252,992 | 1,264,962 | 0.031 | 0.045 | 0.052 | 0.060 | 0.107 | 0 | 0 |
-| Alpine container | 16 | 289,149 | 1,445,747 | 0.052 | 0.082 | 0.093 | 0.105 | 0.238 | 0 | 0 |
-| Distroless container | 1 | 100,467 | 502,336 | 0.008 | 0.024 | 0.025 | 0.029 | 0.079 | 0 | 0 |
-| Distroless container | 2 | 157,220 | 786,100 | 0.011 | 0.021 | 0.028 | 0.035 | 0.077 | 0 | 0 |
-| Distroless container | 4 | 177,554 | 887,769 | 0.023 | 0.030 | 0.037 | 0.044 | 0.087 | 0 | 0 |
-| Distroless container | 8 | 251,390 | 1,256,952 | 0.031 | 0.045 | 0.052 | 0.061 | 0.103 | 0 | 0 |
-| Distroless container | 16 | 289,998 | 1,449,992 | 0.052 | 0.082 | 0.092 | 0.105 | 0.198 | 0 | 0 |
+| Local release | 1 | 59,054 | 295,270 | 0.016 | 0.021 | 0.031 | 0.039 | 0.093 | 0 | 0 |
+| Local release | 2 | 112,511.2 | 562,556 | 0.016 | 0.026 | 0.035 | 0.057 | 0.177 | 0 | 1 |
+| Local release | 4 | 161,249.6 | 806,248 | 0.022 | 0.040 | 0.064 | 0.091 | 5.027 | 0 | 1 |
+| Local release | 8 | 250,629.2 | 1,253,146 | 0.031 | 0.044 | 0.051 | 0.066 | 0.141 | 0 | 1 |
+| Local release | 16 | 251,765 | 1,258,825 | 0.058 | 0.117 | 0.159 | 0.204 | 0.309 | 0 | 1 |
+| Alpine container | 1 | 98,961.8 | 494,809 | 0.008 | 0.024 | 0.026 | 0.053 | 0.780 | 0 | 0 |
+| Alpine container | 2 | 142,523.8 | 712,619 | 0.011 | 0.023 | 0.033 | 0.074 | 2.179 | 0 | 0 |
+| Alpine container | 4 | 175,937.6 | 879,688 | 0.022 | 0.034 | 0.048 | 0.090 | 5.763 | 0 | 0 |
+| Alpine container | 8 | 247,175.8 | 1,235,879 | 0.031 | 0.047 | 0.059 | 0.080 | 0.167 | 0 | 0 |
+| Alpine container | 16 | 287,541.8 | 1,437,709 | 0.052 | 0.082 | 0.093 | 0.108 | 0.267 | 0 | 0 |
+| Distroless container | 1 | 95,229.4 | 476,147 | 0.008 | 0.025 | 0.026 | 0.032 | 11.223 | 0 | 0 |
+| Distroless container | 2 | 155,972 | 779,860 | 0.011 | 0.023 | 0.029 | 0.038 | 0.140 | 0 | 0 |
+| Distroless container | 4 | 178,149.2 | 890,746 | 0.023 | 0.031 | 0.038 | 0.049 | 0.134 | 0 | 0 |
+| Distroless container | 8 | 250,089.6 | 1,250,448 | 0.031 | 0.046 | 0.054 | 0.069 | 1.391 | 0 | 0 |
+| Distroless container | 16 | 287,946.4 | 1,439,732 | 0.052 | 0.082 | 0.093 | 0.105 | 0.378 | 0 | 0 |
 
 ### Docker Image Footprint
 
@@ -120,24 +126,25 @@ These image sizes were collected with `docker inspect` after local arm64 builds.
 ## Findings
 
 - Single-connection pipelining still scales materially on local loopback. The
-  local release run scaled from 57.8k to 288.2k ops/sec for reads and from
-  58.9k to 288.6k ops/sec for mixed read/write.
+  local release run scaled from 62.1k to 230.3k ops/sec for reads and from
+  59.1k to 251.8k ops/sec for mixed read/write.
 - All 30 local/Docker rows completed with zero request errors.
-- Tail latency rose as expected with deeper queues, but p99 stayed below 0.1 ms
+- Tail latency rose as expected with deeper queues. p99 stayed below 0.17 ms
   for every local and Docker row in this matrix.
 - RSS stayed effectively flat, with local measured deltas at 0-1 MiB across the
   matrix.
 - The Docker runs are not an apples-to-apples replacement for native macOS
-  numbers because Docker Desktop runs inside a Linux VM. In this environment the
-  containers were faster at shallow queue depths, while depths 8 and 16
-  converged with the local release run.
+  numbers because Docker Desktop runs inside a Linux VM. In this environment
+  distroless remained faster than native at most queue depths, Alpine lagged at
+  depths 2-8 on the read-only workload, and both containers converged around
+  286k-288k ops/sec at depth 16.
 - The distroless runtime keeps the same functional smoke behavior as the Alpine
   runtime while cutting the local arm64 image footprint by roughly 56%.
 - The distroless benchmark image is about 42% smaller than the Alpine benchmark
-  image and showed no meaningful throughput penalty versus Alpine in this local
-  loopback suite.
-- No throughput regression is visible from the recent strict codec validation
-  changes; the refreshed numbers are close to the previous `4e88718` baseline.
+  image and was faster than Alpine on most rows in this local loopback suite.
+- Docker Desktop produced isolated max-latency outliers at shallow distroless
+  depth-1 rows, but the p99 and p99.9 values stayed low and no request errors
+  were recorded.
 
 ## Codec and Zero-Copy Direction
 
@@ -211,13 +218,13 @@ Treat these as hotspot-shape indicators, not release-grade Criterion baselines:
 | Path | Quick-mode timing | Signal |
 |---|---:|---|
 | Max FC 0x10 request decode | 1.58 ns | Decode validates the envelope and borrows payload bytes. |
-| Max FC 0x03 response decode | 1.53 ns | Response decode borrows register payload bytes. |
-| Max FC 0x03 response decode + register iteration | 44.6 ns | Register value access, not decode, is the first payload-sized cost. |
+| Max FC 0x03 response decode | 1.48 ns | Response decode borrows register payload bytes. |
+| Max FC 0x03 response decode + register iteration | 44.2 ns | Register value access, not decode, is the first payload-sized cost. |
 | Owned `Bytes` FC 0x03 dispatch | 12.3 ns | Owned slicing/refcount path is still small. |
-| MBAP decode, fresh buffer per iteration | 31.6 ns | Includes receive-buffer allocation/copy shape. |
+| MBAP decode, fresh buffer per iteration | 29.8 ns | Includes receive-buffer allocation/copy shape. |
 | MBAP decode, reused buffer | 13.9 ns | Isolates framing/parser work more closely. |
-| Max register write unpack to `Vec<u16>` | 63.1 ns | Server write materialization is larger than decode. |
-| Max coil write unpack to `Vec<bool>` | 377.5 ns | Packed-bit expansion is the strongest current allocation/copy candidate. |
+| Max register write unpack to `Vec<u16>` | 62.5 ns | Server write materialization is larger than decode. |
+| Max coil write unpack to `Vec<bool>` | 371 ns | Packed-bit expansion is the strongest current allocation/copy candidate. |
 
 The packed store read/write quick smoke was run with
 `scripts/bench-local.sh store --quick --noplot` after adding direct wire-byte
@@ -225,23 +232,23 @@ paths to the in-memory store:
 
 | Path | Quick-mode timing | Signal |
 |---|---:|---|
-| Max register write from `&[u16]` | 11.9 ns | Slice baseline for existing store API. |
-| Max register write from wire bytes | 12.3 ns | Direct packed path avoids the previous temporary `Vec<u16>`. |
-| Max register wire bytes via `Vec<u16>` | 112 ns | Approximate old handler shape. |
-| Max register read to BE wire bytes | 51.2 ns | Store writes directly into the response payload buffer. |
-| Max register read via `u16` buffer then pack | 65.8 ns | Approximate old handler shape; extra scratch copy/encode pass costs ~22%. |
-| Max coil write from `&[bool]` | 290 ns | Bool-slice writes now pack into the byte-backed table. |
-| Max coil write from packed wire bytes | 230 ns | Direct wire-byte writes merge packed bytes into the table. |
-| Max coil packed bytes via `Vec<bool>` | 1.21 us | Approximate old handler shape; unpacking to bools and repacking is now clearly slower than the direct path. |
-| Max coil read to packed wire bytes | 122 ns | Store slices packed table bytes directly into Modbus wire order. |
-| Max coil read via bool buffer then pack | 1.29 us | Bool-slice reads now unpack from the packed table before the benchmark repacks to wire bytes. |
-| Max FIFO read to BE wire bytes | 26.3 ns | Store writes the queue snapshot directly into the response payload buffer. |
-| Max FIFO read via cloned `Vec<u16>` then pack | 50.9 ns | Approximate old handler shape; queue clone and second pack pass roughly double this microbench. |
-| Max file-record read to BE wire bytes | 59.1 ns | Store writes a 122-register file sub-record directly into the response payload buffer. |
-| Max file-record read via `u16` buffer then pack | 70.9 ns | Approximate old FC14 handler shape; extra scratch copy/encode pass costs ~17%. |
-| Max file-record write from `&[u16]` | 22.2 ns | Slice baseline for existing store API. |
-| Max file-record write from wire bytes | 19.0 ns | Direct FC15 path keeps borrowed request bytes through validation and avoids per-group allocation. |
-| Max file-record wire bytes via `Vec<u16>` | 117 ns | Approximate old FC15 handler shape; per-group vector materialization dominates. |
+| Max register write from `&[u16]` | 6.53 ns | Slice baseline for existing store API. |
+| Max register write from wire bytes | 7.43 ns | Direct packed path avoids the previous temporary `Vec<u16>`. |
+| Max register wire bytes via `Vec<u16>` | 68.7 ns | Approximate old handler shape. |
+| Max register read to BE wire bytes | 28.9 ns | Store writes directly into the response payload buffer. |
+| Max register read via `u16` buffer then pack | 37.9 ns | Approximate old handler shape; extra scratch copy/encode pass costs ~31%. |
+| Max coil write from `&[bool]` | 295 ns | Bool-slice writes now pack into the byte-backed table. |
+| Max coil write from packed wire bytes | 234 ns | Direct wire-byte writes merge packed bytes into the table. |
+| Max coil packed bytes via `Vec<bool>` | 1.18 us | Approximate old handler shape; unpacking to bools and repacking is now clearly slower than the direct path. |
+| Max coil read to packed wire bytes | 124 ns | Store slices packed table bytes directly into Modbus wire order. |
+| Max coil read via bool buffer then pack | 1.37 us | Bool-slice reads now unpack from the packed table before the benchmark repacks to wire bytes. |
+| Max FIFO read to BE wire bytes | 15.1 ns | Store writes the queue snapshot directly into the response payload buffer. |
+| Max FIFO read via cloned `Vec<u16>` then pack | 27.9 ns | Approximate old handler shape; queue clone and second pack pass roughly double this microbench. |
+| Max file-record read to BE wire bytes | 32.3 ns | Store writes a 122-register file sub-record directly into the response payload buffer. |
+| Max file-record read via `u16` buffer then pack | 40.8 ns | Approximate old FC14 handler shape; extra scratch copy/encode pass costs ~26%. |
+| Max file-record write from `&[u16]` | 12.3 ns | Slice baseline for existing store API. |
+| Max file-record write from wire bytes | 11.2 ns | Direct FC15 path keeps borrowed request bytes through validation and avoids per-group allocation. |
+| Max file-record wire bytes via `Vec<u16>` | 70.9 ns | Approximate old FC15 handler shape; per-group vector materialization dominates. |
 
 The RTU-over-TCP CRC scan quick smoke was run with
 `scripts/bench-local.sh codec rtu_tcp --quick --noplot` after changing the
@@ -249,10 +256,10 @@ frame-boundary scan to update CRC state incrementally:
 
 | Path | Quick-mode timing | Signal |
 |---|---:|---|
-| RTU/TCP FC 0x03 read request decode | 30.2 ns | Short-frame happy path remains tiny. |
-| RTU/TCP max-size valid frame decode | 430 ns | Full-frame scan stays sub-microsecond. |
-| RTU/TCP full corrupt buffer decode | 382 ns | No-match path now scans once instead of rehashing every prefix. |
-| Old-style prefix rescan, full corrupt buffer | 40.0 us | Benchmark-only comparator for the previous scan strategy. |
+| RTU/TCP FC 0x03 read request decode | 34.9 ns | Short-frame happy path remains tiny. |
+| RTU/TCP max-size valid frame decode | 461 ns | Full-frame scan stays sub-microsecond. |
+| RTU/TCP full corrupt buffer decode | 410 ns | No-match path now scans once instead of rehashing every prefix. |
+| Old-style prefix rescan, full corrupt buffer | 42.4 us | Benchmark-only comparator for the previous scan strategy. |
 
 The server handler quick smoke was run with
 `scripts/bench-local.sh handler --quick --noplot` after adding direct
@@ -262,19 +269,31 @@ TLS, RTU framing, and client-side work:
 
 | Path | Quick-mode timing | Signal |
 |---|---:|---|
-| FC01 max coil read | 119 ns | Byte-backed table lets the store emit packed response bytes directly. |
-| FC02 max discrete-input read | 121 ns | Shares the same byte-backed packed response path as FC01. |
-| FC03 max holding-register read | 29.4 ns | Direct BE register response path keeps full-size reads small. |
-| FC0F max coil write | 249 ns | Packed request bytes merge directly into the byte-backed coil table. |
-| FC10 max register write | 28.3 ns | Direct BE write path avoids the old request-payload `Vec<u16>`. |
-| FC14 two-group file read | 43.9 ns | Direct final-buffer construction removes the previous response-data buffer and encode pass. |
-| FC15 two-group file write | 50.9 ns | Stack-bounded validation staging removes the previous group `Vec` while preserving atomic framing validation. |
-| FC17 max read/write registers | 43.7 ns | Read half now writes directly into the final response bytes. |
-| FC18 FIFO two-value read | 26.5 ns | Direct FIFO response path is comparable to simple register handlers. |
-| FC08 return query data | 21.1 ns | Direct diagnostic append path echoes borrowed request bytes into the response. |
-| FC0C get comm event log | 17.4 ns | Direct event-log append path writes bounded event bytes into the response buffer. |
-| FC11 report server ID | 34.3 ns | Direct server-id append path avoids cloning the store blob before response construction. |
-| FC2B basic device identification | 47.3 ns | Stack-backed object selection removes the previous object/filter/selection vectors. |
+| FC01 max coil read | 123 ns | Byte-backed table lets the store emit packed response bytes directly. |
+| FC02 max discrete-input read | 126 ns | Shares the same byte-backed packed response path as FC01. |
+| FC03 max holding-register read | 29.2 ns | Direct BE register response path keeps full-size reads small. |
+| FC0F max coil write | 255 ns | Packed request bytes merge directly into the byte-backed coil table. |
+| FC10 max register write | 29.9 ns | Direct BE write path avoids the old request-payload `Vec<u16>`. |
+| FC14 two-group file read | 48.4 ns | Direct final-buffer construction removes the previous response-data buffer and encode pass. |
+| FC15 two-group file write | 57.3 ns | Stack-bounded validation staging removes the previous group `Vec` while preserving atomic framing validation. |
+| FC17 max read/write registers | 42.7 ns | Read half now writes directly into the final response bytes. |
+| FC18 FIFO two-value read | 27.0 ns | Direct FIFO response path is comparable to simple register handlers. |
+| FC08 return query data | 21.9 ns | Direct diagnostic append path echoes borrowed request bytes into the response. |
+| FC0C get comm event log | 17.9 ns | Direct event-log append path writes bounded event bytes into the response buffer. |
+| FC11 report server ID | 22.2 ns | Direct server-id append path avoids cloning the store blob before response construction. |
+| FC2B basic device identification | 31.1 ns | Stack-backed object selection removes the previous object/filter/selection vectors. |
+
+The pipelined TCP Criterion quick smoke was run with
+`scripts/bench-local.sh tcp-pipelined --quick --noplot`. This benchmark reports
+read-holding-register throughput for repeated batches at each in-flight depth:
+
+| In-flight | Quick-mode throughput |
+|---:|---:|
+| 1 | 48.1 Kelem/s |
+| 2 | 85.0 Kelem/s |
+| 4 | 136 Kelem/s |
+| 8 | 199 Kelem/s |
+| 16 | 250 Kelem/s |
 
 The most likely next performance wins are adjacent to, not inside, raw PDU
 parsing:
