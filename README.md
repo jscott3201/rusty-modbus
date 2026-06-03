@@ -316,7 +316,8 @@ Release flow:
 1. Work lands on `dev` through ordinary PRs.
 2. Releases are cut by opening a `dev` -> `main` PR and passing `release.yml`.
 3. A `v0.1.0` tag on `main` triggers `publish.yml`, which publishes crates in
-   dependency order and builds CLI release binaries.
+   dependency order, publishes Python distributions to PyPI, and builds CLI
+   release binaries.
 
 Minimum Rust version: 1.95 (pinned in `rust-toolchain.toml`)
 

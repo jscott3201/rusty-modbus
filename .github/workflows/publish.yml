@@ -2,8 +2,9 @@
 #
 # Fires after a release PR has merged to `main` (and passed release.yml). It
 # validates the tag matches the workspace version, publishes every crate to
-# crates.io in dependency order, builds CLI binaries for 5 targets, and cuts a
-# GitHub release. Crate publish order matters due to inter-crate path+version
+# crates.io in dependency order, builds and publishes Python distributions to
+# PyPI through Trusted Publishing, builds CLI binaries for 5 targets, and cuts
+# a GitHub release. Crate publish order matters due to inter-crate path+version
 # deps: types -> codec -> frame -> tcp -> rtu -> tls -> pool -> client ->
 # server -> gateway -> sim -> facade.
 #
@@ -93,6 +94,91 @@ jobs:
             echo "::endgroup::"
           done
 
+  build-python-sdist:
+    name: Python sdist
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: install maturin
+        run: python -m pip install "maturin>=1.12,<2"
+      - name: build sdist
+        run: |
+          maturin sdist \
+            --manifest-path crates/rusty-modbus-python/Cargo.toml \
+            -o dist/python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist
+          path: dist/python/*.tar.gz
+
+  build-python-wheels:
+    name: Python wheel (${{ matrix.tag }})
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tag: cp314
+            interpreter: python3.14
+            expected: cp314-cp314-manylinux
+          - tag: cp314t
+            interpreter: python3.14t
+            expected: cp314-cp314t-manylinux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: >-
+            --release
+            --locked
+            --manifest-path crates/rusty-modbus-python/Cargo.toml
+            -o dist/python
+            -i ${{ matrix.interpreter }}
+          manylinux: "2014"
+          rust-toolchain: "1.95.0"
+      - name: assert wheel tag
+        env:
+          EXPECTED: ${{ matrix.expected }}
+        run: |
+          python3 - <<'PY'
+          import glob
+          import os
+
+          wheels = glob.glob("dist/python/*.whl")
+          expected = os.environ["EXPECTED"]
+          assert wheels, "no wheels were built"
+          assert any(expected in wheel for wheel in wheels), (expected, wheels)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-${{ matrix.tag }}
+          path: dist/python/*.whl
+
+  publish-python:
+    name: publish to PyPI
+    needs: [validate, build-python-sdist, build-python-wheels]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-*
+          path: dist/python
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/python
+
   build-cli-binaries:
     name: CLI binary (${{ matrix.target }})
     needs: validate
@@ -142,7 +228,7 @@ jobs:
 
   github-release:
     name: GitHub release
-    needs: [publish-crates, build-cli-binaries]
+    needs: [publish-crates, publish-python, build-cli-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
