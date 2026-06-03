@@ -3,13 +3,13 @@
 use rusty_modbus_codec::request::{ReadFileRecordRequest, WriteFileRecordRequest};
 use rusty_modbus_codec::response::{
     GetCommEventCounterResponse, MaskWriteRegisterResponse, ReadExceptionStatusResponse,
-    ReadFileRecordResponse, WriteFileRecordResponse, WriteMultipleCoilsResponse,
-    WriteMultipleRegistersResponse, WriteSingleCoilResponse, WriteSingleRegisterResponse,
+    WriteFileRecordResponse, WriteMultipleCoilsResponse, WriteMultipleRegistersResponse,
+    WriteSingleCoilResponse, WriteSingleRegisterResponse,
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
-    Address, DiagnosticSubFunction, ExceptionCode, FunctionCode, MAX_FIFO_VALUES, MeiType,
-    Quantity, UnitId,
+    Address, DiagnosticSubFunction, ExceptionCode, FunctionCode, MAX_FIFO_VALUES, MAX_PDU_SIZE,
+    MeiType, Quantity, UnitId,
 };
 use tracing::debug;
 
@@ -622,7 +622,9 @@ async fn handle_read_file_record<S: DataStore>(
             ExceptionCode::IllegalDataValue,
         );
     }
-    let mut data: Vec<u8> = Vec::new();
+    let mut response = Vec::with_capacity(MAX_PDU_SIZE);
+    response.push(FunctionCode::ReadFileRecord.code());
+    response.push(0);
     for chunk in subs.chunks_exact(7) {
         if chunk[0] != 6 {
             // Reference type must be 6 (Figure 24 groups this under 0x02).
@@ -644,15 +646,15 @@ async fn handle_read_file_record<S: DataStore>(
                 ExceptionCode::IllegalDataAddress,
             );
         }
-        let group_start = data.len();
+        let group_start = response.len();
         let value_byte_count = requested_count * 2;
-        data.resize(group_start + 2 + value_byte_count, 0);
+        response.resize(group_start + 2 + value_byte_count, 0);
         match store
             .read_file_record_be(
                 file,
                 record,
                 length,
-                &mut data[group_start + 2..group_start + 2 + value_byte_count],
+                &mut response[group_start + 2..group_start + 2 + value_byte_count],
             )
             .await
         {
@@ -670,29 +672,27 @@ async fn handle_read_file_record<S: DataStore>(
                     Ok(resp_len) => resp_len,
                     Err(resp) => return resp,
                 };
-                data[group_start] = resp_len;
-                data[group_start + 1] = 0x06;
+                response[group_start] = resp_len;
+                response[group_start + 1] = 0x06;
             }
             Err(ec) => return encode_exception(FunctionCode::ReadFileRecord.exception_code(), ec),
         }
         // Response PDU is FC + byte_count(1) + data, capped at 253 bytes.
         // FC14 sub-response groups are even-sized, so the largest valid
         // byte_count is 250.
-        if data.len() > 250 {
+        if response.len() - 2 > 250 {
             return encode_exception(
                 FunctionCode::ReadFileRecord.exception_code(),
                 ExceptionCode::IllegalDataValue,
             );
         }
     }
-    let byte_count = match checked_response_u8(data.len(), FunctionCode::ReadFileRecord) {
+    let byte_count = match checked_response_u8(response.len() - 2, FunctionCode::ReadFileRecord) {
         Ok(byte_count) => byte_count,
         Err(resp) => return resp,
     };
-    encode_response(&ReadFileRecordResponse {
-        byte_count,
-        data: &data,
-    })
+    response[1] = byte_count;
+    response
 }
 
 async fn apply_write_file_record<S: DataStore>(

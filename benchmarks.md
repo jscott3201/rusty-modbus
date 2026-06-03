@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `621a07e` base plus this direct FC0C comm-event-log response refresh |
+| Git commit | `7be0ca8` base plus this direct FC14 final response refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -170,6 +170,10 @@ final response buffer while returning only the fixed status/counter metadata.
 Existing stores that return an owned `CommEventLog` still work through the
 default hook.
 
+FC 0x14 Read File Record now builds the final response PDU directly while each
+sub-response group is filled, avoiding the previous intermediate response-data
+buffer and second encode/copy pass.
+
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
 decoder overlays it onto the read buffer before slicing the PDU. The benchmark
@@ -245,7 +249,7 @@ TLS, RTU framing, and client-side work:
 | FC01 max coil read | 799 ns | Packed-bit response generation remains the largest measured handler path. |
 | FC03 max holding-register read | 29.4 ns | Direct BE register response path keeps full-size reads small. |
 | FC10 max register write | 28.3 ns | Direct BE write path avoids the old request-payload `Vec<u16>`. |
-| FC14 two-group file read | 68.6 ns | Direct file-record response writes keep multi-group reads sub-100 ns. |
+| FC14 two-group file read | 43.9 ns | Direct final-buffer construction removes the previous response-data buffer and encode pass. |
 | FC17 max read/write registers | 43.7 ns | Read half now writes directly into the final response bytes. |
 | FC18 FIFO two-value read | 26.5 ns | Direct FIFO response path is comparable to simple register handlers. |
 | FC08 return query data | 21.1 ns | Direct diagnostic append path echoes borrowed request bytes into the response. |
