@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Sequence
 from typing import Protocol
 
+_ByteLike = bytes | bytearray | Sequence[int]
+
 __all__ = [
     "ModbusError",
     "TimeoutError",
@@ -194,7 +196,7 @@ class DeviceIdentification:
 # -- Server -------------------------------------------------------------------
 
 class DataStore(Protocol):
-    """Protocol for Python-backed synchronous Modbus server data stores."""
+    """Required callbacks for Python-backed synchronous server data stores."""
 
     def read_coils(self, address: int, quantity: int) -> Sequence[bool]: ...
     def write_coil(self, address: int, value: bool) -> None: ...
@@ -204,6 +206,34 @@ class DataStore(Protocol):
     def write_register(self, address: int, value: int) -> None: ...
     def write_registers(self, address: int, values: Sequence[int]) -> None: ...
     def read_input_registers(self, address: int, quantity: int) -> Sequence[int]: ...
+
+class FileRecordDataStore(DataStore, Protocol):
+    """Optional FC 0x14/0x15 callbacks for Python-backed stores."""
+
+    def read_file_record(
+        self, file_number: int, record_number: int, record_length: int
+    ) -> Sequence[int]: ...
+    def write_file_record(
+        self, file_number: int, record_number: int, values: Sequence[int]
+    ) -> None: ...
+
+class FifoDataStore(DataStore, Protocol):
+    """Optional FC 0x18 callback for Python-backed stores."""
+
+    def read_fifo_queue(self, address: int) -> Sequence[int]: ...
+
+class SerialDiagnosticsDataStore(DataStore, Protocol):
+    """Optional FC 0x07/0x08/0x0B/0x0C callbacks for Python-backed stores."""
+
+    def read_exception_status(self) -> int: ...
+    def get_comm_event_counter(self) -> tuple[int, int]: ...
+    def get_comm_event_log(self) -> tuple[int, int, int, _ByteLike]: ...
+    def diagnostic(self, sub_function: int, data: _ByteLike) -> _ByteLike | None: ...
+
+class ServerIdentificationDataStore(DataStore, Protocol):
+    """Optional FC 0x11 callback for Python-backed stores."""
+
+    def report_server_id(self) -> _ByteLike: ...
 
 class InMemoryStore:
     """Thread-safe in-memory Modbus data store."""
@@ -216,7 +246,7 @@ class InMemoryStore:
     def set_file_record(self, file_number: int, record_number: int, value: int) -> None: ...
     def set_fifo_queue(self, address: int, values: Sequence[int]) -> None: ...
     def set_exception_status(self, status: int) -> None: ...
-    def set_server_id(self, data: bytes) -> None: ...
+    def set_server_id(self, data: _ByteLike) -> None: ...
     def __repr__(self) -> str: ...
 
 class ModbusServer:
@@ -369,13 +399,13 @@ class ModbusClient:
     # -- File records ---------------------------------------------------------
 
     def read_file_record(
-        self, unit_id: int, sub_request_data: bytes
+        self, unit_id: int, sub_request_data: _ByteLike
     ) -> Awaitable[bytes]:
         """Read file record (FC 0x14)."""
         ...
 
     def write_file_record(
-        self, unit_id: int, sub_request_data: bytes
+        self, unit_id: int, sub_request_data: _ByteLike
     ) -> Awaitable[bytes]:
         """Write file record (FC 0x15)."""
         ...
@@ -512,13 +542,13 @@ class SyncModbusClient:
     # -- File records ---------------------------------------------------------
 
     def read_file_record(
-        self, unit_id: int, sub_request_data: bytes
+        self, unit_id: int, sub_request_data: _ByteLike
     ) -> bytes:
         """Read file record (FC 0x14)."""
         ...
 
     def write_file_record(
-        self, unit_id: int, sub_request_data: bytes
+        self, unit_id: int, sub_request_data: _ByteLike
     ) -> bytes:
         """Write file record (FC 0x15)."""
         ...
