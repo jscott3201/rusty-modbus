@@ -121,6 +121,15 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
         ClientError::ShortResponse { expected, actual } => ModbusError::new_err(format!(
             "short response: need {expected} data bytes for the request, got {actual}"
         )),
+        ClientError::InvalidDeviceIdentificationContinuation {
+            previous_object_id,
+            next_object_id,
+        } => ModbusError::new_err(format!(
+            "invalid device identification continuation: next object ID 0x{next_object_id:02X} did not advance past 0x{previous_object_id:02X}"
+        )),
+        ClientError::DeviceIdentificationPaginationLimit { limit } => ModbusError::new_err(
+            format!("device identification pagination exceeded {limit} response pages"),
+        ),
     }
 }
 

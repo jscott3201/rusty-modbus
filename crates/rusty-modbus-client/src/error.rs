@@ -90,4 +90,25 @@ pub enum ClientError {
         /// Data bytes the server actually returned.
         actual: usize,
     },
+
+    /// A Read Device Identification continuation did not advance to a higher
+    /// object ID. Without this guard, a malformed peer can keep the client in
+    /// an unbounded `more_follows` loop.
+    #[error(
+        "invalid device identification continuation: next object ID {next_object_id:#04x} did not advance past {previous_object_id:#04x}"
+    )]
+    InvalidDeviceIdentificationContinuation {
+        /// Object ID used for the request that produced the response.
+        previous_object_id: u8,
+        /// Continuation object ID returned by the server.
+        next_object_id: u8,
+    },
+
+    /// A Read Device Identification response chain exceeded the maximum number
+    /// of Basic identification pages the client will follow.
+    #[error("device identification pagination exceeded {limit} response pages")]
+    DeviceIdentificationPaginationLimit {
+        /// Maximum number of response pages followed for the request.
+        limit: u8,
+    },
 }
