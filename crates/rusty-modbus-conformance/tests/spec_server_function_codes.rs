@@ -10,7 +10,7 @@
 
 use rusty_modbus_server::handler::process_request;
 use rusty_modbus_server::{
-    CommEventLog, DataStore, DeviceIdentification, InMemoryStore, StoreConfig,
+    CommEventLog, CommEventLogMeta, DataStore, DeviceIdentification, InMemoryStore, StoreConfig,
 };
 use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, MAX_PDU_SIZE, UnitId};
 
@@ -454,6 +454,26 @@ impl DataStore for SizedEventLogStore {
     }
 }
 
+/// Appends event-log bytes directly into the response buffer.
+struct AppendEventLogStore {
+    len: usize,
+}
+impl DataStore for AppendEventLogStore {
+    stub_core_tables!();
+
+    async fn append_comm_event_log(
+        &self,
+        out: &mut Vec<u8>,
+    ) -> Result<CommEventLogMeta, ExceptionCode> {
+        out.extend(std::iter::repeat_n(0x5A, self.len));
+        Ok(CommEventLogMeta {
+            status: 0x0000,
+            event_count: 0x0108,
+            message_count: 0x0121,
+        })
+    }
+}
+
 /// Returns a diagnostic payload of a configured length, regardless of request data.
 struct SizedDiagnosticStore {
     len: usize,
@@ -668,9 +688,27 @@ async fn fc0c_event_log_boundary_64_events_ok() {
 }
 
 #[tokio::test]
+async fn fc0c_direct_event_log_append_matches_spec_example() {
+    let resp = respond(&AppendEventLogStore { len: 2 }, &[0x0C]).await;
+
+    assert_eq!(
+        resp,
+        vec![0x0C, 0x08, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x5A, 0x5A]
+    );
+}
+
+#[tokio::test]
 async fn fc0c_event_log_over_64_events_is_server_device_failure() {
     assert_eq!(
         respond(&SizedEventLogStore { len: 65 }, &[0x0C]).await,
+        vec![0x8C, 0x04]
+    );
+}
+
+#[tokio::test]
+async fn fc0c_direct_event_log_append_over_64_events_is_server_device_failure() {
+    assert_eq!(
+        respond(&AppendEventLogStore { len: 65 }, &[0x0C]).await,
         vec![0x8C, 0x04]
     );
 }
