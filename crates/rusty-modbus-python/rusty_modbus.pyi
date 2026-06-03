@@ -102,10 +102,14 @@ class GatewayTargetDeviceFailedToRespondError(ModbusError):
 class ClientConfig:
     """Client connection configuration."""
 
-    unit_id: int
-    timeout_secs: float
-    max_in_flight: int
-    retry: RetryConfig | None
+    @property
+    def unit_id(self) -> int: ...
+    @property
+    def timeout_secs(self) -> float: ...
+    @property
+    def max_in_flight(self) -> int: ...
+    @property
+    def retry(self) -> RetryConfig | None: ...
 
     def __init__(
         self,
@@ -119,8 +123,10 @@ class ClientConfig:
 class RetryConfig:
     """Retry configuration for transient failures."""
 
-    max_retries: int
-    retry_delay_ms: int
+    @property
+    def max_retries(self) -> int: ...
+    @property
+    def retry_delay_ms(self) -> int: ...
 
     def __init__(
         self,
@@ -132,10 +138,14 @@ class RetryConfig:
 class TlsConfig:
     """TLS mutual authentication configuration."""
 
-    ca_cert: str
-    client_cert: str
-    client_key: str
-    timeout_secs: float
+    @property
+    def ca_cert(self) -> str: ...
+    @property
+    def client_cert(self) -> str: ...
+    @property
+    def client_key(self) -> str: ...
+    @property
+    def timeout_secs(self) -> float: ...
 
     def __init__(
         self,
@@ -149,11 +159,16 @@ class TlsConfig:
 class ServerConfig:
     """Modbus/TCP server configuration."""
 
-    listen_addr: str
-    unit_id: int
-    max_connections: int
-    max_transactions: int
-    shutdown_timeout_secs: float
+    @property
+    def listen_addr(self) -> str: ...
+    @property
+    def unit_id(self) -> int: ...
+    @property
+    def max_connections(self) -> int: ...
+    @property
+    def max_transactions(self) -> int: ...
+    @property
+    def shutdown_timeout_secs(self) -> float: ...
 
     def __init__(
         self,
@@ -168,10 +183,14 @@ class ServerConfig:
 class StoreConfig:
     """In-memory data-store sizing configuration."""
 
-    coil_count: int
-    discrete_input_count: int
-    holding_register_count: int
-    input_register_count: int
+    @property
+    def coil_count(self) -> int: ...
+    @property
+    def discrete_input_count(self) -> int: ...
+    @property
+    def holding_register_count(self) -> int: ...
+    @property
+    def input_register_count(self) -> int: ...
 
     def __init__(
         self,
@@ -187,9 +206,12 @@ class StoreConfig:
 class DeviceIdentification:
     """Device identification returned by FC 0x2B (MEI 0x0E)."""
 
-    vendor_name: str | None
-    product_code: str | None
-    major_minor_revision: str | None
+    @property
+    def vendor_name(self) -> str | None: ...
+    @property
+    def product_code(self) -> str | None: ...
+    @property
+    def major_minor_revision(self) -> str | None: ...
 
     def __repr__(self) -> str: ...
 
@@ -460,7 +482,7 @@ class SyncModbusClient:
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: object | None,
-    ) -> None: ...
+    ) -> bool: ...
 
     # -- Register methods -----------------------------------------------------
 

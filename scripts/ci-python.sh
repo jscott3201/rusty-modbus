@@ -93,3 +93,6 @@ run uv run "${uv_args[@]}" --with "$wheel" --with mypy \
 
 run uv run "${uv_args[@]}" --with "$wheel" --with pyright \
   python -m pyright --verifytypes rusty_modbus
+
+run uv run "${uv_args[@]}" --with "$wheel" --with pyright \
+  python -m pyright --project typing_tests/pyrightconfig.json
