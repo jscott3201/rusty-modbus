@@ -185,7 +185,13 @@ then:
 1. Validates tag version against `Cargo.toml`.
 2. Runs the inter-crate publish-version guard.
 3. Publishes crates to crates.io in dependency order.
-4. Builds CLI binaries for GitHub Releases.
+4. Builds Python source and Linux manylinux wheels for CPython 3.14 and 3.14t.
+5. Publishes Python distributions to PyPI through Trusted Publishing.
+6. Builds CLI binaries for GitHub Releases.
+
+PyPI Trusted Publishing should be configured for repository
+`jscott3201/rusty-modbus`, workflow `.github/workflows/publish.yml`, and
+environment `release`.
 
 Do not bump versions as part of ordinary docs, CI, spec, performance, or typing
 PRs. Version changes are release decisions.
