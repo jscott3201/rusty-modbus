@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `9885387` base plus this FC15 stack-staged write refresh |
+| Git commit | `868ae89` base plus this byte-oriented packed-bit refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -180,6 +180,11 @@ is the smallest valid sub-request at 9 bytes, so the largest valid request can
 contain 27 groups; this preserves the two-pass "validate before commit" behavior
 without a heap `Vec` for group staging.
 
+Packed coil/discrete helpers now work a byte at a time instead of repeatedly
+dividing each bit index back into an output byte. This keeps the wire format
+unchanged while reducing the dominant FC 0x01/0x02 read cost and the FC 0x0F
+packed write unpack path.
+
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
 decoder overlays it onto the read buffer before slicing the PDU. The benchmark
@@ -220,11 +225,11 @@ paths to the in-memory store:
 | Max register wire bytes via `Vec<u16>` | 112 ns | Approximate old handler shape. |
 | Max register read to BE wire bytes | 51.2 ns | Store writes directly into the response payload buffer. |
 | Max register read via `u16` buffer then pack | 65.8 ns | Approximate old handler shape; extra scratch copy/encode pass costs ~22%. |
-| Max coil write from `&[bool]` | 43.3 ns | Slice baseline for existing store API. |
-| Max coil write from packed wire bytes | 1.24 us | Direct packed path avoids the previous temporary `Vec<bool>`. |
-| Max coil packed bytes via `Vec<bool>` | 1.27 us | Approximate old handler shape; packed-bit expansion dominates. |
-| Max coil read to packed wire bytes | 1.42 us | Store writes directly into the response payload buffer. |
-| Max coil read via bool buffer then pack | 1.53 us | Approximate old handler shape; extra scratch fill/copy/pack pass costs ~7%. |
+| Max coil write from `&[bool]` | 21.3 ns | Slice baseline for existing store API. |
+| Max coil write from packed wire bytes | 525 ns | Direct byte-oriented unpack avoids the previous temporary `Vec<bool>`. |
+| Max coil packed bytes via `Vec<bool>` | 731 ns | Approximate old handler shape; packed-bit expansion still costs more than direct unpack. |
+| Max coil read to packed wire bytes | 360 ns | Store writes directly into the response payload buffer with byte-oriented packing. |
+| Max coil read via bool buffer then pack | 945 ns | Approximate old handler shape; extra scratch fill/copy still dominates the fallback path. |
 | Max FIFO read to BE wire bytes | 26.3 ns | Store writes the queue snapshot directly into the response payload buffer. |
 | Max FIFO read via cloned `Vec<u16>` then pack | 50.9 ns | Approximate old handler shape; queue clone and second pack pass roughly double this microbench. |
 | Max file-record read to BE wire bytes | 59.1 ns | Store writes a 122-register file sub-record directly into the response payload buffer. |
@@ -252,8 +257,10 @@ TLS, RTU framing, and client-side work:
 
 | Path | Quick-mode timing | Signal |
 |---|---:|---|
-| FC01 max coil read | 799 ns | Packed-bit response generation remains the largest measured handler path. |
+| FC01 max coil read | 345 ns | Byte-oriented packed response generation removes the previous per-bit output indexing cost. |
+| FC02 max discrete-input read | 350 ns | Shares the same byte-oriented packed response path as FC01. |
 | FC03 max holding-register read | 29.4 ns | Direct BE register response path keeps full-size reads small. |
+| FC0F max coil write | 540 ns | Byte-oriented packed request unpack keeps FC0F below the old FC01 read baseline. |
 | FC10 max register write | 28.3 ns | Direct BE write path avoids the old request-payload `Vec<u16>`. |
 | FC14 two-group file read | 43.9 ns | Direct final-buffer construction removes the previous response-data buffer and encode pass. |
 | FC15 two-group file write | 50.9 ns | Stack-bounded validation staging removes the previous group `Vec` while preserving atomic framing validation. |

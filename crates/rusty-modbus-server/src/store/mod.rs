@@ -56,8 +56,12 @@ pub(crate) fn unpack_packed_coils(
     if out.len() < quantity {
         return Err(ExceptionCode::IllegalDataValue);
     }
-    for (index, slot) in out.iter_mut().take(quantity).enumerate() {
-        *slot = packed_coil_value(packed_values, index);
+    for (byte_index, &byte) in packed_values.iter().enumerate() {
+        let start = byte_index * 8;
+        let bit_count = (quantity - start).min(8);
+        for bit in 0..bit_count {
+            out[start + bit] = (byte >> bit) & 1 == 1;
+        }
     }
     Ok(quantity)
 }
@@ -109,20 +113,19 @@ pub(crate) fn validate_register_values_be(
     Ok(usize::from(quantity))
 }
 
-pub(crate) fn packed_coil_value(packed_values: &[u8], index: usize) -> bool {
-    (packed_values[index / 8] >> (index % 8)) & 1 == 1
-}
-
 pub(crate) fn pack_coils(bits: &[bool], out: &mut [u8]) -> Result<(), ExceptionCode> {
     let byte_count = bits.len().div_ceil(8);
     if out.len() < byte_count {
         return Err(ExceptionCode::IllegalDataValue);
     }
-    out[..byte_count].fill(0);
-    for (index, &value) in bits.iter().enumerate() {
-        if value {
-            out[index / 8] |= 1 << (index % 8);
+    for (byte_index, out_byte) in out[..byte_count].iter_mut().enumerate() {
+        let start = byte_index * 8;
+        let end = (start + 8).min(bits.len());
+        let mut byte = 0u8;
+        for (bit, &value) in bits[start..end].iter().enumerate() {
+            byte |= u8::from(value) << bit;
         }
+        *out_byte = byte;
     }
     Ok(())
 }

@@ -18,7 +18,9 @@ fn bench_server_process_request(c: &mut Criterion) {
     let device_id = DeviceIdentification::default();
 
     let fc01 = [0x01, 0x00, 0x00, 0x07, 0xB0]; // 1968 coils
+    let fc02 = [0x02, 0x00, 0x00, 0x07, 0xD0]; // 2000 discrete inputs
     let fc03 = [0x03, 0x00, 0x00, 0x00, 0x7D]; // 125 holding registers
+    let fc0f = write_multiple_coils_pdu(0, 1968);
     let fc10 = write_multiple_registers_pdu(0, 123);
     let fc14 = [
         0x14, 0x0E, // byte count
@@ -54,8 +56,24 @@ fn bench_server_process_request(c: &mut Criterion) {
         &rt,
         store.as_ref(),
         &device_id,
+        "fc02_read_discrete_inputs_max",
+        &fc02,
+    );
+    bench_pdu(
+        &mut group,
+        &rt,
+        store.as_ref(),
+        &device_id,
         "fc03_read_holding_registers_max",
         &fc03,
+    );
+    bench_pdu(
+        &mut group,
+        &rt,
+        store.as_ref(),
+        &device_id,
+        "fc0f_write_coils_max",
+        &fc0f,
     );
     bench_pdu(
         &mut group,
@@ -164,6 +182,13 @@ fn seed_store() -> InMemoryStore {
                 .expect("benchmark coil seed should fit configured table");
         }
     }
+    for address in 0..2000 {
+        if address % 5 == 0 {
+            store
+                .set_discrete_input(address, true)
+                .expect("benchmark discrete input seed should fit configured table");
+        }
+    }
     store.set_file_record(4, 1, 0x0DFE).unwrap();
     store.set_file_record(4, 2, 0x0020).unwrap();
     store.set_file_record(3, 9, 0x33CD).unwrap();
@@ -261,6 +286,28 @@ fn read_write_multiple_registers_pdu(
     pdu.extend_from_slice(&(write_count as u16).to_be_bytes());
     pdu.push((write_count * 2) as u8);
     append_register_values(&mut pdu, write_count);
+    pdu
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn write_multiple_coils_pdu(address: u16, coil_count: usize) -> Vec<u8> {
+    let byte_count = coil_count.div_ceil(8);
+    let mut pdu = Vec::with_capacity(6 + byte_count);
+    pdu.push(0x0F);
+    pdu.extend_from_slice(&address.to_be_bytes());
+    pdu.extend_from_slice(&(coil_count as u16).to_be_bytes());
+    pdu.push(byte_count as u8);
+    for byte_index in 0..byte_count {
+        let start = byte_index * 8;
+        let bit_count = (coil_count - start).min(8);
+        let mut byte = 0u8;
+        for bit in 0..bit_count {
+            if (start + bit) % 3 == 0 {
+                byte |= 1 << bit;
+            }
+        }
+        pdu.push(byte);
+    }
     pdu
 }
 
