@@ -1,0 +1,191 @@
+# API Surfaces
+
+This document summarizes the public Rust and Python surfaces for the current
+0.1.0 line. It is intended to be stable enough for users evaluating the public
+repository while still reflecting the current pre-release state.
+
+## Rust Crates
+
+The Rust workspace uses edition 2024 with MSRV 1.95. The root facade crate is
+`rusty-modbus`; lower-level crates are also publishable so users can depend on a
+smaller API when they only need codec, transport, server, or simulator pieces.
+
+| Crate | Public role |
+|---|---|
+| `rusty-modbus` | Facade crate with feature-gated re-exports. Default feature is `tcp`. |
+| `rusty-modbus-types` | `no_std` Modbus newtypes, constants, enums, and fixed wire types. |
+| `rusty-modbus-codec` | Sans-IO PDU request/response encode and decode. |
+| `rusty-modbus-frame` | MBAP/RTU framing, CRC-16, Tokio codecs, and owned `Bytes` response types. |
+| `rusty-modbus-tcp` | TCP transport traits and Modbus/TCP transport implementation. |
+| `rusty-modbus-rtu` | Serial RTU and RTU-over-TCP transport support. |
+| `rusty-modbus-tls` | Modbus/TCP Security client transport using rustls. |
+| `rusty-modbus-client` | Pipelined async client with typed function-code methods. |
+| `rusty-modbus-server` | Async server and pluggable `DataStore` trait. |
+| `rusty-modbus-pool` | Connection pooling for client workloads. |
+| `rusty-modbus-gateway` | TCP to RTU gateway bridge. |
+| `rusty-modbus-sim` | YAML-driven in-process simulator. |
+
+The CLI crate is intentionally `publish = false`; release binaries are produced
+by the GitHub release pipeline instead of crates.io.
+
+## Facade Features
+
+| Feature | Default | API exposed |
+|---|---:|---|
+| `tcp` | yes | `rusty_modbus::tcp`, `rusty_modbus::client`, `rusty_modbus::Client` |
+| `rtu` | no | `rusty_modbus::rtu` |
+| `rtu-tcp` | no | Alias for `rtu` |
+| `tls` | no | `rusty_modbus::tls` |
+| `server` | no | `rusty_modbus::server`, `rusty_modbus::Server` |
+| `gateway` | no | `rusty_modbus::gateway`, `rusty_modbus::Gateway` |
+| `pool` | no | `rusty_modbus::pool` |
+| `full` | no | All optional features |
+
+The foundation crates `types`, `codec`, and `frame` are always re-exported by
+the facade crate.
+
+## Rust Client
+
+`rusty_modbus_client::ModbusClient` is async and transport-generic. The default
+constructor connects over Modbus/TCP:
+
+```rust
+use rusty_modbus::client::{ClientConfig, ModbusClient};
+use rusty_modbus::types::UnitId;
+
+let client = ModbusClient::connect("127.0.0.1:502".parse()?, ClientConfig::default()).await?;
+let values = client.read_holding_registers(UnitId(1), 0, 10).await?;
+client.shutdown().await;
+```
+
+The client supports typed methods for the public client function-code surface:
+
+- Coils and discrete inputs: FC 0x01, 0x02, 0x05, 0x0F.
+- Registers: FC 0x03, 0x04, 0x06, 0x10, 0x16, 0x17.
+- File records and FIFO: FC 0x14, 0x15, 0x18.
+- Device identification: FC 0x2B / MEI 0x0E.
+
+Modbus/TCP supports up to 16 concurrent in-flight transactions. RTU transports
+force one in-flight request because RTU frames have no transaction ID.
+
+## Rust Server
+
+`rusty_modbus_server::ModbusServer` serves Modbus/TCP with a pluggable
+`DataStore`. The required `DataStore` methods cover the four standard data
+tables:
+
+- Coils.
+- Discrete inputs.
+- Holding registers.
+- Input registers.
+
+Optional `DataStore` methods cover file records, FIFO queues, Report Server ID,
+Diagnostics, Read Exception Status, Get Comm Event Counter, and Get Comm Event
+Log. Defaults return the spec-correct unsupported-capability exception, so
+stores only override what they support.
+
+The built-in `InMemoryStore` is thread-safe and optimized for common paths:
+
+- Coil and discrete-input tables are stored as packed byte-backed bit tables.
+- Store hooks can write packed coils, register bytes, file records, FIFO data,
+  diagnostics, and server-identification payloads directly into response
+  buffers.
+- File-record writes are validated before commit to preserve all-or-nothing
+  behavior.
+
+## Codec And Framing
+
+The codec is written as a Sans-IO layer over caller-owned byte slices. Decode
+paths validate function-specific envelopes and borrow variable-length payloads
+from the input buffer. Owned frame responses use `bytes::Bytes` slicing to keep
+payload ownership cheap without copying full response bodies.
+
+Current spec-compliance work includes stricter validation for:
+
+- FC 0x14/0x15 file-record reference types and byte counts.
+- FC 0x18 FIFO response limits.
+- FC 0x2B / MEI 0x0E request/response control fields and pagination behavior.
+- PDU length, MBAP framing, RTU CRC, and exception response handling.
+
+## Python Package
+
+The Python bindings live in `crates/rusty-modbus-python` and are excluded from
+the Cargo workspace because they build a CPython extension module. The package
+name is `rusty_modbus`, requires Python 3.14 or newer, and is validated against
+standard CPython 3.14 plus free-threaded 3.14t.
+
+Public Python classes:
+
+| Class | Role |
+|---|---|
+| `ClientConfig`, `RetryConfig`, `TlsConfig` | Read-only connection configuration objects. |
+| `ModbusClient` | Asyncio client. Methods return `Awaitable[...]`. |
+| `SyncModbusClient` | Blocking client with the same typed operation surface. |
+| `ServerConfig`, `StoreConfig` | Read-only server and store sizing configuration. |
+| `InMemoryStore` | Python-visible in-memory store for local servers. |
+| `ModbusServer` | Background Modbus/TCP server wrapper. |
+| `DeviceIdentification` | Result object for FC 0x2B / MEI 0x0E reads. |
+
+The Python client supports the same high-level operations as the Rust client:
+coils, registers, mask write, read/write multiple registers, FIFO, file records,
+and device identification.
+
+## Python Server Store Protocols
+
+Python-backed stores are structural protocols in `rusty_modbus.pyi`. They are
+typing-only contracts, not runtime classes exported by the extension module; use
+them under `typing.TYPE_CHECKING` or in annotations evaluated by a type checker.
+
+`DataStore` requires the four core data-table callbacks:
+
+- `read_coils`, `write_coil`, `write_coils`.
+- `read_discrete_inputs`.
+- `read_holding_registers`, `write_register`, `write_registers`.
+- `read_input_registers`.
+
+Optional protocol extensions document additional callbacks:
+
+| Protocol | Optional callbacks |
+|---|---|
+| `FileRecordDataStore` | `read_file_record`, `write_file_record` |
+| `FifoDataStore` | `read_fifo_queue` |
+| `SerialDiagnosticsDataStore` | `read_exception_status`, `get_comm_event_counter`, `get_comm_event_log`, `diagnostic` |
+| `ServerIdentificationDataStore` | `report_server_id` |
+
+Callbacks may raise the Python Modbus exception classes to control the wire
+exception code. Unknown Python exceptions map to Server Device Failure.
+
+## Python Typing Guarantees
+
+The package ships `py.typed` plus `rusty_modbus.pyi`. The local and CI typing
+gates are:
+
+- `mypy.stubtest rusty_modbus`.
+- `pyright --verifytypes rusty_modbus`.
+- `pyright --project typing_tests/pyrightconfig.json`.
+
+The public-contract pyright project verifies:
+
+- Async methods return `Awaitable[...]`.
+- Sync methods return concrete values.
+- Config and result objects expose read-only properties.
+- Byte-like file-record and diagnostics inputs are accepted in type signatures.
+- Python store objects satisfy the datastore protocols structurally.
+
+## Release Model
+
+Everyday work lands on `dev`. Release work is a PR from `dev` into `main`; that
+PR runs the broader `release.yml` gate across Linux, macOS, and Windows, plus
+feature checks, cargo-deny, cargo-audit, and the Python binding compile check.
+
+A `v*` tag on `main` triggers `publish.yml`. For the 0.1.0 line, the tag should
+match the workspace version exactly, for example `v0.1.0`. The publish workflow
+then:
+
+1. Validates tag version against `Cargo.toml`.
+2. Runs the inter-crate publish-version guard.
+3. Publishes crates to crates.io in dependency order.
+4. Builds CLI binaries for GitHub Releases.
+
+Do not bump versions as part of ordinary docs, CI, spec, performance, or typing
+PRs. Version changes are release decisions.

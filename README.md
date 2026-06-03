@@ -1,6 +1,10 @@
 # Rusty Modbus
 
-A complete Modbus protocol stack written in Rust, covering TCP, RTU, and TLS transports with pipelined async client, pluggable server, TCP-RTU gateway, connection pooling, YAML-driven simulator, and CLI tool.
+A complete Modbus protocol stack written in Rust, with Python bindings for
+client and server workflows. The workspace covers TCP, RTU, RTU-over-TCP, TLS,
+pipelined async clients, pluggable servers, TCP-RTU gatewaying, connection
+pooling, YAML-driven simulation, Docker packaging, benchmarks, and a diagnostic
+CLI.
 
 [![CI](https://github.com/jscott3201/rusty-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/jscott3201/rusty-modbus/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -14,12 +18,13 @@ A complete Modbus protocol stack written in Rust, covering TCP, RTU, and TLS tra
 - **Connection pooling** — two-pool architecture with health checks and backoff
 - **YAML simulator** — device profiles with scenario-driven register behavior
 - **CLI tool** — read/write/server/shell/dashboard/discover commands with JSON output
-- **Spec conformance** — 537+ tests, validation order per V1.1b3 section 4.5
+- **Python bindings** — CPython 3.14/3.14t wheels with typed async/sync clients and server stores
+- **Spec conformance** — Rust conformance tests plus Python wheel, stub, and typing gates
 - **`no_std` foundation** — types and codec crates work without allocator
 - **Zero `unsafe`** — `#![forbid(unsafe_code)]` on all crates
-- **Zero clippy warnings**, CI on Linux/macOS/Windows
+- **Zero clippy warnings**, fast `dev` CI and broader release-gate CI
 
-## Quick Start
+## Rust Quick Start
 
 ```toml
 [dependencies]
@@ -53,10 +58,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+The `rusty-modbus` facade crate enables the `tcp` client feature by default.
+Enable `server`, `rtu`, `tls`, `pool`, `gateway`, or `full` when those modules
+are needed.
+
+## Python Quick Start
+
+The Python package is built from `crates/rusty-modbus-python` with PyO3 and
+maturin. It requires Python 3.14 or newer and is validated against both standard
+CPython 3.14 and free-threaded 3.14t.
+
+```bash
+scripts/ci-python.sh
+```
+
+That command builds a fresh wheel, installs it into an isolated uv environment,
+runs pytest, runs stubtest, and runs pyright type checks.
+
+```python
+import asyncio
+
+import rusty_modbus
+
+
+async def main() -> None:
+    client = await rusty_modbus.ModbusClient.connect("127.0.0.1:502")
+    try:
+        registers = await client.read_holding_registers(1, 0, 10)
+        print(registers)
+    finally:
+        await client.shutdown()
+
+
+asyncio.run(main())
+```
+
+For non-async scripts, use `rusty_modbus.SyncModbusClient`. For server tests or
+simulators, use `rusty_modbus.ModbusServer.start()` with either
+`rusty_modbus.InMemoryStore` or a Python object matching the `DataStore`
+protocols described in [docs/api.md](docs/api.md).
+
 ## CLI Tool
 
 ```bash
-cargo install rusty-modbus-cli
+# From a source checkout
+cargo run -p rusty-modbus-cli -- --help
+
+# After a tagged release, download the prebuilt modbus binary from GitHub Releases.
+modbus --help
 
 # Read holding registers
 modbus read -H 192.168.1.100 holding 0 10
@@ -145,6 +194,7 @@ crates/
   rusty-modbus-cli/         CLI binary (read/write/server/shell/dashboard/discover)
   rusty-modbus/             Facade crate with feature flags
   rusty-modbus-conformance/ Spec compliance test suite
+  rusty-modbus-python/      PyO3 bindings, excluded from the Rust workspace
 benchmarks/                 Criterion benchmarks + stress-test binary
 ```
 
@@ -198,6 +248,17 @@ The serial-line diagnostics codes (0x07/0x08/0x0B/0x0C/0x11) are accepted over
 Modbus/TCP through `DataStore` methods with conformant defaults — override them
 for device-specific behavior.
 
+## API Documentation
+
+- [docs/api.md](docs/api.md) summarizes the current Rust and Python public API
+  surfaces, including feature flags, server stores, typing contracts, and the
+  release branch model.
+- Rust crates are documented with rustdoc and are configured for docs.rs with
+  all facade features enabled once the 0.1.0 crates are published.
+- Python typing is shipped through `py.typed` and `rusty_modbus.pyi`, with
+  `stubtest`, `pyright --verifytypes`, and a strict pyright public-contract test
+  in CI.
+
 ## Development
 
 ```bash
@@ -249,6 +310,13 @@ scripts/bench-local.sh all --quick --noplot
 
 See [benchmarks.md](benchmarks.md) for the current local stress-test baseline
 and follow-up benchmark targets.
+
+Release flow:
+
+1. Work lands on `dev` through ordinary PRs.
+2. Releases are cut by opening a `dev` -> `main` PR and passing `release.yml`.
+3. A `v0.1.0` tag on `main` triggers `publish.yml`, which publishes crates in
+   dependency order and builds CLI release binaries.
 
 Minimum Rust version: 1.95 (pinned in `rust-toolchain.toml`)
 
