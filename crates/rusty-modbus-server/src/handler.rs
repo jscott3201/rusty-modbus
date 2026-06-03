@@ -2,10 +2,9 @@
 
 use rusty_modbus_codec::request::{ReadFileRecordRequest, WriteFileRecordRequest};
 use rusty_modbus_codec::response::{
-    GetCommEventCounterResponse, GetCommEventLogResponse, MaskWriteRegisterResponse,
-    ReadExceptionStatusResponse, ReadFileRecordResponse, WriteFileRecordResponse,
-    WriteMultipleCoilsResponse, WriteMultipleRegistersResponse, WriteSingleCoilResponse,
-    WriteSingleRegisterResponse,
+    GetCommEventCounterResponse, MaskWriteRegisterResponse, ReadExceptionStatusResponse,
+    ReadFileRecordResponse, WriteFileRecordResponse, WriteMultipleCoilsResponse,
+    WriteMultipleRegistersResponse, WriteSingleCoilResponse, WriteSingleRegisterResponse,
 };
 use rusty_modbus_codec::{DecodeError, RequestPdu, decode_request, validate};
 use rusty_modbus_types::{
@@ -19,7 +18,8 @@ use crate::device_id::build_device_id_response;
 use crate::file_record;
 use crate::response_encode::encode_response;
 use crate::store::{
-    DataStore, MAX_DIAGNOSTIC_RESPONSE_DATA_LEN, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES,
+    DataStore, MAX_COMM_EVENT_LOG_EVENTS, MAX_DIAGNOSTIC_RESPONSE_DATA_LEN,
+    MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES,
 };
 
 /// Process a request PDU and return a response PDU (or `None` for broadcast writes).
@@ -312,32 +312,7 @@ async fn dispatch_request<S: DataStore>(
             if is_broadcast {
                 return None;
             }
-            Some(match store.get_comm_event_log().await {
-                // §6.10 caps the event log at 64 bytes; a store returning more is
-                // failing its optional capability contract → ServerDeviceFailure.
-                Ok(log) if log.events.len() > 64 => encode_exception(
-                    FunctionCode::GetCommEventLog.exception_code(),
-                    ExceptionCode::ServerDeviceFailure,
-                ),
-                Ok(log) => {
-                    // Derive the wire byte_count (status+event+message = 6 bytes + events).
-                    let byte_count = match checked_response_u8(
-                        log.events.len() + 6,
-                        FunctionCode::GetCommEventLog,
-                    ) {
-                        Ok(byte_count) => byte_count,
-                        Err(resp) => return Some(resp),
-                    };
-                    encode_response(&GetCommEventLogResponse {
-                        byte_count,
-                        status: log.status,
-                        event_count: log.event_count,
-                        message_count: log.message_count,
-                        events: &log.events,
-                    })
-                }
-                Err(ec) => encode_exception(FunctionCode::GetCommEventLog.exception_code(), ec),
-            })
+            Some(handle_comm_event_log(store).await)
         }
         RequestPdu::ReportServerId => {
             if is_broadcast {
@@ -363,6 +338,38 @@ async fn dispatch_request<S: DataStore>(
             let fc = pdu.first().copied().unwrap_or(0);
             Some(encode_exception(fc | 0x80, ExceptionCode::IllegalFunction))
         }
+    }
+}
+
+async fn handle_comm_event_log<S: DataStore>(store: &S) -> Vec<u8> {
+    let mut response = Vec::with_capacity(8 + MAX_COMM_EVENT_LOG_EVENTS);
+    response.push(FunctionCode::GetCommEventLog.code());
+    response.push(0);
+    response.extend_from_slice(&[0; 6]);
+
+    let events_start = response.len();
+    let result = store.append_comm_event_log(&mut response).await;
+    match result {
+        Ok(meta) => {
+            let events_len = response.len().saturating_sub(events_start);
+            if events_len > MAX_COMM_EVENT_LOG_EVENTS {
+                return encode_exception(
+                    FunctionCode::GetCommEventLog.exception_code(),
+                    ExceptionCode::ServerDeviceFailure,
+                );
+            }
+            let byte_count =
+                match checked_response_u8(events_len + 6, FunctionCode::GetCommEventLog) {
+                    Ok(byte_count) => byte_count,
+                    Err(resp) => return resp,
+                };
+            response[1] = byte_count;
+            response[2..4].copy_from_slice(&meta.status.to_be_bytes());
+            response[4..6].copy_from_slice(&meta.event_count.to_be_bytes());
+            response[6..8].copy_from_slice(&meta.message_count.to_be_bytes());
+            response
+        }
+        Err(ec) => encode_exception(FunctionCode::GetCommEventLog.exception_code(), ec),
     }
 }
 

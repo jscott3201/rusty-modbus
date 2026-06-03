@@ -1,6 +1,6 @@
 # Rusty Modbus Benchmark Report
 
-Last updated: 2026-06-02
+Last updated: 2026-06-03
 
 This document records the current local and Docker performance baseline for the
 Modbus/TCP client/server path. The focus is single-connection pipelining: one
@@ -11,7 +11,7 @@ server backed by the in-memory store.
 
 | Item | Value |
 |---|---|
-| Git commit | `97c7413` base plus this direct FC08 diagnostics response refresh |
+| Git commit | `621a07e` base plus this direct FC0C comm-event-log response refresh |
 | Host | Apple M5 class MacBook Pro, arm64 |
 | OS | macOS 26.5.0 / Darwin 25.5.0 / arm64 |
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
@@ -165,6 +165,11 @@ FC 0x08 Diagnostics now lets stores append response data into the final
 response buffer. The in-memory store uses this to echo Return Query Data from
 borrowed request bytes instead of cloning the diagnostic payload first.
 
+FC 0x0C Get Comm Event Log now lets stores append bounded event bytes into the
+final response buffer while returning only the fixed status/counter metadata.
+Existing stores that return an owned `CommEventLog` still work through the
+default hook.
+
 `zerocopy` is already used where it is a strong fit: the fixed 7-byte MBAP
 header is represented as a packed, network-endian wire-format type and the frame
 decoder overlays it onto the read buffer before slicing the PDU. The benchmark
@@ -244,6 +249,7 @@ TLS, RTU framing, and client-side work:
 | FC17 max read/write registers | 43.7 ns | Read half now writes directly into the final response bytes. |
 | FC18 FIFO two-value read | 26.5 ns | Direct FIFO response path is comparable to simple register handlers. |
 | FC08 return query data | 21.1 ns | Direct diagnostic append path echoes borrowed request bytes into the response. |
+| FC0C get comm event log | 17.4 ns | Direct event-log append path writes bounded event bytes into the response buffer. |
 | FC11 report server ID | 34.3 ns | Direct server-id append path avoids cloning the store blob before response construction. |
 | FC2B basic device identification | 47.3 ns | Stack-backed object selection removes the previous object/filter/selection vectors. |
 

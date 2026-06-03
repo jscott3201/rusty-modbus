@@ -11,8 +11,23 @@ use rusty_modbus_types::{
 };
 
 pub(crate) const MAX_FILE_RECORD_REGISTERS: usize = 122;
+pub(crate) const MAX_COMM_EVENT_LOG_EVENTS: usize = 64;
 pub(crate) const MAX_DIAGNOSTIC_RESPONSE_DATA_LEN: usize = MAX_PDU_SIZE - 3;
 pub(crate) const MAX_SERVER_ID_BYTES: usize = MAX_PDU_SIZE - 2;
+
+/// Fixed fields returned with a Get Comm Event Log response (FC 0x0C).
+///
+/// Event bytes are carried separately by append-style datastore hooks so
+/// direct-access stores can write them into the final response buffer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommEventLogMeta {
+    /// Status word: `0x0000` ready, `0xFFFF` busy.
+    pub status: u16,
+    /// Event counter value.
+    pub event_count: u16,
+    /// Message counter value.
+    pub message_count: u16,
+}
 
 /// Snapshot of the communications event log returned by Get Comm Event Log
 /// (FC 0x0C, Spec V1.1b3 §6.10).
@@ -490,6 +505,29 @@ pub trait DataStore: Send + Sync {
         &self,
     ) -> impl Future<Output = Result<CommEventLog, ExceptionCode>> + Send {
         async { Err(ExceptionCode::IllegalFunction) }
+    }
+
+    /// Append FC 0x0C communication event bytes to `out`.
+    ///
+    /// The default delegates to [`Self::get_comm_event_log`]. Direct-access
+    /// stores can override this method to avoid materializing the event list in
+    /// an intermediate `Vec` before response construction.
+    fn append_comm_event_log(
+        &self,
+        out: &mut Vec<u8>,
+    ) -> impl Future<Output = Result<CommEventLogMeta, ExceptionCode>> + Send {
+        async move {
+            let log = self.get_comm_event_log().await?;
+            if log.events.len() > MAX_COMM_EVENT_LOG_EVENTS {
+                return Err(ExceptionCode::ServerDeviceFailure);
+            }
+            out.extend_from_slice(&log.events);
+            Ok(CommEventLogMeta {
+                status: log.status,
+                event_count: log.event_count,
+                message_count: log.message_count,
+            })
+        }
     }
 
     /// Report a device-specific server-identification blob (FC 0x11, §6.13).

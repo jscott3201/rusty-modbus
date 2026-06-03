@@ -21,4 +21,4 @@ pub use config::{DeviceIdentification, ServerConfig};
 pub use error::ServerError;
 pub use server::ModbusServer;
 pub use store::memory::{InMemoryStore, StoreConfig, StoreError};
-pub use store::{CommEventLog, DataStore};
+pub use store::{CommEventLog, CommEventLogMeta, DataStore};

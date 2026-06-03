@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rusty_modbus_server::handler::process_request;
-use rusty_modbus_server::{DeviceIdentification, InMemoryStore, StoreConfig};
-use rusty_modbus_types::UnitId;
+use rusty_modbus_server::{
+    CommEventLogMeta, DataStore, DeviceIdentification, InMemoryStore, StoreConfig,
+};
+use rusty_modbus_types::{ExceptionCode, UnitId};
 use tokio::runtime::Runtime;
 
 const UNIT: UnitId = UnitId(1);
@@ -26,14 +28,16 @@ fn bench_server_process_request(c: &mut Criterion) {
     let fc17 = read_write_multiple_registers_pdu(0, 125, 0, 121);
     let fc18 = [0x18, 0x04, 0xDE];
     let fc08 = [0x08, 0x00, 0x00, 0x12, 0x34]; // Return Query Data.
+    let fc0c = [0x0C]; // Get Comm Event Log.
     let fc11 = [0x11]; // Report Server ID.
     let fc2b = [0x2B, 0x0E, 0x01, 0x00]; // Read Device Identification, basic stream.
+    let event_log_store = EventLogBenchStore;
 
     let mut group = c.benchmark_group("server_process_request");
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        store.as_ref(),
         &device_id,
         "fc01_read_coils_max",
         &fc01,
@@ -41,7 +45,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        store.as_ref(),
         &device_id,
         "fc03_read_holding_registers_max",
         &fc03,
@@ -49,7 +53,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        store.as_ref(),
         &device_id,
         "fc10_write_registers_max",
         &fc10,
@@ -57,7 +61,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        store.as_ref(),
         &device_id,
         "fc14_read_file_two_groups",
         &fc14,
@@ -65,7 +69,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        store.as_ref(),
         &device_id,
         "fc17_read_write_registers_max",
         &fc17,
@@ -73,7 +77,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        store.as_ref(),
         &device_id,
         "fc18_read_fifo_two_values",
         &fc18,
@@ -81,7 +85,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        store.as_ref(),
         &device_id,
         "fc08_return_query_data",
         &fc08,
@@ -89,7 +93,15 @@ fn bench_server_process_request(c: &mut Criterion) {
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        &event_log_store,
+        &device_id,
+        "fc0c_get_comm_event_log",
+        &fc0c,
+    );
+    bench_pdu(
+        &mut group,
+        &rt,
+        store.as_ref(),
         &device_id,
         "fc11_report_server_id",
         &fc11,
@@ -97,7 +109,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     bench_pdu(
         &mut group,
         &rt,
-        &store,
+        store.as_ref(),
         &device_id,
         "fc2b_device_id_basic",
         &fc2b,
@@ -108,7 +120,7 @@ fn bench_server_process_request(c: &mut Criterion) {
 fn bench_pdu(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     rt: &Runtime,
-    store: &InMemoryStore,
+    store: &impl DataStore,
     device_id: &DeviceIdentification,
     name: &'static str,
     pdu: &[u8],
@@ -143,6 +155,69 @@ fn seed_store() -> InMemoryStore {
     store.set_file_record(3, 10, 0x0040).unwrap();
     store.set_fifo_queue(0x04DE, vec![0x01B8, 0x1284]);
     store
+}
+
+struct EventLogBenchStore;
+
+impl DataStore for EventLogBenchStore {
+    async fn read_coils(&self, _: u16, _: u16, _: &mut [bool]) -> Result<usize, ExceptionCode> {
+        Err(ExceptionCode::IllegalDataAddress)
+    }
+
+    async fn write_coil(&self, _: u16, _: bool) -> Result<(), ExceptionCode> {
+        Err(ExceptionCode::IllegalDataAddress)
+    }
+
+    async fn write_coils(&self, _: u16, _: &[bool]) -> Result<(), ExceptionCode> {
+        Err(ExceptionCode::IllegalDataAddress)
+    }
+
+    async fn read_discrete_inputs(
+        &self,
+        _: u16,
+        _: u16,
+        _: &mut [bool],
+    ) -> Result<usize, ExceptionCode> {
+        Err(ExceptionCode::IllegalDataAddress)
+    }
+
+    async fn read_holding_registers(
+        &self,
+        _: u16,
+        _: u16,
+        _: &mut [u16],
+    ) -> Result<usize, ExceptionCode> {
+        Err(ExceptionCode::IllegalDataAddress)
+    }
+
+    async fn write_register(&self, _: u16, _: u16) -> Result<(), ExceptionCode> {
+        Err(ExceptionCode::IllegalDataAddress)
+    }
+
+    async fn write_registers(&self, _: u16, _: &[u16]) -> Result<(), ExceptionCode> {
+        Err(ExceptionCode::IllegalDataAddress)
+    }
+
+    async fn read_input_registers(
+        &self,
+        _: u16,
+        _: u16,
+        _: &mut [u16],
+    ) -> Result<usize, ExceptionCode> {
+        Err(ExceptionCode::IllegalDataAddress)
+    }
+
+    async fn append_comm_event_log(
+        &self,
+        out: &mut Vec<u8>,
+    ) -> Result<CommEventLogMeta, ExceptionCode> {
+        out.extend_from_slice(&[0x20, 0x00]);
+        Ok(CommEventLogMeta {
+            status: 0x0000,
+            event_count: 0x0108,
+            message_count: 0x0121,
+        })
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
