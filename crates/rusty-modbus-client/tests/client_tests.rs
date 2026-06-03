@@ -382,6 +382,20 @@ where
     addr
 }
 
+fn device_id_basic_response(more_follows: bool, next_object_id: u8, object_id: u8) -> Vec<u8> {
+    vec![
+        0x2B,
+        0x0E,
+        0x01,
+        0x81,
+        if more_follows { 0xFF } else { 0x00 },
+        if more_follows { next_object_id } else { 0x00 },
+        0x01,
+        object_id,
+        0x00,
+    ]
+}
+
 /// The background reader must survive a benign idle read-timeout. `connect()`
 /// maps `config.timeout` onto the transport read-timeout, so an idle period
 /// longer than `timeout` previously killed the reader (cancel_all + break).
@@ -752,5 +766,53 @@ async fn short_raw_register_response_is_error() {
     assert!(
         matches!(result, Err(ClientError::ShortResponse { .. })),
         "expected ShortResponse, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn device_identification_rejects_non_advancing_continuation() {
+    let addr = start_scripted_server(|fc, _req| {
+        if fc == 0x2B {
+            device_id_basic_response(true, 0x00, 0x00)
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_device_identification(UnitId(0xFF)).await;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::InvalidDeviceIdentificationContinuation {
+                previous_object_id: 0x00,
+                next_object_id: 0x00,
+            })
+        ),
+        "expected invalid continuation, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn device_identification_rejects_too_many_basic_pages() {
+    let addr = start_scripted_server(|fc, req| {
+        if fc == 0x2B {
+            let object_id = req[3];
+            device_id_basic_response(true, object_id.wrapping_add(1), object_id)
+        } else {
+            vec![fc | 0x80, 0x01]
+        }
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let result = client.read_device_identification(UnitId(0xFF)).await;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::DeviceIdentificationPaginationLimit { limit: 3 })
+        ),
+        "expected pagination limit, got {result:?}"
     );
 }

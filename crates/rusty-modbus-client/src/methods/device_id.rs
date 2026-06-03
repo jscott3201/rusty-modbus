@@ -12,6 +12,8 @@ use crate::client::ModbusClient;
 use crate::error::ClientError;
 use crate::methods::encode_request;
 
+const MAX_BASIC_DEVICE_ID_RESPONSE_PAGES: u8 = 3;
+
 impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// Read Device Identification (FC 0x2B / MEI 0x0E).
     ///
@@ -27,11 +29,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     ) -> Result<OwnedDeviceIdentification, ClientError> {
         let mut result = OwnedDeviceIdentification::default();
         let mut next_object_id: u8 = 0x00;
+        let mut response_pages: u8 = 0;
 
         loop {
+            let request_object_id = next_object_id;
             let req = ReadDeviceIdentificationRequest {
                 device_id_code: DeviceIdCode::BasicStream,
-                object_id: next_object_id,
+                object_id: request_object_id,
             };
             let mut buf = [0u8; 4];
             let len = encode_request(&req, &mut buf)?;
@@ -63,6 +67,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
             let dev_id = ReadDeviceIdentificationResponse::decode(&decode_buf)
                 .map_err(ClientError::Codec)?;
+            response_pages += 1;
 
             for obj in dev_id.objects() {
                 let value = String::from_utf8_lossy(obj.value).into_owned();
@@ -76,6 +81,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
             if !dev_id.more_follows {
                 break;
+            }
+            if response_pages >= MAX_BASIC_DEVICE_ID_RESPONSE_PAGES {
+                return Err(ClientError::DeviceIdentificationPaginationLimit {
+                    limit: MAX_BASIC_DEVICE_ID_RESPONSE_PAGES,
+                });
+            }
+            if dev_id.next_object_id <= request_object_id {
+                return Err(ClientError::InvalidDeviceIdentificationContinuation {
+                    previous_object_id: request_object_id,
+                    next_object_id: dev_id.next_object_id,
+                });
             }
             next_object_id = dev_id.next_object_id;
         }
