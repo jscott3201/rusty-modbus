@@ -3,6 +3,8 @@ rusty_modbus.ClientConfig.__init__
 rusty_modbus.ClientConfig.__new__
 rusty_modbus.DataStore
 rusty_modbus.DeviceIdentification
+rusty_modbus.FifoDataStore
+rusty_modbus.FileRecordDataStore
 rusty_modbus.InMemoryStore
 rusty_modbus.InMemoryStore.__init__
 rusty_modbus.InMemoryStore.__new__
@@ -14,6 +16,8 @@ rusty_modbus.RetryConfig.__new__
 rusty_modbus.ServerConfig
 rusty_modbus.ServerConfig.__init__
 rusty_modbus.ServerConfig.__new__
+rusty_modbus.SerialDiagnosticsDataStore
+rusty_modbus.ServerIdentificationDataStore
 rusty_modbus.StoreConfig
 rusty_modbus.StoreConfig.__init__
 rusty_modbus.StoreConfig.__new__
