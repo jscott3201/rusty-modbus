@@ -9,8 +9,7 @@ use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT}
 
 use super::{
     DataStore, MAX_DIAGNOSTIC_RESPONSE_DATA_LEN, MAX_FILE_RECORD_REGISTERS, MAX_SERVER_ID_BYTES,
-    pack_coils, pack_registers_be, packed_coil_value, validate_packed_coils,
-    validate_register_values_be,
+    pack_coils, pack_registers_be, validate_packed_coils, validate_register_values_be,
 };
 
 /// Maximum number of entries in any Modbus data table.
@@ -349,8 +348,12 @@ impl DataStore for InMemoryStore {
         let mut coils = self.coils.write();
         check_range(address, quantity, coils.len())?;
         let start = address as usize;
-        for (index, slot) in coils[start..start + quantity].iter_mut().enumerate() {
-            *slot = packed_coil_value(packed_values, index);
+        for (byte_index, &byte) in packed_values.iter().enumerate() {
+            let offset = byte_index * 8;
+            let bit_count = (quantity - offset).min(8);
+            for bit in 0..bit_count {
+                coils[start + offset + bit] = (byte >> bit) & 1 == 1;
+            }
         }
         Ok(())
     }
