@@ -111,6 +111,18 @@ is permitted only when the ledger contains authorized evidence and its exact
 scope. The Modbus Organization describes this limit at
 <https://www.modbus.org/conformance-testing>.
 
+Tracked public surfaces reject positive certification or conformance-testing
+assertions unless the assertion's Markdown paragraph contains exactly one
+`<!-- rusty-modbus-formal-claim: CLAIM-ID -->` binding. The referenced canonical
+claim must cover that surface and profile, be a capability claim with a
+`formally-certified` threshold, and satisfy the formal-evidence rules above.
+The binding is a claim reference, not a second claim record. Negative
+disclaimers and statements that formal evidence is absent do not require a
+binding. The check is limited to copular or active statements using `certified`
+or `conformance-tested`, and statements that a subject has, holds, received, or
+earned `certification`; it does not attempt general natural-language
+classification.
+
 ## Test inventory
 
 The validator derives the test inventory from

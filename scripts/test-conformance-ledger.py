@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -366,6 +367,86 @@ class ConformanceLedgerTests(unittest.TestCase):
         ]
         self.assert_invalid(data, ".scope must be non-blank")
         self.assert_invalid(data, ".authorized must be true")
+
+    def test_public_surface_positive_formal_assertion_is_rejected_without_binding(self) -> None:
+        assertion = "The TCP client is Modbus Organization certified."
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "surface.md").write_text(assertion, encoding="utf-8")
+            parsed = ledger._surface_formal_assertions(root, "surface.md")
+        self.assertEqual(parsed, [(1, assertion, ())])
+
+        def scan(_root: Path, path: str) -> list[tuple[int, str, tuple[str, ...]]]:
+            return parsed if path == "README.md" else []
+
+        with mock.patch.object(ledger, "_surface_formal_assertions", side_effect=scan):
+            self.assert_invalid(
+                self.canonical,
+                "positive formal assertion without exactly one rusty-modbus-formal-claim binding",
+            )
+
+    def test_current_public_surface_negative_disclaimers_are_accepted(self) -> None:
+        self.assertEqual(ledger._surface_formal_assertions(ROOT, "README.md"), [])
+        self.assertEqual(
+            ledger._surface_formal_assertions(
+                ROOT, "crates/rusty-modbus-tls/README.md"
+            ),
+            [],
+        )
+        negative = (
+            "No profile is Modbus Organization certified. "
+            "The repository has no formal certification."
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "surface.md").write_text(negative, encoding="utf-8")
+            self.assertEqual(ledger._surface_formal_assertions(root, "surface.md"), [])
+        self.assertEqual(ledger.validate_ledger(self.canonical, ROOT), [])
+
+    def test_public_surface_formal_binding_requires_authorized_ledger_evidence(self) -> None:
+        assertion = (
+            "The TCP client is Modbus Organization certified. "
+            "<!-- rusty-modbus-formal-claim: claim-tcp-client -->"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "surface.md").write_text(assertion, encoding="utf-8")
+            parsed = ledger._surface_formal_assertions(root, "surface.md")
+        self.assertEqual(parsed, [(1, assertion, ("claim-tcp-client",))])
+
+        def scan(_root: Path, path: str) -> list[tuple[int, str, tuple[str, ...]]]:
+            return parsed if path == "README.md" else []
+
+        with mock.patch.object(ledger, "_surface_formal_assertions", side_effect=scan):
+            self.assert_invalid(
+                self.canonical,
+                "without a formally-certified capability threshold",
+            )
+
+        data = copy.deepcopy(self.canonical)
+        claim = next(item for item in data["claims"] if item["id"] == "claim-tcp-client")
+        artifact = {
+            "reference": "authorized-report",
+            "version": "1",
+            "result": "pass",
+            "scope": "tcp-client",
+            "authorized": True,
+        }
+        claim["minimum_evidence"] = "formally-certified"
+        claim["formal_evidence"] = [copy.deepcopy(artifact)]
+        requirements = {item["id"]: item for item in data["requirements"]}
+        for requirement_id in claim["requirement_ids"]:
+            assessment = next(
+                item
+                for item in requirements[requirement_id]["assessments"]
+                if item["profile"] == "tcp-client"
+            )
+            assessment["evidence"] = "formally-certified"
+            assessment["independent_evidence"] = [copy.deepcopy(artifact)]
+            assessment["formal_evidence"] = [copy.deepcopy(artifact)]
+
+        with mock.patch.object(ledger, "_surface_formal_assertions", side_effect=scan):
+            self.assertEqual(ledger.validate_ledger(data, ROOT), [])
 
     def test_extension_cannot_be_classified_as_normative_transport(self) -> None:
         data = copy.deepcopy(self.canonical)

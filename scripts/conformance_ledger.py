@@ -43,6 +43,20 @@ REQUIREMENT_IDS = tuple(
 PROJECT_POLICY_ID = "rusty-modbus-project-policy"
 TEST_GLOB = "crates/rusty-modbus-conformance/tests/spec_*.rs"
 FORMAL_WORDING = re.compile(r"\b(certified|certification|conformance[- ]tested)\b", re.I)
+POSITIVE_FORMAL_ASSERTION = re.compile(
+    r"\b(?:is|are|was|were)\s+(?:formally\s+)?(?:modbus organization\s+)?"
+    r"(?:certified|conformance[- ]tested)\b"
+    r"|\b(?:has|have|had)\s+been\s+(?:formally\s+)?(?:modbus organization\s+)?"
+    r"(?:certified|conformance[- ]tested)\b"
+    r"|\bmodbus organization\s+(?:has\s+)?(?:certified|conformance[- ]tested)\b"
+    r"|\b(?:has|holds?|received|earned)\s+(?:an?\s+)?(?:modbus organization\s+)?"
+    r"certification\b",
+    re.I,
+)
+FORMAL_CLAIM_BINDING = re.compile(
+    r"<!--\s*rusty-modbus-formal-claim:\s*([a-z][a-z0-9-]*)\s*-->"
+)
+NEGATIVE_FORMAL_PREFIX = re.compile(r"\b(?:no|not|never|neither|nor|without)\b", re.I)
 FINDING_IDS = tuple(f"F-{number:03d}" for number in range(1, 30))
 FINDING_PRIORITIES = {"P0", "P1", "P2", "P3"}
 FINDING_STATUSES = {"open", "mitigated", "closed"}
@@ -132,6 +146,35 @@ def _surface_has_profile_link(root: Path, path: str, profile_id: str) -> bool:
         rf"\[[^\]]+\]\([^\s)]*ledger\.md#profile-{re.escape(profile_id)}\)"
     )
     return bool(pattern.search(text))
+
+
+def _surface_formal_assertions(
+    root: Path, path: str
+) -> list[tuple[int, str, tuple[str, ...]]]:
+    text = (root / path).read_text(encoding="utf-8")
+    assertions: list[tuple[int, str, tuple[str, ...]]] = []
+    blocks = re.finditer(
+        r"(?:\A|\n[ \t]*\n)(.*?)(?=\n[ \t]*\n|\Z)",
+        text,
+        flags=re.S,
+    )
+    for block_match in blocks:
+        block = block_match.group(1)
+        positive_matches = []
+        for assertion_match in POSITIVE_FORMAL_ASSERTION.finditer(block):
+            sentence_start = max(
+                block.rfind(mark, 0, assertion_match.start()) for mark in ".!?\n"
+            )
+            prefix = block[sentence_start + 1 : assertion_match.start()]
+            if not NEGATIVE_FORMAL_PREFIX.search(prefix):
+                positive_matches.append(assertion_match)
+        if not positive_matches:
+            continue
+        line = text.count("\n", 0, block_match.start(1)) + 1
+        summary = " ".join(block.split())
+        bindings = tuple(FORMAL_CLAIM_BINDING.findall(block))
+        assertions.append((line, summary, bindings))
+    return assertions
 
 
 def validate_ledger(data: dict[str, Any], root: Path) -> list[str]:
@@ -518,6 +561,40 @@ def validate_ledger(data: dict[str, Any], root: Path) -> list[str]:
                 if not _surface_has_profile_link(root, path, profile_id):
                     errors.append(
                         f"public surface {surface_id} does not link ledger.md#profile-{profile_id}"
+                    )
+        if _nonblank(path) and (root / path).is_file():
+            for line, _summary, bindings in _surface_formal_assertions(root, path):
+                location = f"public surface {surface_id} {path}:{line}"
+                if len(bindings) != 1:
+                    errors.append(
+                        f"{location} has a positive formal assertion without exactly one "
+                        "rusty-modbus-formal-claim binding"
+                    )
+                    continue
+                claim_id = bindings[0]
+                claim = claims.get(claim_id)
+                if claim is None:
+                    errors.append(
+                        f"{location} binds its positive formal assertion to unknown claim "
+                        f"{claim_id}"
+                    )
+                    continue
+                if surface_id not in claim.get("public_surface_ids", []):
+                    errors.append(
+                        f"{location} binds its positive formal assertion to claim {claim_id}, "
+                        "which does not track this surface"
+                    )
+                if claim.get("profile") not in profile_ids:
+                    errors.append(
+                        f"{location} binds its positive formal assertion to claim {claim_id}, "
+                        "whose profile is not tracked by this surface"
+                    )
+                if claim.get("kind") != "capability" or claim.get(
+                    "minimum_evidence"
+                ) != "formally-certified":
+                    errors.append(
+                        f"{location} binds its positive formal assertion to claim {claim_id} "
+                        "without a formally-certified capability threshold"
                     )
 
     actual_findings = set(collection_ids["findings"])
