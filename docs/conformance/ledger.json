@@ -1,0 +1,5099 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "repository": "jscott3201/rusty-modbus",
+    "base_sha": "b2703b1cbef8d3c4a86caa56f987a17d39d85c27",
+    "base_ref": "dev",
+    "as_of": "2026-08-23",
+    "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
+    "requirement_count": 70,
+    "test_count": 47
+  },
+  "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
+  "documents": [
+    {
+      "id": "modbus-application-protocol",
+      "title": "MODBUS Application Protocol Specification",
+      "revision": "V1.1b3",
+      "published": "2012-04-26",
+      "kind": "normative",
+      "url": "https://www.modbus.org/file/secure/modbusprotocolspecification.pdf",
+      "locator": "Sections 4, 5, 6, and 7"
+    },
+    {
+      "id": "modbus-serial-line",
+      "title": "MODBUS over Serial Line Specification and Implementation Guide",
+      "revision": "V1.02",
+      "published": "2006-12-20",
+      "kind": "normative",
+      "url": "https://www.modbus.org/file/secure/modbusoverserial.pdf",
+      "locator": "Sections 2.1 through 2.6"
+    },
+    {
+      "id": "modbus-tcp-guide",
+      "title": "MODBUS Messaging on TCP/IP Implementation Guide",
+      "revision": "V1.0b",
+      "published": "2006-10-24",
+      "kind": "normative",
+      "url": "https://www.modbus.org/file/secure/messagingimplementationguide.pdf",
+      "locator": "Sections 3 and 4"
+    },
+    {
+      "id": "modbus-security-protocol",
+      "title": "MODBUS/TCP Security Protocol",
+      "revision": "MB-TCP-Security-v36_2021-07-30",
+      "published": "2021-07-30",
+      "kind": "normative",
+      "url": "https://www.modbus.org/file/secure/modbussecurityprotocol.pdf",
+      "locator": "Requirements R-01 through R-35"
+    },
+    {
+      "id": "modbus-conformance-tests",
+      "title": "Conformance Test Specification for Modbus TCP",
+      "revision": "V3.0",
+      "published": "2009-12-15",
+      "kind": "test-specification",
+      "url": "https://assets.noviams.com/novi-file-uploads/modbus/pdfs-and-documents/MBConformanceTestSpec_v3_0.pdf",
+      "locator": "Table of Contents; §§1–9, including §9 Protocol Test"
+    },
+    {
+      "id": "rusty-modbus-project-policy",
+      "title": "Rusty Modbus conformance ledger schema and policy",
+      "revision": "1",
+      "published": "2026-08-23",
+      "kind": "project-policy",
+      "path": "docs/conformance/schema.md",
+      "locator": "Project-profile and extension classification; Evidence and claims"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "tcp-client",
+      "name": "Modbus/TCP client",
+      "scope": "Client requests and responses carried in MBAP frames over TCP.",
+      "owner": "maintainers",
+      "anchor": "profile-tcp-client",
+      "transport_class": "modbus-tcp"
+    },
+    {
+      "id": "tcp-server",
+      "name": "Modbus/TCP server",
+      "scope": "Server request processing and responses carried in MBAP frames over TCP.",
+      "owner": "maintainers",
+      "anchor": "profile-tcp-server",
+      "transport_class": "modbus-tcp"
+    },
+    {
+      "id": "physical-rtu-client",
+      "name": "Physical RTU client",
+      "scope": "Client operation over a serial line with RTU framing and timing.",
+      "owner": "maintainers",
+      "anchor": "profile-physical-rtu-client",
+      "transport_class": "physical-rtu"
+    },
+    {
+      "id": "physical-rtu-responder",
+      "name": "Physical RTU responder",
+      "scope": "Server or responder operation on a physical serial line; no first-party responder is present.",
+      "owner": "maintainers",
+      "anchor": "profile-physical-rtu-responder",
+      "transport_class": "physical-rtu"
+    },
+    {
+      "id": "gateway",
+      "name": "TCP-to-RTU-over-TCP gateway",
+      "scope": "TCP request routing to configured RTU-over-TCP backends; no physical serial gateway is claimed.",
+      "owner": "maintainers",
+      "anchor": "profile-gateway",
+      "transport_class": "gateway"
+    },
+    {
+      "id": "modbus-security",
+      "name": "Modbus/TCP Security",
+      "scope": "TLS transport primitives and role metadata; mutual certificate authentication is the default, with an explicit compatibility opt-out. This is not a composed secured-server claim.",
+      "owner": "maintainers",
+      "anchor": "profile-modbus-security",
+      "transport_class": "security"
+    },
+    {
+      "id": "simulator",
+      "name": "Simulator",
+      "scope": "The simulator's TCP server and data model, including explicit parsed-but-inert configuration gaps.",
+      "owner": "maintainers",
+      "anchor": "profile-simulator",
+      "transport_class": "simulator"
+    },
+    {
+      "id": "rtu-over-tcp-extension",
+      "name": "RTU-over-TCP extension",
+      "scope": "RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither physical RTU nor Modbus/TCP.",
+      "owner": "maintainers",
+      "anchor": "profile-rtu-over-tcp-extension",
+      "transport_class": "extension"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "APP-001",
+      "title": "The PDU does not exceed 253 bytes",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§4.1, MODBUS PDU size constraint"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-types/src/constants.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-frame/src/mbap.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_encode_validation",
+        "spec_mbap_framing",
+        "spec_response_encode"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-002",
+      "title": "Multi-byte quantities use big-endian byte order",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§4.2, MODBUS data encoding"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/decode.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/pdu.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "No direct conformance test is mapped in the current inventory.",
+        "owner": "maintainers",
+        "follow_up": "PR-003"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-003",
+      "title": "Data addresses are zero-based unsigned 16-bit values",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§4.4, MODBUS data model addressing"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-types/src/model.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_types"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-004",
+      "title": "Read Coils and Read Discrete Inputs quantities are 1 through 2000",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.1 and §6.2, quantity fields"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_fc01_read_coils",
+        "spec_fc02_read_discrete",
+        "spec_server_store_counts",
+        "spec_server_validation",
+        "spec_validation"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-005",
+      "title": "Read Holding and Input Register quantities are 1 through 125",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.3 and §6.4, quantity fields"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_fc03_read_holding",
+        "spec_fc04_read_input",
+        "spec_server_store_counts",
+        "spec_server_validation",
+        "spec_validation"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-006",
+      "title": "Write Multiple Coils quantities are 1 through 1968 with matching packed byte count",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.11, request quantity and byte count"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_byte_count_semantic",
+        "spec_constants",
+        "spec_encode_validation",
+        "spec_fc0f_write_coils",
+        "spec_fc15_write_file",
+        "spec_server_validation",
+        "spec_validation"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-007",
+      "title": "Write Multiple Registers quantities are 1 through 123 with matching byte count",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.12, request quantity and byte count"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_byte_count_semantic",
+        "spec_constants",
+        "spec_encode_validation",
+        "spec_fc10_write_registers",
+        "spec_server_validation",
+        "spec_validation"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-008",
+      "title": "Read/Write Multiple Registers limits writes to 1 through 121 and reads to 1 through 125",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.17, read and write quantity fields"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_fc17_read_write_regs",
+        "spec_server_validation",
+        "spec_validation"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-009",
+      "title": "Read FIFO Queue responses contain no more than 31 registers",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.18, FIFO count and byte count"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_fc18_read_fifo",
+        "spec_server_store_counts",
+        "spec_server_validation",
+        "spec_validation"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-010",
+      "title": "Bit-read response values are packed least-significant bit first",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.1 and §6.2, response bit order"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_fc01_read_coils",
+        "spec_fc02_read_discrete",
+        "spec_response_encode"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-011",
+      "title": "Unused high bits in the final bit-response byte are zero",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.1 and §6.2, response padding"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_fc01_read_coils",
+        "spec_fc02_read_discrete",
+        "spec_response_encode"
+      ],
+      "evidence_gap": {
+        "detail": "Server encoding zeroes final-byte padding, but client decoding does not universally reject nonzero peer padding.",
+        "owner": "maintainers",
+        "follow_up": "PR-202",
+        "profiles": [
+          "tcp-client",
+          "physical-rtu-client",
+          "gateway",
+          "rtu-over-tcp-extension"
+        ]
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding."
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding."
+        }
+      ]
+    },
+    {
+      "id": "APP-012",
+      "title": "Register-read response byte count is even and twice the returned quantity",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.3 and §6.4, response byte count"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_byte_count_semantic",
+        "spec_fc03_read_holding",
+        "spec_fc04_read_input",
+        "spec_response_encode"
+      ],
+      "evidence_gap": {
+        "detail": "Fixed-length checks do not yet prove request-correlated register quantities on every client path.",
+        "owner": "maintainers",
+        "follow_up": "PR-202",
+        "profiles": [
+          "tcp-client",
+          "physical-rtu-client",
+          "gateway",
+          "rtu-over-tcp-extension"
+        ]
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Implemented decoding checks byte shape but not every request-correlated quantity."
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Implemented decoding checks byte shape but not every request-correlated quantity."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Implemented decoding checks byte shape but not every request-correlated quantity."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Implemented decoding checks byte shape but not every request-correlated quantity."
+        }
+      ]
+    },
+    {
+      "id": "APP-013",
+      "title": "A client accepts only the exact quantity requested in fixed-quantity responses",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.1 through §6.4, response quantity derived from request"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_byte_count_semantic",
+        "spec_fc03_read_holding",
+        "spec_fc04_read_input",
+        "spec_fixed_pdu_lengths",
+        "spec_owned_response"
+      ],
+      "evidence_gap": {
+        "detail": "Request-correlated quantity validation remains incomplete across client response variants.",
+        "owner": "maintainers",
+        "follow_up": "PR-202"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Some client paths validate shape without retaining enough request context for an exact quantity check."
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Some client paths validate shape without retaining enough request context for an exact quantity check."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Some client paths validate shape without retaining enough request context for an exact quantity check."
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Some client paths validate shape without retaining enough request context for an exact quantity check."
+        }
+      ]
+    },
+    {
+      "id": "APP-014",
+      "title": "Single-write success responses exactly echo the request",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.5, §6.6, and §6.16, normal response"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_fc05_write_coil",
+        "spec_fc06_write_register",
+        "spec_fc16_mask_write"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-015",
+      "title": "Multiple-write success responses echo the starting address and quantity",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.11, §6.12, and §6.17, normal response"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_fc0f_write_coils",
+        "spec_fc10_write_registers",
+        "spec_fc15_write_file",
+        "spec_fc17_read_write_regs"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-016",
+      "title": "Exception responses set the function-code high bit and carry a defined exception code",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§7, MODBUS exception responses"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_exceptions",
+        "spec_fixed_pdu_lengths",
+        "spec_handler_exceptions",
+        "spec_response_encode"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-017",
+      "title": "Unsupported function codes receive Illegal Function unless an extension defines them",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§5, server action for an unsupported function code; §7, exception code 01"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_fc07_exception_status",
+        "spec_fc08_diagnostics",
+        "spec_fc0b_event_counter",
+        "spec_fc0c_event_log",
+        "spec_fc11_report_server",
+        "spec_handler_exceptions",
+        "spec_server_function_codes",
+        "spec_server_handler",
+        "spec_server_validation"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-018",
+      "title": "Acknowledge exception 0x05 represents deferred processing rather than completed success",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§7, exception code 05 Acknowledge"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-client/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/client.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_exceptions"
+      ],
+      "evidence_gap": {
+        "detail": "Acknowledge is currently retryable and lacks a deferred-completion workflow.",
+        "owner": "maintainers",
+        "follow_up": "PR-203"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Acknowledge is included in the ordinary retryable exception set rather than a deferred-completion state."
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Acknowledge is included in the ordinary retryable exception set rather than a deferred-completion state."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Acknowledge is included in the ordinary retryable exception set rather than a deferred-completion state."
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Acknowledge is included in the ordinary retryable exception set rather than a deferred-completion state."
+        }
+      ]
+    },
+    {
+      "id": "APP-019",
+      "title": "Read/Write Multiple Registers preserves one-request write-before-read semantics under concurrency",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.17, write operation performed before the read"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/store/mod.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_fc16_mask_write",
+        "spec_fc17_read_write_regs",
+        "spec_server_handler"
+      ],
+      "evidence_gap": {
+        "detail": "The data-store contract does not require atomic compound operations under concurrent requests.",
+        "owner": "maintainers",
+        "follow_up": "PR-303"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-server",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Handler sequencing does not make the compound data-store operation atomic against concurrent requests."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Handler sequencing does not make the compound data-store operation atomic against concurrent requests."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Handler sequencing does not make the compound data-store operation atomic against concurrent requests."
+        }
+      ]
+    },
+    {
+      "id": "APP-020",
+      "title": "File Record subrequests use reference type 0x06 and internally consistent byte counts",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.14 and §6.15, subrequest reference type and byte counts"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/validate.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/handler.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_byte_count_semantic",
+        "spec_encode_validation",
+        "spec_fc14_read_file",
+        "spec_fc15_write_file",
+        "spec_server_validation",
+        "spec_validation"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-021",
+      "title": "Device Identification continuation uses the response's next-object identifier",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-application-protocol",
+        "revision": "V1.1b3",
+        "locator": "§6.21, Read Device Identification continuation fields"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-client/src/methods/device_id.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/device_id.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_fc2b_mei",
+        "spec_server_device_id"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "APP-022",
+      "title": "A serial-line broadcast request does not receive a response",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.1, broadcast communication"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-client/src/client.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_broadcast"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-001",
+      "title": "The seven-byte MBAP header contains transaction, protocol, length, and Unit Identifier fields",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§3.1.3, MBAP header fields and size"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/mbap.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tcp/src/transport.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/transaction.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_header",
+        "spec_mbap_framing"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-002",
+      "title": "The MBAP protocol identifier is zero for Modbus",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§3.1.3, Protocol Identifier field"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/mbap.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tcp/src/transport.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/transaction.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_header",
+        "spec_mbap_framing"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-003",
+      "title": "The MBAP length counts Unit Identifier plus PDU and bounds the ADU to 260 bytes",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§3.1.2 and §3.1.3, Length field and maximum frame size"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/mbap.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tcp/src/transport.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/transaction.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_header",
+        "spec_mbap_framing"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-004",
+      "title": "TCP fragmentation and coalescing do not change ADU boundaries",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§3.1.2, message framing over a TCP byte stream"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/mbap.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tcp/src/transport.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/transaction.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_mbap_framing"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-005",
+      "title": "A server copies the request Transaction Identifier into its response",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§3.1.3 and §4.4.1, Transaction Identifier pairing"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/mbap.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/server.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_client_server",
+        "spec_mbap_framing",
+        "spec_tcp_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-006",
+      "title": "Transaction identifiers are unique while in flight and are reclaimed",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§4.4.1, client transaction management"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-client/src/transaction.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "Slot allocation is implemented, but hostile wraparound and cancellation reclaim evidence is incomplete.",
+        "owner": "maintainers",
+        "follow_up": "PR-201"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-007",
+      "title": "A response matches the expected Unit Identifier and function",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§3.1.3 and §4.4.1, response identity and transaction pairing"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-client/src/reader.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/transaction.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "The reader correlates transaction identifiers but does not enforce every response identity field.",
+        "owner": "maintainers",
+        "follow_up": "PR-201"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Transaction identifiers are checked, but Unit Identifier correlation is not enforced on every response path."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Transaction identifiers are checked, but Unit Identifier correlation is not enforced on every response path."
+        }
+      ]
+    },
+    {
+      "id": "TCP-008",
+      "title": "Direct and gateway Unit Identifier behavior is explicit",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§3.1.2 and §4.4.4, Unit Identifier routing"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-gateway/src/gateway.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_gateway"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-009",
+      "title": "TCP port 502 is the configurable default",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§4.2, reserved Modbus port"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tcp/src/config.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_tcp_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-010",
+      "title": "A server processes multiple outstanding transactions within its advertised bound",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§4.4.1, maximum number of concurrent transactions"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-server/src/server.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/config.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "The server configuration exposes a transaction bound, but each connection processes requests sequentially.",
+        "owner": "maintainers",
+        "follow_up": "PR-301, PR-302"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-server",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The configuration exposes a transaction bound, but each connection processes requests sequentially."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The configuration exposes a transaction bound, but each connection processes requests sequentially."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The configuration exposes a transaction bound, but each connection processes requests sequentially."
+        }
+      ]
+    },
+    {
+      "id": "TCP-011",
+      "title": "Connection resources, idle handling, and shutdown are bounded",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Evidence and claims, lifecycle evidence policy"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-server/src/server.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tcp/src/listener.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_tcp_transport"
+      ],
+      "evidence_gap": {
+        "detail": "Idle, half-open, and shutdown behavior lacks one bounded lifecycle proof.",
+        "owner": "maintainers",
+        "follow_up": "PR-301"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-server",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Lifecycle controls exist without complete idle and half-open coverage."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Lifecycle controls exist without complete idle and half-open coverage."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Lifecycle controls exist without complete idle and half-open coverage."
+        }
+      ]
+    },
+    {
+      "id": "TCP-012",
+      "title": "A gateway maps path and target failures to exceptions 0x0A and 0x0B",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§4.4.4, gateway exception responses"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-gateway/src/gateway.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_exceptions",
+        "spec_gateway"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "TCP-013",
+      "title": "Connection management survives churn, idle peers, and half-open peers",
+      "classification": "normative",
+      "strength": "SHOULD",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§4.2, TCP connection management"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-pool/src/pool.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_pool",
+        "spec_tcp_transport"
+      ],
+      "evidence_gap": {
+        "detail": "Pool recovery has tests, but idle and half-open health policy remains incomplete.",
+        "owner": "maintainers",
+        "follow_up": "PR-403"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Connection reuse and eviction are implemented without complete health recovery policy."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Connection reuse and eviction are implemented without complete health recovery policy."
+        }
+      ]
+    },
+    {
+      "id": "TCP-014",
+      "title": "Priority and non-priority connection pools preserve configured-device priority",
+      "classification": "normative",
+      "strength": "SHOULD",
+      "source": {
+        "document": "modbus-tcp-guide",
+        "revision": "V1.0b",
+        "locator": "§4.2.1, TCP connection management architecture"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-pool/src/pool.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_pool"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "RTU-001",
+      "title": "Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.2, MODBUS addressing rules"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_broadcast",
+        "spec_rtu_client"
+      ],
+      "evidence_gap": {
+        "detail": "Reserved serial Unit IDs are not rejected consistently.",
+        "owner": "maintainers",
+        "follow_up": "PR-101"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Reserved serial Unit Identifier behavior is not consistently enforced."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Reserved serial Unit Identifier behavior is not consistently enforced."
+        }
+      ]
+    },
+    {
+      "id": "RTU-002",
+      "title": "An RTU ADU does not exceed 256 bytes",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.5.1.1, RTU frame size"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_rtu_framing"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "RTU-003",
+      "title": "RTU CRC uses the specified polynomial and transmits the low-order byte first",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.5.1.2 and Appendix B, CRC generation and order"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_crc16",
+        "spec_rtu_framing"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "RTU-004",
+      "title": "At least t3.5 of silence separates RTU frames",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.5.1.1, RTU transmission mode timing"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_transport"
+      ],
+      "evidence_gap": {
+        "detail": "Silence handling relies on client delays and does not provide complete receiver-boundary proof.",
+        "owner": "maintainers",
+        "follow_up": "PR-102, PR-103"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Transmit delay and incremental decode do not fully implement receiver t3.5 boundary detection."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Transmit delay and incremental decode do not fully implement receiver t3.5 boundary detection."
+        }
+      ]
+    },
+    {
+      "id": "RTU-005",
+      "title": "An inter-character gap greater than t1.5 invalidates a partial RTU frame",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.5.1.1, frame reception state diagram"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "The receive path does not invalidate partial frames specifically at t1.5.",
+        "owner": "maintainers",
+        "follow_up": "PR-102"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "There is no explicit t1.5 partial-frame invalidation path."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "There is no explicit t1.5 partial-frame invalidation path."
+        }
+      ]
+    },
+    {
+      "id": "RTU-006",
+      "title": "Above 19200 bit/s, 750 microseconds and 1.75 milliseconds are the recommended fixed timers",
+      "classification": "normative",
+      "strength": "SHOULD",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.5.1.1, recommended high-speed timers"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "RTU-007",
+      "title": "RTU character timing uses 11 bits with compliant parity and stop-bit defaults",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.5.1, RTU character format"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_transport"
+      ],
+      "evidence_gap": {
+        "detail": "The current serial default is eight data bits, no parity, and one stop bit.",
+        "owner": "maintainers",
+        "follow_up": "PR-101"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The default serial format is 8N1 rather than even parity or no parity with two stop bits."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The default serial format is 8N1 rather than even parity or no parity with two stop bits."
+        }
+      ]
+    },
+    {
+      "id": "RTU-008",
+      "title": "RTU receive framing is independent of operating-system read chunk boundaries",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.5.1.1, continuous stream frame detection"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_framing"
+      ],
+      "evidence_gap": {
+        "detail": "The physical receive path treats each available buffer as a candidate frame rather than using RTU timing as the boundary.",
+        "owner": "maintainers",
+        "follow_up": "PR-102"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The physical receive path treats each available buffer as a candidate frame without timing-aware assembly."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The physical receive path treats each available buffer as a candidate frame without timing-aware assembly."
+        }
+      ]
+    },
+    {
+      "id": "RTU-009",
+      "title": "Noise, bad CRCs, and overlength frames are discarded without preventing later valid frames",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.5.1.1 and §2.5.1.2, frame analysis and CRC checking"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_framing"
+      ],
+      "evidence_gap": {
+        "detail": "Bad-CRC recovery exists; noise, overlength, and post-error recovery need broader evidence.",
+        "owner": "maintainers",
+        "follow_up": "PR-103"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "CRC errors are rejected, while broader noise and recovery behavior remains incomplete."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "CRC errors are rejected, while broader noise and recovery behavior remains incomplete."
+        }
+      ]
+    },
+    {
+      "id": "RTU-010",
+      "title": "Client transmission and turnaround avoid overlap with the bus-silent interval",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.4 and §2.5.1.1, master state diagram and frame separation"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_client",
+        "spec_rtu_transport"
+      ],
+      "evidence_gap": {
+        "detail": "Turnaround uses timed delays without an explicit drain or bus-idle confirmation contract.",
+        "owner": "maintainers",
+        "follow_up": "PR-103"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Turnaround is delay-based and does not expose explicit bus-drain confirmation."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Turnaround is delay-based and does not expose explicit bus-drain confirmation."
+        }
+      ]
+    },
+    {
+      "id": "RTU-011",
+      "title": "RTU broadcast writes do not wait for a response",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-serial-line",
+        "revision": "V1.02",
+        "locator": "§2.1, broadcast communication"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_broadcast",
+        "spec_rtu_client",
+        "spec_rtu_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "RTU-012",
+      "title": "A first-party physical RTU responder exists before responder support is claimed",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Project-profile and extension classification, physical RTU responder profile"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "No first-party physical serial responder is implemented.",
+        "owner": "maintainers",
+        "follow_up": "PR-702"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        }
+      ]
+    },
+    {
+      "id": "EXT-001",
+      "title": "RTU-over-TCP is labeled as a project extension without MBAP or physical-line guarantees",
+      "classification": "extension",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Project-profile and extension classification"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu_tcp.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/rtu_tcp.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "No direct conformance test is mapped in the current inventory.",
+        "owner": "maintainers",
+        "follow_up": "PR-104, PR-704"
+      },
+      "assessments": [
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "EXT-002",
+      "title": "TCP fragmentation and coalescing do not break tunneled RTU frames",
+      "classification": "extension",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Project-profile and extension classification, extension framing"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu_tcp.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/rtu_tcp.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_framing",
+        "spec_rtu_transport"
+      ],
+      "evidence_gap": {
+        "detail": "No direct conformance test is mapped in the current inventory.",
+        "owner": "maintainers",
+        "follow_up": "PR-104"
+      },
+      "assessments": [
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "EXT-003",
+      "title": "Frame-boundary selection does not accept an unintended valid CRC prefix",
+      "classification": "extension",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Project-profile and extension classification"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu_tcp.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/rtu_tcp.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_framing"
+      ],
+      "evidence_gap": {
+        "detail": "The codec accepts the first valid CRC prefix among candidate lengths.",
+        "owner": "maintainers",
+        "follow_up": "PR-104"
+      },
+      "assessments": [
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The decoder accepts the first valid CRC prefix among candidate frame lengths."
+        }
+      ]
+    },
+    {
+      "id": "EXT-004",
+      "title": "Maximum-size corrupt buffers make progress without retaining input indefinitely",
+      "classification": "extension",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Project-profile and extension classification; § Test inventory"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu_tcp.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/rtu_tcp.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_rtu_framing"
+      ],
+      "evidence_gap": {
+        "detail": "An exact-256-byte CRC miss waits for another byte before returning an error.",
+        "owner": "maintainers",
+        "follow_up": "PR-104"
+      },
+      "assessments": [
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "An exact-256-byte CRC miss waits for another byte before making error progress."
+        }
+      ]
+    },
+    {
+      "id": "SEC-001",
+      "title": "Modbus/TCP Security uses TCP port 802 by default",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-01 and protocol summary, reserved port 802"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/tls_config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_tls_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "SEC-002",
+      "title": "TLS carries the unchanged Modbus/TCP application protocol",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-02, MODBUS application protocol unchanged"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/tls_config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_tls_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "SEC-003",
+      "title": "TLS 1.2 or later is required without downgrade below 1.2",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-32, minimum TLS protocol version"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/tls_config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_tls_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "SEC-004",
+      "title": "Both client and server certificates are authenticated",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-07 through R-12, mutual authentication"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/tls_config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_tls_transport"
+      ],
+      "evidence_gap": {
+        "detail": "Mutual certificate authentication is the default, but require_client_cert=false enables a nonconformant compatibility mode.",
+        "owner": "maintainers",
+        "follow_up": "PR-501"
+      },
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The default requires a client certificate, while an explicit opt-out lets the server accept clients without one."
+        }
+      ]
+    },
+    {
+      "id": "SEC-005",
+      "title": "The TLS maximum plaintext fragment is 512 bytes",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-06, TLS maximum fragment length"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/tls_config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_constants",
+        "spec_tls_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "SEC-006",
+      "title": "Role OID parsing applies constrained ASN.1 lengths and encodings",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-15 through R-25, role extension encoding"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/tls_config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_tls_transport"
+      ],
+      "evidence_gap": null,
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "SEC-007",
+      "title": "Authenticated peer roles are available to every request authorization decision",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-26 through R-28, authorization role mapping"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_tls_transport"
+      ],
+      "evidence_gap": {
+        "detail": "TLS peer roles are extracted but are not composed into every server request authorization decision.",
+        "owner": "maintainers",
+        "follow_up": "PR-501, PR-502"
+      },
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Role extraction is implemented as a primitive but not composed into every request decision."
+        }
+      ]
+    },
+    {
+      "id": "SEC-008",
+      "title": "An authorization denial returns Illegal Function",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-29, authorization failure response"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_tls_transport"
+      ],
+      "evidence_gap": {
+        "detail": "Authorization policy primitives are not composed into a secured server response path.",
+        "owner": "maintainers",
+        "follow_up": "PR-502"
+      },
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Policy types exist without a composed secured-server denial path."
+        }
+      ]
+    },
+    {
+      "id": "SEC-009",
+      "title": "Listener limits and TLS handshake failures are bounded and observable",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Evidence and claims, lifecycle and failure evidence"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/tls_config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/role.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_tls_transport"
+      ],
+      "evidence_gap": {
+        "detail": "TLS configuration exposes bounds, but no composed secured server enforces them through the full handshake lifecycle.",
+        "owner": "maintainers",
+        "follow_up": "PR-501"
+      },
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "TLS configuration exposes bounds without a composed secured server that enforces and observes the full handshake lifecycle."
+        }
+      ]
+    },
+    {
+      "id": "SEC-010",
+      "title": "Certificate issuance, revocation, and renewal lifecycle is documented and tested",
+      "classification": "normative",
+      "strength": "MUST",
+      "source": {
+        "document": "modbus-security-protocol",
+        "revision": "MB-TCP-Security-v36_2021-07-30",
+        "locator": "R-33 through R-35, PKI lifecycle"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-tls/src/tls_config.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "Static certificate loading exists, but issuance, revocation, rotation, and renewal lifecycle evidence is incomplete.",
+        "owner": "maintainers",
+        "follow_up": "PR-503"
+      },
+      "assessments": [
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Static certificate loading exists without a complete issuance, revocation, rotation, and renewal lifecycle."
+        }
+      ]
+    },
+    {
+      "id": "CONF-001",
+      "title": "Public function and profile claims trace to implementation and tests",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Evidence and claims; § Test inventory"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "docs/conformance/schema.md"
+        },
+        {
+          "path": "scripts/conformance_ledger.py"
+        },
+        {
+          "path": "crates/rusty-modbus-conformance/tests/spec_client_server.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_client_server",
+        "spec_server_function_codes"
+      ],
+      "evidence_gap": {
+        "detail": "This seed maps implementation and tests but records no executed-test evidence.",
+        "owner": "maintainers",
+        "follow_up": "PR-001"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "modbus-security",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "CONF-002",
+      "title": "Boundary and exception behavior has direct tests and mechanical requirement coverage",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Test inventory"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "docs/conformance/schema.md"
+        },
+        {
+          "path": "scripts/conformance_ledger.py"
+        },
+        {
+          "path": "crates/rusty-modbus-conformance/tests/spec_client_server.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_client_server",
+        "spec_server_function_codes"
+      ],
+      "evidence_gap": {
+        "detail": "Direct tests exist for many boundaries, but mechanical clause coverage is incomplete.",
+        "owner": "maintainers",
+        "follow_up": "PR-001, PR-703"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The test suite has direct examples, but requirement-to-test completeness remains a follow-up."
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The test suite has direct examples, but requirement-to-test completeness remains a follow-up."
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The test suite has direct examples, but requirement-to-test completeness remains a follow-up."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The test suite has direct examples, but requirement-to-test completeness remains a follow-up."
+        },
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The test suite has direct examples, but requirement-to-test completeness remains a follow-up."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The test suite has direct examples, but requirement-to-test completeness remains a follow-up."
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The test suite has direct examples, but requirement-to-test completeness remains a follow-up."
+        }
+      ]
+    },
+    {
+      "id": "CONF-003",
+      "title": "Parsers have malformed-input and arbitrary stream-chunking evidence",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Test inventory, hostile and malformed input evidence"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-codec/src/decode.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-frame/src/mbap.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        }
+      ],
+      "test_ids": [
+        "spec_encode_validation",
+        "spec_mbap_framing",
+        "spec_rtu_framing"
+      ],
+      "evidence_gap": {
+        "detail": "Negative examples exist, but broad property and fuzz evidence is deferred.",
+        "owner": "maintainers",
+        "follow_up": "PR-003"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+        },
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+        }
+      ]
+    },
+    {
+      "id": "CONF-004",
+      "title": "Physical RTU is verified under chunking, timing, noise, and turnaround conditions",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Evidence and claims, profile-scoped verification"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "Physical serial timing, noise, and turnaround verification is incomplete.",
+        "owner": "maintainers",
+        "follow_up": "PR-102, PR-103, PR-702"
+      },
+      "assessments": [
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "Physical serial timing, noise, and turnaround verification is incomplete."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "Physical serial timing, noise, and turnaround verification is incomplete."
+        }
+      ]
+    },
+    {
+      "id": "CONF-005",
+      "title": "Independent implementation evidence exists before interoperability is claimed",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Evidence and claims"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "No independent implementation or authorized tool evidence is recorded.",
+        "owner": "maintainers",
+        "follow_up": "PR-703"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No independent implementation or authorized tool evidence is recorded."
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No independent implementation or authorized tool evidence is recorded."
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No independent implementation or authorized tool evidence is recorded."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No first-party physical serial responder is implemented."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No independent implementation or authorized tool evidence is recorded."
+        },
+        {
+          "profile": "modbus-security",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No independent implementation or authorized tool evidence is recorded."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No independent implementation or authorized tool evidence is recorded."
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "unsupported",
+          "evidence": "not-implemented",
+          "reason": "No independent implementation or authorized tool evidence is recorded."
+        }
+      ]
+    },
+    {
+      "id": "CONF-006",
+      "title": "Benchmark baselines record zero errors in a stable environment",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Evidence and claims, reproducible evidence"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "benchmarks/src/bin/stress_test.rs"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "Existing benchmark code is not a stable, zero-error baseline artifact.",
+        "owner": "maintainers",
+        "follow_up": "PR-002, PR-601"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Benchmark code exists without a pinned stable-environment result artifact."
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Benchmark code exists without a pinned stable-environment result artifact."
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Benchmark code exists without a pinned stable-environment result artifact."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Benchmark code exists without a pinned stable-environment result artifact."
+        },
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Benchmark code exists without a pinned stable-environment result artifact."
+        }
+      ]
+    },
+    {
+      "id": "CONF-007",
+      "title": "Release documentation makes only named profile and evidence-threshold claims",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Evidence and claims"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "docs/conformance/schema.md"
+        },
+        {
+          "path": "scripts/conformance_ledger.py"
+        }
+      ],
+      "test_ids": [],
+      "evidence_gap": {
+        "detail": "The ledger establishes claim authority; final release-claim audit remains outstanding.",
+        "owner": "maintainers",
+        "follow_up": "PR-704"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "gateway",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "modbus-security",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "simulator",
+          "disposition": "supported",
+          "evidence": "implemented"
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "supported",
+          "evidence": "implemented"
+        }
+      ]
+    },
+    {
+      "id": "CONF-008",
+      "title": "Rust, Python, CLI, and simulator surfaces have parity or state non-parity",
+      "classification": "project-profile",
+      "strength": "project-profile",
+      "source": {
+        "document": "rusty-modbus-project-policy",
+        "revision": "1",
+        "locator": "§ Evidence and claims, explicit capability scope"
+      },
+      "owner": "maintainers",
+      "implementation_refs": [
+        {
+          "path": "crates/rusty-modbus-sim/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-sim/src/simulator.rs"
+        },
+        {
+          "path": "docs/api.md"
+        }
+      ],
+      "test_ids": [
+        "spec_simulator"
+      ],
+      "evidence_gap": {
+        "detail": "Python, CLI, and simulator capability parity is incomplete and explicitly deferred.",
+        "owner": "maintainers",
+        "follow_up": "PR-704"
+      },
+      "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The Python, CLI, and simulator surfaces intentionally expose a narrower capability set."
+        },
+        {
+          "profile": "tcp-server",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The Python, CLI, and simulator surfaces intentionally expose a narrower capability set."
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The Python, CLI, and simulator surfaces intentionally expose a narrower capability set."
+        },
+        {
+          "profile": "physical-rtu-responder",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The responder absence is explicit, but the cross-surface parity audit remains incomplete."
+        },
+        {
+          "profile": "gateway",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The Python, CLI, and simulator surfaces intentionally expose a narrower capability set."
+        },
+        {
+          "profile": "modbus-security",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The Python, CLI, and simulator surfaces intentionally expose a narrower capability set."
+        },
+        {
+          "profile": "simulator",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The Python, CLI, and simulator surfaces intentionally expose a narrower capability set."
+        },
+        {
+          "profile": "rtu-over-tcp-extension",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "The Python, CLI, and simulator surfaces intentionally expose a narrower capability set."
+        }
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "id": "spec_broadcast",
+      "path": "crates/rusty-modbus-conformance/tests/spec_broadcast.rs",
+      "requirement_ids": [
+        "APP-022",
+        "RTU-001",
+        "RTU-011"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_byte_count_semantic",
+      "path": "crates/rusty-modbus-conformance/tests/spec_byte_count_semantic.rs",
+      "requirement_ids": [
+        "APP-006",
+        "APP-007",
+        "APP-012",
+        "APP-013",
+        "APP-020"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_client_server",
+      "path": "crates/rusty-modbus-conformance/tests/spec_client_server.rs",
+      "requirement_ids": [
+        "TCP-005",
+        "CONF-001",
+        "CONF-002"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_constants",
+      "path": "crates/rusty-modbus-conformance/tests/spec_constants.rs",
+      "requirement_ids": [
+        "APP-001",
+        "APP-004",
+        "APP-005",
+        "APP-006",
+        "APP-007",
+        "APP-008",
+        "APP-009",
+        "TCP-009",
+        "RTU-002",
+        "SEC-001",
+        "SEC-005"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_crc16",
+      "path": "crates/rusty-modbus-conformance/tests/spec_crc16.rs",
+      "requirement_ids": [
+        "RTU-003"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_encode_validation",
+      "path": "crates/rusty-modbus-conformance/tests/spec_encode_validation.rs",
+      "requirement_ids": [
+        "APP-001",
+        "APP-006",
+        "APP-007",
+        "APP-020",
+        "CONF-003"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_exceptions",
+      "path": "crates/rusty-modbus-conformance/tests/spec_exceptions.rs",
+      "requirement_ids": [
+        "APP-016",
+        "APP-018",
+        "TCP-012"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc01_read_coils",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc01_read_coils.rs",
+      "requirement_ids": [
+        "APP-004",
+        "APP-010",
+        "APP-011"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc02_read_discrete",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc02_read_discrete.rs",
+      "requirement_ids": [
+        "APP-004",
+        "APP-010",
+        "APP-011"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc03_read_holding",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc03_read_holding.rs",
+      "requirement_ids": [
+        "APP-005",
+        "APP-012",
+        "APP-013"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc04_read_input",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc04_read_input.rs",
+      "requirement_ids": [
+        "APP-005",
+        "APP-012",
+        "APP-013"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc05_write_coil",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc05_write_coil.rs",
+      "requirement_ids": [
+        "APP-014"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc06_write_register",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc06_write_register.rs",
+      "requirement_ids": [
+        "APP-014"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc07_exception_status",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc07_exception_status.rs",
+      "requirement_ids": [
+        "APP-017"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc08_diagnostics",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc08_diagnostics.rs",
+      "requirement_ids": [
+        "APP-017"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc0b_event_counter",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc0b_event_counter.rs",
+      "requirement_ids": [
+        "APP-017"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc0c_event_log",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc0c_event_log.rs",
+      "requirement_ids": [
+        "APP-017"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc0f_write_coils",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc0f_write_coils.rs",
+      "requirement_ids": [
+        "APP-006",
+        "APP-015"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc10_write_registers",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc10_write_registers.rs",
+      "requirement_ids": [
+        "APP-007",
+        "APP-015"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc11_report_server",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc11_report_server.rs",
+      "requirement_ids": [
+        "APP-017"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc14_read_file",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc14_read_file.rs",
+      "requirement_ids": [
+        "APP-020"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc15_write_file",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc15_write_file.rs",
+      "requirement_ids": [
+        "APP-006",
+        "APP-015",
+        "APP-020"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc16_mask_write",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc16_mask_write.rs",
+      "requirement_ids": [
+        "APP-014",
+        "APP-019"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc17_read_write_regs",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc17_read_write_regs.rs",
+      "requirement_ids": [
+        "APP-008",
+        "APP-015",
+        "APP-019"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc18_read_fifo",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc18_read_fifo.rs",
+      "requirement_ids": [
+        "APP-009"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fc2b_mei",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fc2b_mei.rs",
+      "requirement_ids": [
+        "APP-021"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_fixed_pdu_lengths",
+      "path": "crates/rusty-modbus-conformance/tests/spec_fixed_pdu_lengths.rs",
+      "requirement_ids": [
+        "APP-013",
+        "APP-016"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_gateway",
+      "path": "crates/rusty-modbus-conformance/tests/spec_gateway.rs",
+      "requirement_ids": [
+        "TCP-008",
+        "TCP-012"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_handler_exceptions",
+      "path": "crates/rusty-modbus-conformance/tests/spec_handler_exceptions.rs",
+      "requirement_ids": [
+        "APP-016",
+        "APP-017"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_header",
+      "path": "crates/rusty-modbus-conformance/tests/spec_header.rs",
+      "requirement_ids": [
+        "TCP-001",
+        "TCP-002",
+        "TCP-003"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_mbap_framing",
+      "path": "crates/rusty-modbus-conformance/tests/spec_mbap_framing.rs",
+      "requirement_ids": [
+        "APP-001",
+        "CONF-003",
+        "TCP-001",
+        "TCP-002",
+        "TCP-003",
+        "TCP-004",
+        "TCP-005"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_owned_response",
+      "path": "crates/rusty-modbus-conformance/tests/spec_owned_response.rs",
+      "requirement_ids": [
+        "APP-013"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_pool",
+      "path": "crates/rusty-modbus-conformance/tests/spec_pool.rs",
+      "requirement_ids": [
+        "TCP-013",
+        "TCP-014"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_response_encode",
+      "path": "crates/rusty-modbus-conformance/tests/spec_response_encode.rs",
+      "requirement_ids": [
+        "APP-001",
+        "APP-010",
+        "APP-011",
+        "APP-012",
+        "APP-016"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_rtu_client",
+      "path": "crates/rusty-modbus-conformance/tests/spec_rtu_client.rs",
+      "requirement_ids": [
+        "RTU-001",
+        "RTU-010",
+        "RTU-011"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_rtu_framing",
+      "path": "crates/rusty-modbus-conformance/tests/spec_rtu_framing.rs",
+      "requirement_ids": [
+        "CONF-003",
+        "EXT-002",
+        "EXT-003",
+        "EXT-004",
+        "RTU-002",
+        "RTU-003",
+        "RTU-008",
+        "RTU-009"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_rtu_transport",
+      "path": "crates/rusty-modbus-conformance/tests/spec_rtu_transport.rs",
+      "requirement_ids": [
+        "EXT-002",
+        "RTU-004",
+        "RTU-006",
+        "RTU-007",
+        "RTU-010",
+        "RTU-011"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_server_device_id",
+      "path": "crates/rusty-modbus-conformance/tests/spec_server_device_id.rs",
+      "requirement_ids": [
+        "APP-021"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_server_function_codes",
+      "path": "crates/rusty-modbus-conformance/tests/spec_server_function_codes.rs",
+      "requirement_ids": [
+        "APP-017",
+        "CONF-001",
+        "CONF-002"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_server_handler",
+      "path": "crates/rusty-modbus-conformance/tests/spec_server_handler.rs",
+      "requirement_ids": [
+        "APP-017",
+        "APP-019"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_server_store_counts",
+      "path": "crates/rusty-modbus-conformance/tests/spec_server_store_counts.rs",
+      "requirement_ids": [
+        "APP-004",
+        "APP-005",
+        "APP-009"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_server_validation",
+      "path": "crates/rusty-modbus-conformance/tests/spec_server_validation.rs",
+      "requirement_ids": [
+        "APP-004",
+        "APP-005",
+        "APP-006",
+        "APP-007",
+        "APP-008",
+        "APP-009",
+        "APP-017",
+        "APP-020"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_simulator",
+      "path": "crates/rusty-modbus-conformance/tests/spec_simulator.rs",
+      "requirement_ids": [
+        "CONF-008"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_tcp_transport",
+      "path": "crates/rusty-modbus-conformance/tests/spec_tcp_transport.rs",
+      "requirement_ids": [
+        "TCP-005",
+        "TCP-009",
+        "TCP-011",
+        "TCP-013"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_tls_transport",
+      "path": "crates/rusty-modbus-conformance/tests/spec_tls_transport.rs",
+      "requirement_ids": [
+        "SEC-001",
+        "SEC-002",
+        "SEC-003",
+        "SEC-004",
+        "SEC-005",
+        "SEC-006",
+        "SEC-007",
+        "SEC-008",
+        "SEC-009"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_types",
+      "path": "crates/rusty-modbus-conformance/tests/spec_types.rs",
+      "requirement_ids": [
+        "APP-003"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_validation",
+      "path": "crates/rusty-modbus-conformance/tests/spec_validation.rs",
+      "requirement_ids": [
+        "APP-004",
+        "APP-005",
+        "APP-006",
+        "APP-007",
+        "APP-008",
+        "APP-009",
+        "APP-020"
+      ],
+      "category": null
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-tcp-client",
+      "profile": "tcp-client",
+      "kind": "capability",
+      "minimum_evidence": "implemented",
+      "text": "Provides Modbus/TCP client framing and transaction management at the implemented evidence level; listed deviations and gaps still apply.",
+      "requirement_ids": [
+        "APP-001",
+        "TCP-001",
+        "TCP-004",
+        "TCP-006"
+      ],
+      "public_surface_ids": [
+        "root-readme",
+        "api-guide",
+        "facade-readme",
+        "tcp-readme",
+        "client-readme",
+        "types-readme",
+        "codec-readme",
+        "frame-readme",
+        "pool-readme"
+      ]
+    },
+    {
+      "id": "claim-tcp-server",
+      "profile": "tcp-server",
+      "kind": "capability",
+      "minimum_evidence": "implemented",
+      "text": "Provides Modbus/TCP server request processing at the implemented evidence level; listed deviations and gaps still apply.",
+      "requirement_ids": [
+        "APP-017",
+        "TCP-001",
+        "TCP-005",
+        "TCP-010"
+      ],
+      "public_surface_ids": [
+        "root-readme",
+        "api-guide",
+        "facade-readme",
+        "tcp-readme",
+        "server-readme",
+        "types-readme",
+        "codec-readme",
+        "frame-readme",
+        "sim-readme"
+      ]
+    },
+    {
+      "id": "claim-physical-rtu-client",
+      "profile": "physical-rtu-client",
+      "kind": "capability",
+      "minimum_evidence": "implemented",
+      "text": "Provides a physical serial RTU client at the implemented evidence level with the listed timing and serial-format deviations.",
+      "requirement_ids": [
+        "RTU-002",
+        "RTU-003",
+        "RTU-004",
+        "RTU-007"
+      ],
+      "public_surface_ids": [
+        "root-readme",
+        "api-guide",
+        "facade-readme",
+        "rtu-readme",
+        "client-readme",
+        "types-readme",
+        "codec-readme",
+        "frame-readme"
+      ]
+    },
+    {
+      "id": "claim-physical-rtu-responder",
+      "profile": "physical-rtu-responder",
+      "kind": "limitation",
+      "minimum_evidence": "not-implemented",
+      "text": "A first-party physical serial RTU responder is not implemented.",
+      "requirement_ids": [
+        "RTU-012"
+      ],
+      "public_surface_ids": [
+        "root-readme",
+        "api-guide",
+        "facade-readme",
+        "rtu-readme",
+        "server-readme",
+        "types-readme",
+        "codec-readme"
+      ]
+    },
+    {
+      "id": "claim-gateway",
+      "profile": "gateway",
+      "kind": "capability",
+      "minimum_evidence": "implemented",
+      "text": "Provides TCP-to-RTU-over-TCP routing primitives at the implemented evidence level; it does not claim a physical serial gateway.",
+      "requirement_ids": [
+        "TCP-008",
+        "TCP-012",
+        "RTU-003"
+      ],
+      "public_surface_ids": [
+        "root-readme",
+        "api-guide",
+        "facade-readme",
+        "gateway-readme",
+        "tcp-readme",
+        "rtu-readme",
+        "types-readme",
+        "codec-readme",
+        "frame-readme",
+        "pool-readme"
+      ]
+    },
+    {
+      "id": "claim-modbus-security",
+      "profile": "modbus-security",
+      "kind": "capability",
+      "minimum_evidence": "implemented",
+      "text": "Provides TLS transport, mutual certificate authentication by default, an explicit compatibility opt-out, and role parsing primitives at the implemented evidence level; it does not claim a composed secured server.",
+      "requirement_ids": [
+        "SEC-001",
+        "SEC-002",
+        "SEC-003",
+        "SEC-004",
+        "SEC-005",
+        "SEC-006"
+      ],
+      "public_surface_ids": [
+        "root-readme",
+        "api-guide",
+        "facade-readme",
+        "tls-readme",
+        "client-readme",
+        "server-readme",
+        "tcp-readme",
+        "types-readme",
+        "codec-readme",
+        "frame-readme"
+      ]
+    },
+    {
+      "id": "claim-simulator",
+      "profile": "simulator",
+      "kind": "capability",
+      "minimum_evidence": "implemented",
+      "text": "Provides an in-process Modbus/TCP simulator at the implemented evidence level; parsed-but-inert configuration remains a listed non-parity gap.",
+      "requirement_ids": [
+        "APP-017",
+        "TCP-005",
+        "CONF-008"
+      ],
+      "public_surface_ids": [
+        "root-readme",
+        "api-guide",
+        "facade-readme",
+        "sim-readme",
+        "tcp-readme",
+        "types-readme",
+        "codec-readme"
+      ]
+    },
+    {
+      "id": "claim-rtu-over-tcp-extension",
+      "profile": "rtu-over-tcp-extension",
+      "kind": "capability",
+      "minimum_evidence": "implemented",
+      "text": "Provides a separately labeled RTU-over-TCP extension at the implemented evidence level without MBAP or physical-line claims.",
+      "requirement_ids": [
+        "EXT-001",
+        "EXT-002"
+      ],
+      "public_surface_ids": [
+        "root-readme",
+        "api-guide",
+        "facade-readme",
+        "rtu-readme",
+        "client-readme",
+        "types-readme",
+        "codec-readme",
+        "frame-readme"
+      ]
+    }
+  ],
+  "public_surfaces": [
+    {
+      "id": "root-readme",
+      "path": "README.md",
+      "profiles": [
+        "tcp-client",
+        "tcp-server",
+        "physical-rtu-client",
+        "physical-rtu-responder",
+        "gateway",
+        "modbus-security",
+        "simulator",
+        "rtu-over-tcp-extension"
+      ]
+    },
+    {
+      "id": "api-guide",
+      "path": "docs/api.md",
+      "profiles": [
+        "tcp-client",
+        "tcp-server",
+        "physical-rtu-client",
+        "physical-rtu-responder",
+        "gateway",
+        "modbus-security",
+        "simulator",
+        "rtu-over-tcp-extension"
+      ]
+    },
+    {
+      "id": "facade-readme",
+      "path": "crates/rusty-modbus/README.md",
+      "profiles": [
+        "tcp-client",
+        "tcp-server",
+        "physical-rtu-client",
+        "physical-rtu-responder",
+        "gateway",
+        "modbus-security",
+        "simulator",
+        "rtu-over-tcp-extension"
+      ]
+    },
+    {
+      "id": "types-readme",
+      "path": "crates/rusty-modbus-types/README.md",
+      "profiles": [
+        "tcp-client",
+        "tcp-server",
+        "physical-rtu-client",
+        "physical-rtu-responder",
+        "gateway",
+        "modbus-security",
+        "simulator",
+        "rtu-over-tcp-extension"
+      ]
+    },
+    {
+      "id": "codec-readme",
+      "path": "crates/rusty-modbus-codec/README.md",
+      "profiles": [
+        "tcp-client",
+        "tcp-server",
+        "physical-rtu-client",
+        "physical-rtu-responder",
+        "gateway",
+        "modbus-security",
+        "simulator",
+        "rtu-over-tcp-extension"
+      ]
+    },
+    {
+      "id": "frame-readme",
+      "path": "crates/rusty-modbus-frame/README.md",
+      "profiles": [
+        "tcp-client",
+        "tcp-server",
+        "physical-rtu-client",
+        "gateway",
+        "modbus-security",
+        "rtu-over-tcp-extension"
+      ]
+    },
+    {
+      "id": "tcp-readme",
+      "path": "crates/rusty-modbus-tcp/README.md",
+      "profiles": [
+        "tcp-client",
+        "tcp-server",
+        "gateway",
+        "modbus-security",
+        "simulator"
+      ]
+    },
+    {
+      "id": "rtu-readme",
+      "path": "crates/rusty-modbus-rtu/README.md",
+      "profiles": [
+        "physical-rtu-client",
+        "physical-rtu-responder",
+        "gateway",
+        "rtu-over-tcp-extension"
+      ]
+    },
+    {
+      "id": "tls-readme",
+      "path": "crates/rusty-modbus-tls/README.md",
+      "profiles": [
+        "modbus-security"
+      ]
+    },
+    {
+      "id": "client-readme",
+      "path": "crates/rusty-modbus-client/README.md",
+      "profiles": [
+        "tcp-client",
+        "physical-rtu-client",
+        "modbus-security",
+        "rtu-over-tcp-extension"
+      ]
+    },
+    {
+      "id": "server-readme",
+      "path": "crates/rusty-modbus-server/README.md",
+      "profiles": [
+        "tcp-server",
+        "physical-rtu-responder",
+        "modbus-security"
+      ]
+    },
+    {
+      "id": "gateway-readme",
+      "path": "crates/rusty-modbus-gateway/README.md",
+      "profiles": [
+        "gateway"
+      ]
+    },
+    {
+      "id": "pool-readme",
+      "path": "crates/rusty-modbus-pool/README.md",
+      "profiles": [
+        "tcp-client",
+        "gateway"
+      ]
+    },
+    {
+      "id": "sim-readme",
+      "path": "crates/rusty-modbus-sim/README.md",
+      "profiles": [
+        "simulator",
+        "tcp-server"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-001",
+      "title": "Physical RTU receive framing assumes the available serial buffer is one complete ADU instead of using timing boundaries",
+      "priority": "P0",
+      "confidence": "Verified source finding / normative gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-102"
+      ],
+      "requirement_ids": [
+        "RTU-004",
+        "RTU-008",
+        "RTU-009",
+        "CONF-004"
+      ]
+    },
+    {
+      "id": "F-002",
+      "title": "RTU config permits non-Modbus data-bit profiles and defaults to 8N1 while timing assumes an 11-bit character",
+      "priority": "P1",
+      "confidence": "Verified source finding / normative gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-101"
+      ],
+      "requirement_ids": [
+        "RTU-007"
+      ]
+    },
+    {
+      "id": "F-003",
+      "title": "Receive-side t1.5 invalidation is absent",
+      "priority": "P1",
+      "confidence": "Verified source finding / normative gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-102"
+      ],
+      "requirement_ids": [
+        "RTU-005"
+      ]
+    },
+    {
+      "id": "F-004",
+      "title": "RTU transmit turnaround is not modeled from true bus idle/wire completion; noise recovery can terminate the shared reader",
+      "priority": "P1",
+      "confidence": "Verified source finding / evidence gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-103"
+      ],
+      "requirement_ids": [
+        "RTU-009",
+        "RTU-010",
+        "CONF-004"
+      ]
+    },
+    {
+      "id": "F-005",
+      "title": "Pending TCP transactions do not retain/validate expected Unit Identifier",
+      "priority": "P1",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-201"
+      ],
+      "requirement_ids": [
+        "TCP-007"
+      ]
+    },
+    {
+      "id": "F-006",
+      "title": "Read responses are not validated against exact requested quantity; odd register byte counts and non-zero bit padding are not universally rejected",
+      "priority": "P1",
+      "confidence": "Verified source finding / normative gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-202"
+      ],
+      "requirement_ids": [
+        "APP-011",
+        "APP-012",
+        "APP-013"
+      ]
+    },
+    {
+      "id": "F-007",
+      "title": "Automatic timeout retry applies to writes and can duplicate side effects after an ambiguous response loss",
+      "priority": "P1",
+      "confidence": "Verified source finding / safety gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-203"
+      ],
+      "requirement_ids": [
+        "TCP-011",
+        "CONF-002"
+      ]
+    },
+    {
+      "id": "F-008",
+      "title": "Exception `0x05` Acknowledge is treated as a normal retry signal",
+      "priority": "P1",
+      "confidence": "Verified source finding / normative gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-203"
+      ],
+      "requirement_ids": [
+        "APP-018"
+      ]
+    },
+    {
+      "id": "F-009",
+      "title": "A fixed 500 ms sweeper makes timeout precision coarse and wakes when idle",
+      "priority": "P2",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-203"
+      ],
+      "requirement_ids": [
+        "TCP-011"
+      ]
+    },
+    {
+      "id": "F-010",
+      "title": "Client shutdown signals the reader before attempting to drain and does not seal new admission first",
+      "priority": "P1",
+      "confidence": "Verified source finding / API-contract gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-204"
+      ],
+      "requirement_ids": [
+        "TCP-011"
+      ]
+    },
+    {
+      "id": "F-011",
+      "title": "Server `max_transactions` and configured shutdown timeout are not enforced by runtime behavior",
+      "priority": "P1",
+      "confidence": "Verified source finding / API-contract gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-301",
+        "PR-302"
+      ],
+      "requirement_ids": [
+        "TCP-010",
+        "TCP-011"
+      ]
+    },
+    {
+      "id": "F-012",
+      "title": "FC16/FC17 compound store operations can interleave across clients",
+      "priority": "P1",
+      "confidence": "Verified source finding / semantic gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-303"
+      ],
+      "requirement_ids": [
+        "APP-019"
+      ]
+    },
+    {
+      "id": "F-013",
+      "title": "Custom function codes decode but have no server extension hook; all are returned as Illegal Function",
+      "priority": "P2",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-304"
+      ],
+      "requirement_ids": [
+        "APP-017"
+      ]
+    },
+    {
+      "id": "F-014",
+      "title": "TLS role authorization is not composed into a secured request-serving runtime",
+      "priority": "P1",
+      "confidence": "Verified source finding / security-profile gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-501",
+        "PR-502"
+      ],
+      "requirement_ids": [
+        "SEC-007",
+        "SEC-008",
+        "SEC-009"
+      ]
+    },
+    {
+      "id": "F-015",
+      "title": "TLS connection limits, profile labeling, certificate lifecycle, and advisory cleanup are incomplete",
+      "priority": "P2",
+      "confidence": "Verified source finding / operational gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-501",
+        "PR-503"
+      ],
+      "requirement_ids": [
+        "SEC-004",
+        "SEC-009",
+        "SEC-010"
+      ]
+    },
+    {
+      "id": "F-016",
+      "title": "Gateway creates a backend connection per request and is not a first-class physical serial gateway despite broad positioning",
+      "priority": "P1",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-401"
+      ],
+      "requirement_ids": [
+        "TCP-008",
+        "TCP-012",
+        "RTU-010"
+      ]
+    },
+    {
+      "id": "F-017",
+      "title": "Pooled connections are returned to idle even after timeout, framing error, or disconnect unless callers manually prevent reuse",
+      "priority": "P1",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-403"
+      ],
+      "requirement_ids": [
+        "TCP-013"
+      ]
+    },
+    {
+      "id": "F-018",
+      "title": "Pool “health check” evicts old idle entries but does not establish socket/protocol health",
+      "priority": "P2",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-403"
+      ],
+      "requirement_ids": [
+        "TCP-013",
+        "TCP-014"
+      ]
+    },
+    {
+      "id": "F-019",
+      "title": "RTU-over-TCP accepts the first valid CRC prefix, leaving a boundary-ambiguity profile that is not explicit",
+      "priority": "P2",
+      "confidence": "Verified source finding / extension risk",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-104"
+      ],
+      "requirement_ids": [
+        "EXT-001",
+        "EXT-003",
+        "EXT-004"
+      ]
+    },
+    {
+      "id": "F-020",
+      "title": "Simulator accepts fault and dynamic update configuration that runtime does not enforce",
+      "priority": "P1",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-701",
+        "PR-702"
+      ],
+      "requirement_ids": [
+        "CONF-008"
+      ]
+    },
+    {
+      "id": "F-021",
+      "title": "No runnable YAML simulator command is shipped",
+      "priority": "P2",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-701"
+      ],
+      "requirement_ids": [
+        "CONF-008"
+      ]
+    },
+    {
+      "id": "F-022",
+      "title": "No first-party serial RTU responder exists for master testing",
+      "priority": "P2",
+      "confidence": "Verified source finding / evidence gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-702"
+      ],
+      "requirement_ids": [
+        "RTU-012",
+        "CONF-004"
+      ]
+    },
+    {
+      "id": "F-023",
+      "title": "Conformance tests are broad but not linked to a maintained normative ledger",
+      "priority": "P2",
+      "confidence": "Evidence gap",
+      "status": "closed",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-001"
+      ],
+      "requirement_ids": [
+        "CONF-001"
+      ],
+      "status_reason": "Closed by the maintained canonical ledger and validator introduced in PR-001."
+    },
+    {
+      "id": "F-024",
+      "title": "No property/fuzz harness was found for codecs, stream chunking, or timing state",
+      "priority": "P2",
+      "confidence": "Evidence gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-003"
+      ],
+      "requirement_ids": [
+        "CONF-003"
+      ]
+    },
+    {
+      "id": "F-025",
+      "title": "Existing performance report is strong but lacks machine-readable regression budgets and key production topologies",
+      "priority": "P2",
+      "confidence": "Evidence gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-002",
+        "PR-601–604"
+      ],
+      "requirement_ids": [
+        "CONF-006"
+      ]
+    },
+    {
+      "id": "F-026",
+      "title": "Independent implementation/tool interoperability evidence is not part of the release gate",
+      "priority": "P2",
+      "confidence": "Evidence gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-703"
+      ],
+      "requirement_ids": [
+        "CONF-005"
+      ]
+    },
+    {
+      "id": "F-027",
+      "title": "Public “complete/conformant” language can outrun the actual evidence level and formal certification status",
+      "priority": "P2",
+      "confidence": "Claim/evidence gap",
+      "status": "mitigated",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-704"
+      ],
+      "requirement_ids": [
+        "CONF-007"
+      ],
+      "status_reason": "Claim authority is established; the final release wording audit remains assigned to PR-704."
+    },
+    {
+      "id": "F-028",
+      "title": "Error variants and convenience APIs sometimes use misleading or asymmetric high-level names",
+      "priority": "P3",
+      "confidence": "Verified source finding",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-304",
+        "PR-704"
+      ],
+      "requirement_ids": [
+        "APP-017",
+        "CONF-008"
+      ]
+    },
+    {
+      "id": "F-029",
+      "title": "Python/facade/CLI feature and error parity are not maintained from one capability manifest",
+      "priority": "P3",
+      "confidence": "Evidence/maintenance gap",
+      "status": "open",
+      "owner": "maintainers",
+      "primary_closure_packages": [
+        "PR-704"
+      ],
+      "requirement_ids": [
+        "CONF-008"
+      ]
+    }
+  ],
+  "follow_ups": [
+    {
+      "id": "ISSUE-90",
+      "title": "Server shutdown can hang with live connections",
+      "status": "open",
+      "owner": "maintainers",
+      "follow_up": "Track issue #90",
+      "url": "https://github.com/jscott3201/rusty-modbus/issues/90",
+      "requirement_ids": [
+        "TCP-011",
+        "CONF-008"
+      ]
+    },
+    {
+      "id": "ISSUE-91",
+      "title": "Physical RTU server transport is not implemented",
+      "status": "open",
+      "owner": "maintainers",
+      "follow_up": "Track issue #91",
+      "url": "https://github.com/jscott3201/rusty-modbus/issues/91",
+      "requirement_ids": [
+        "RTU-012",
+        "CONF-008"
+      ]
+    },
+    {
+      "id": "ISSUE-92",
+      "title": "Python bindings do not expose all Rust capabilities",
+      "status": "open",
+      "owner": "maintainers",
+      "follow_up": "Track issue #92",
+      "url": "https://github.com/jscott3201/rusty-modbus/issues/92",
+      "requirement_ids": [
+        "CONF-008"
+      ]
+    },
+    {
+      "id": "ISSUE-93",
+      "title": "CLI exposes a limited operation set",
+      "status": "open",
+      "owner": "maintainers",
+      "follow_up": "Track issue #93",
+      "url": "https://github.com/jscott3201/rusty-modbus/issues/93",
+      "requirement_ids": [
+        "CONF-008"
+      ]
+    }
+  ]
+}

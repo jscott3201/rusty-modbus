@@ -33,6 +33,18 @@ permissions:
   pull-requests: read
 
 jobs:
+  conformance-ledger:
+    name: conformance ledger
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - run: python3 scripts/test-conformance-ledger.py
+      - run: python3 scripts/check-conformance-ledger.py --check
+
   changes:
     name: detect changes
     if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'

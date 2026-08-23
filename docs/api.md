@@ -4,6 +4,22 @@ This document summarizes the public Rust and Python surfaces for the current
 0.1.0 line. It is intended to be stable enough for users evaluating the public
 repository while still reflecting the current pre-release state.
 
+## Conformance evidence
+
+The canonical ledger records profile-scoped dispositions and evidence for the
+[TCP client](conformance/ledger.md#profile-tcp-client),
+[TCP server](conformance/ledger.md#profile-tcp-server),
+[physical RTU client](conformance/ledger.md#profile-physical-rtu-client),
+[physical RTU responder](conformance/ledger.md#profile-physical-rtu-responder),
+[gateway](conformance/ledger.md#profile-gateway),
+[Modbus/TCP Security](conformance/ledger.md#profile-modbus-security),
+[simulator](conformance/ledger.md#profile-simulator), and
+[RTU-over-TCP extension](conformance/ledger.md#profile-rtu-over-tcp-extension).
+The current positive profile claims are seeded at `implemented`. The ledger
+defines the higher evidence levels and their requirements. The physical
+RTU responder is `not-implemented`. Each profile lists its compatibility
+deviations and evidence gaps.
+
 ## Rust Crates
 
 The Rust workspace uses edition 2024 with MSRV 1.95. The root facade crate is
@@ -18,11 +34,11 @@ smaller API when they only need codec, transport, server, or simulator pieces.
 | `rusty-modbus-frame` | MBAP/RTU framing, CRC-16, Tokio codecs, and owned `Bytes` response types. |
 | `rusty-modbus-tcp` | TCP transport traits and Modbus/TCP transport implementation. |
 | `rusty-modbus-rtu` | Serial RTU and RTU-over-TCP transport support. |
-| `rusty-modbus-tls` | Modbus/TCP Security client transport using rustls. |
+| `rusty-modbus-tls` | Modbus/TCP Security TLS transport and role primitives using rustls; not a composed secured server. |
 | `rusty-modbus-client` | Pipelined async client with typed function-code methods. |
 | `rusty-modbus-server` | Async server and pluggable `DataStore` trait. |
 | `rusty-modbus-pool` | Connection pooling for client workloads. |
-| `rusty-modbus-gateway` | TCP to RTU gateway bridge. |
+| `rusty-modbus-gateway` | TCP frontend with RTU-over-TCP backend routing and frame translation; not a physical serial gateway. |
 | `rusty-modbus-sim` | YAML-driven in-process simulator. |
 
 The CLI crate is intentionally `publish = false`; release binaries are produced
@@ -67,6 +83,11 @@ The client supports typed methods for the public client function-code surface:
 
 Modbus/TCP supports up to 16 concurrent in-flight transactions. RTU transports
 force one in-flight request because RTU frames have no transaction ID.
+These surfaces map to the [TCP client](conformance/ledger.md#profile-tcp-client),
+[physical RTU client](conformance/ledger.md#profile-physical-rtu-client),
+[Modbus/TCP Security](conformance/ledger.md#profile-modbus-security), and
+[RTU-over-TCP extension](conformance/ledger.md#profile-rtu-over-tcp-extension)
+profiles.
 
 ## Rust Server
 
@@ -81,8 +102,11 @@ tables:
 
 Optional `DataStore` methods cover file records, FIFO queues, Report Server ID,
 Diagnostics, Read Exception Status, Get Comm Event Counter, and Get Comm Event
-Log. Defaults return the spec-correct unsupported-capability exception, so
-stores only override what they support.
+Log. Defaults return `IllegalFunction` for unsupported optional operations, so
+stores only override what they support. The server crate maps to the
+[TCP server profile](conformance/ledger.md#profile-tcp-server); there is no
+first-party [physical RTU responder](conformance/ledger.md#profile-physical-rtu-responder),
+and TLS primitives do not compose a secured server on their own.
 
 The built-in `InMemoryStore` is thread-safe and optimized for common paths:
 
@@ -100,7 +124,7 @@ paths validate function-specific envelopes and borrow variable-length payloads
 from the input buffer. Owned frame responses use `bytes::Bytes` slicing to keep
 payload ownership cheap without copying full response bodies.
 
-Current spec-compliance work includes stricter validation for:
+The current capability and evidence inventory includes validation for:
 
 - FC 0x14/0x15 file-record reference types and byte counts.
 - FC 0x18 FIFO response limits.
@@ -126,9 +150,16 @@ Public Python classes:
 | `ModbusServer` | Background Modbus/TCP server wrapper. |
 | `DeviceIdentification` | Result object for FC 0x2B / MEI 0x0E reads. |
 
-The Python client supports the same high-level operations as the Rust client:
-coils, registers, mask write, read/write multiple registers, FIFO, file records,
-and device identification.
+The Python client exposes coils, registers, mask write, read/write multiple
+registers, FIFO, file records, and device identification operations. This list
+is not a parity claim; unresolved surface differences are recorded under
+[CONF-008](conformance/ledger.md#requirement-conf-008).
+
+The gateway and simulator are tracked separately under the
+[gateway](conformance/ledger.md#profile-gateway) and
+[simulator](conformance/ledger.md#profile-simulator) profiles. Simulator fields
+that are parsed but do not affect runtime behavior remain explicit evidence
+gaps rather than implied capabilities.
 
 ## Python Server Store Protocols
 
