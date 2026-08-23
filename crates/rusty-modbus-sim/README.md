@@ -2,8 +2,10 @@
 
 YAML-driven Modbus device simulator
 
-Part of [**rusty-modbus**](https://github.com/jscott3201/rusty-modbus) — an async Modbus protocol stack for Rust
-(TCP / RTU / TLS, with client, server, gateway, and connection pool).
+The [simulator](../../docs/conformance/ledger.md#profile-simulator) runs on the
+[TCP server](../../docs/conformance/ledger.md#profile-tcp-server). The profile
+keeps parsed-but-inert configuration fields explicit instead of presenting them
+as active behavior.
 
 - 📖 [API documentation](https://docs.rs/rusty-modbus-sim)
 - 📦 [Workspace & examples](https://github.com/jscott3201/rusty-modbus)

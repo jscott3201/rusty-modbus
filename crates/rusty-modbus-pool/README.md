@@ -1,9 +1,10 @@
 # rusty-modbus-pool
 
-Modbus connection pooling with health checks and backoff
+Modbus connection pooling with idle eviction and reconnect backoff
 
-Part of [**rusty-modbus**](https://github.com/jscott3201/rusty-modbus) — an async Modbus protocol stack for Rust
-(TCP / RTU / TLS, with client, server, gateway, and connection pool).
+Pool evidence and recovery gaps are tracked under the
+[TCP client](../../docs/conformance/ledger.md#profile-tcp-client) and
+[gateway](../../docs/conformance/ledger.md#profile-gateway) profiles.
 
 - 📖 [API documentation](https://docs.rs/rusty-modbus-pool)
 - 📦 [Workspace & examples](https://github.com/jscott3201/rusty-modbus)

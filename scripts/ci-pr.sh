@@ -64,6 +64,8 @@ run_python_full() {
 }
 
 run cargo fmt --all --check
+run python3 scripts/test-conformance-ledger.py
+run python3 scripts/check-conformance-ledger.py --check
 run rust-analyzer --version
 run cargo clippy --workspace --all-targets --locked -- -D warnings
 run env RUSTY_MODBUS_NEXTEST_PROFILE=ci scripts/test-local.sh
