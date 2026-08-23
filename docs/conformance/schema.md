@@ -111,17 +111,26 @@ is permitted only when the ledger contains authorized evidence and its exact
 scope. The Modbus Organization describes this limit at
 <https://www.modbus.org/conformance-testing>.
 
-Tracked public surfaces reject positive certification or conformance-testing
-assertions unless the assertion's Markdown paragraph contains exactly one
-`<!-- rusty-modbus-formal-claim: CLAIM-ID -->` binding. The referenced canonical
-claim must cover that surface and profile, be a capability claim with a
-`formally-certified` threshold, and satisfy the formal-evidence rules above.
-The binding is a claim reference, not a second claim record. Negative
-disclaimers and statements that formal evidence is absent do not require a
-binding. The check is limited to copular or active statements using `certified`
-or `conformance-tested`, and statements that a subject has, holds, received, or
-earned `certification`; it does not attempt general natural-language
-classification.
+Tracked public surfaces are split into raw blocks at blank lines. Validation
+collapses whitespace within each block but does not parse Markdown or infer
+polarity. The fixed formal vocabulary is `certified`, `certification`,
+`conformance-tested`, and `conformance tested`, matched case-insensitively. A
+block containing that vocabulary is valid only in one of these forms:
+
+- **Canonical notice:** no formal-claim marker, and the normalized block exactly
+  matches `certification_notice` from `ledger.json`.
+- **Canonical formal claim:** exactly one
+  `<!-- rusty-modbus-formal-claim: claim-tcp-client -->` marker, with the
+  canonical claim ID substituted as needed. Removing that exact
+  marker and normalizing whitespace must produce the canonical claim's exact
+  text. The claim must cover the surface and profile, be a capability with a
+  `formally-certified` threshold, and satisfy the evidence rules above.
+
+Case, punctuation, extra prose, and inline Markdown remain significant after
+whitespace normalization. Arbitrary negative wording is not exempt. A valid
+marker without formal wording is orphaned, and malformed or multiple markers
+are rejected. The marker references the canonical claim; it does not duplicate
+claim text or evidence outside `ledger.json`.
 
 ## Test inventory
 

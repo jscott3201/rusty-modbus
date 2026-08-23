@@ -15,8 +15,8 @@ The canonical ledger records profile-scoped dispositions and evidence for the
 [Modbus/TCP Security](conformance/ledger.md#profile-modbus-security),
 [simulator](conformance/ledger.md#profile-simulator), and
 [RTU-over-TCP extension](conformance/ledger.md#profile-rtu-over-tcp-extension).
-The current positive profile claims are seeded at `implemented`, not
-`internally-verified`, `interoperable`, or `formally-certified`. The physical
+The current positive profile claims are seeded at `implemented`. The ledger
+defines the higher evidence levels and their requirements. The physical
 RTU responder is `not-implemented`. Each profile lists its compatibility
 deviations and evidence gaps.
 

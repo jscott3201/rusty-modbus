@@ -43,20 +43,12 @@ REQUIREMENT_IDS = tuple(
 PROJECT_POLICY_ID = "rusty-modbus-project-policy"
 TEST_GLOB = "crates/rusty-modbus-conformance/tests/spec_*.rs"
 FORMAL_WORDING = re.compile(r"\b(certified|certification|conformance[- ]tested)\b", re.I)
-POSITIVE_FORMAL_ASSERTION = re.compile(
-    r"\b(?:is|are|was|were)\s+(?:formally\s+)?(?:modbus organization\s+)?"
-    r"(?:certified|conformance[- ]tested)\b"
-    r"|\b(?:has|have|had)\s+been\s+(?:formally\s+)?(?:modbus organization\s+)?"
-    r"(?:certified|conformance[- ]tested)\b"
-    r"|\bmodbus organization\s+(?:has\s+)?(?:certified|conformance[- ]tested)\b"
-    r"|\b(?:has|holds?|received|earned)\s+(?:an?\s+)?(?:modbus organization\s+)?"
-    r"certification\b",
-    re.I,
-)
 FORMAL_CLAIM_BINDING = re.compile(
-    r"<!--\s*rusty-modbus-formal-claim:\s*([a-z][a-z0-9-]*)\s*-->"
+    r"<!-- rusty-modbus-formal-claim: ([a-z][a-z0-9-]*) -->"
 )
-NEGATIVE_FORMAL_PREFIX = re.compile(r"\b(?:no|not|never|neither|nor|without)\b", re.I)
+FORMAL_CLAIM_MARKER_LIKE = re.compile(
+    r"<!--[^>]*rusty-modbus-formal[^>]*(?:-->|\Z)", re.I
+)
 FINDING_IDS = tuple(f"F-{number:03d}" for number in range(1, 30))
 FINDING_PRIORITIES = {"P0", "P1", "P2", "P3"}
 FINDING_STATUSES = {"open", "mitigated", "closed"}
@@ -148,11 +140,15 @@ def _surface_has_profile_link(root: Path, path: str, profile_id: str) -> bool:
     return bool(pattern.search(text))
 
 
-def _surface_formal_assertions(
+def _normalize_public_block(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _surface_formal_blocks(
     root: Path, path: str
-) -> list[tuple[int, str, tuple[str, ...]]]:
+) -> list[tuple[int, str, tuple[str, ...], int]]:
     text = (root / path).read_text(encoding="utf-8")
-    assertions: list[tuple[int, str, tuple[str, ...]]] = []
+    formal_blocks: list[tuple[int, str, tuple[str, ...], int]] = []
     blocks = re.finditer(
         r"(?:\A|\n[ \t]*\n)(.*?)(?=\n[ \t]*\n|\Z)",
         text,
@@ -160,21 +156,13 @@ def _surface_formal_assertions(
     )
     for block_match in blocks:
         block = block_match.group(1)
-        positive_matches = []
-        for assertion_match in POSITIVE_FORMAL_ASSERTION.finditer(block):
-            sentence_start = max(
-                block.rfind(mark, 0, assertion_match.start()) for mark in ".!?\n"
-            )
-            prefix = block[sentence_start + 1 : assertion_match.start()]
-            if not NEGATIVE_FORMAL_PREFIX.search(prefix):
-                positive_matches.append(assertion_match)
-        if not positive_matches:
+        marker_mentions = len(FORMAL_CLAIM_MARKER_LIKE.findall(block))
+        if not FORMAL_WORDING.search(block) and marker_mentions == 0:
             continue
         line = text.count("\n", 0, block_match.start(1)) + 1
-        summary = " ".join(block.split())
         bindings = tuple(FORMAL_CLAIM_BINDING.findall(block))
-        assertions.append((line, summary, bindings))
-    return assertions
+        formal_blocks.append((line, block, bindings, marker_mentions))
+    return formal_blocks
 
 
 def validate_ledger(data: dict[str, Any], root: Path) -> list[str]:
@@ -547,6 +535,9 @@ def validate_ledger(data: dict[str, Any], root: Path) -> list[str]:
     if missing_profile_claims:
         errors.append(f"profiles without a claim: {', '.join(missing_profile_claims)}")
 
+    normalized_notice = (
+        _normalize_public_block(notice) if isinstance(notice, str) else ""
+    )
     for surface_id, surface in surfaces.items():
         path = surface.get("path")
         _relative_existing_file(root, path, f"public surface {surface_id}.path", errors)
@@ -563,37 +554,59 @@ def validate_ledger(data: dict[str, Any], root: Path) -> list[str]:
                         f"public surface {surface_id} does not link ledger.md#profile-{profile_id}"
                     )
         if _nonblank(path) and (root / path).is_file():
-            for line, _summary, bindings in _surface_formal_assertions(root, path):
+            for line, block, bindings, marker_mentions in _surface_formal_blocks(root, path):
                 location = f"public surface {surface_id} {path}:{line}"
-                if len(bindings) != 1:
+                if marker_mentions != len(bindings):
                     errors.append(
-                        f"{location} has a positive formal assertion without exactly one "
-                        "rusty-modbus-formal-claim binding"
+                        f"{location} has a malformed rusty-modbus-formal-claim marker"
                     )
                     continue
+                if len(bindings) > 1:
+                    errors.append(f"{location} has multiple formal-claim bindings")
+                    continue
+
+                normalized_block = _normalize_public_block(block)
+                has_formal_wording = bool(FORMAL_WORDING.search(block))
+                if not has_formal_wording:
+                    errors.append(f"{location} has an orphan formal-claim binding")
+                    continue
+                if not bindings:
+                    if normalized_block != normalized_notice:
+                        errors.append(
+                            f"{location} has unbound formal wording that does not exactly "
+                            "match certification_notice"
+                        )
+                    continue
+
                 claim_id = bindings[0]
                 claim = claims.get(claim_id)
                 if claim is None:
                     errors.append(
-                        f"{location} binds its positive formal assertion to unknown claim "
-                        f"{claim_id}"
+                        f"{location} binds formal wording to unknown claim {claim_id}"
                     )
                     continue
+                unbound_block = FORMAL_CLAIM_BINDING.sub("", block, count=1)
+                if _normalize_public_block(unbound_block) != _normalize_public_block(
+                    str(claim.get("text", ""))
+                ):
+                    errors.append(
+                        f"{location} formal wording does not exactly match claim {claim_id}.text"
+                    )
                 if surface_id not in claim.get("public_surface_ids", []):
                     errors.append(
-                        f"{location} binds its positive formal assertion to claim {claim_id}, "
+                        f"{location} binds formal wording to claim {claim_id}, "
                         "which does not track this surface"
                     )
                 if claim.get("profile") not in profile_ids:
                     errors.append(
-                        f"{location} binds its positive formal assertion to claim {claim_id}, "
+                        f"{location} binds formal wording to claim {claim_id}, "
                         "whose profile is not tracked by this surface"
                     )
                 if claim.get("kind") != "capability" or claim.get(
                     "minimum_evidence"
                 ) != "formally-certified":
                     errors.append(
-                        f"{location} binds its positive formal assertion to claim {claim_id} "
+                        f"{location} binds formal wording to claim {claim_id} "
                         "without a formally-certified capability threshold"
                     )
 

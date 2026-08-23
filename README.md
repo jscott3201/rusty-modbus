@@ -18,9 +18,9 @@ Public capability claims are profile-scoped: [TCP client](docs/conformance/ledge
 [gateway](docs/conformance/ledger.md#profile-gateway), [Modbus/TCP Security](docs/conformance/ledger.md#profile-modbus-security),
 [simulator](docs/conformance/ledger.md#profile-simulator), and the
 [RTU-over-TCP extension](docs/conformance/ledger.md#profile-rtu-over-tcp-extension).
-The generated ledger separates implementation, internal verification,
-interoperability, and formal certification. Repository tests and private tool
-use do not imply Modbus Organization testing or certification.
+
+This ledger reports repository-scoped evidence for named profiles. It does not
+state or imply Modbus Organization conformance testing or certification.
 
 ## Features
 
