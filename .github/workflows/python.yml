@@ -192,6 +192,6 @@ jobs:
         with:
           tool: cargo-deny,cargo-audit
       - name: cargo-deny python crate
-        run: cargo deny --manifest-path crates/rusty-modbus-python/Cargo.toml check --config deny.toml bans licenses sources
+        run: cargo deny --manifest-path crates/rusty-modbus-python/Cargo.toml --config deny.toml check bans licenses sources
       - name: cargo-audit python crate
         run: cargo audit --file crates/rusty-modbus-python/Cargo.lock --ignore RUSTSEC-2025-0134

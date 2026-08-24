@@ -1,0 +1,270 @@
+{
+  "schema_version": 1,
+  "targets": [
+    "pdu_decode",
+    "mbap_stream",
+    "rtu_assembler",
+    "rtu_frame",
+    "rtu_tcp_stream"
+  ],
+  "entries": [
+    {
+      "target": "pdu_decode",
+      "path": "pdu_decode/APP-001__pdu_decode__oversize.bin",
+      "requirement_ids": [
+        "APP-001"
+      ],
+      "class": "boundary",
+      "source": "Derived from the MAX_PDU_SIZE boundary in rusty-modbus-types.",
+      "contract": "All three public PDU entry points reject a 254-byte PDU without allocating.",
+      "sha256": "9adfda9becb31c4fe960f340c20c2e4af6321f4029baefa8ee6d724eac240e65"
+    },
+    {
+      "target": "pdu_decode",
+      "path": "pdu_decode/APP-005__pdu_decode__fc03-request.bin",
+      "requirement_ids": [
+        "APP-005"
+      ],
+      "class": "valid",
+      "source": "MODBUS Application Protocol V1.1b3 FC03 request shape.",
+      "contract": "Unified dispatch accepts the bounded big-endian FC03 request.",
+      "sha256": "87c0fe227f796531fddbe6c401b492cb492b1af080b51317edaa080991b0a186"
+    },
+    {
+      "target": "pdu_decode",
+      "path": "pdu_decode/APP-007__pdu_decode__fc10-byte-count.bin",
+      "requirement_ids": [
+        "APP-007"
+      ],
+      "class": "malformed",
+      "source": "Named malformed FC10 vector from spec_parser_resilience.rs.",
+      "contract": "The declared byte count mismatch is an expected decoder error.",
+      "sha256": "70beb3b0002c542bcc8a55a16abe3b6fcb9eeb3f7823fe0053179bf102c1607b"
+    },
+    {
+      "target": "pdu_decode",
+      "path": "pdu_decode/APP-020__pdu_decode__file-record-request.bin",
+      "requirement_ids": [
+        "APP-020"
+      ],
+      "class": "valid",
+      "source": "MODBUS Application Protocol V1.1b3 FC14 single-subrequest shape.",
+      "contract": "Unified request dispatch reaches file-record validation with reference type 0x06.",
+      "sha256": "5c4395cf92c9fb6967ee5d130e1e988ca3f6a23011d2e2ad70adbe831fa65906"
+    },
+    {
+      "target": "pdu_decode",
+      "path": "pdu_decode/APP-021__pdu_decode__device-id-response.bin",
+      "requirement_ids": [
+        "APP-021"
+      ],
+      "class": "valid",
+      "source": "Read Device Identification response layout used by the codec tests.",
+      "contract": "Unified response dispatch reaches device-identification object decoding.",
+      "sha256": "99e2f9bfbc7cbea586ee4b8b8066487604e0d3638cce904f8b2d031036d5e15a"
+    },
+    {
+      "target": "mbap_stream",
+      "path": "mbap_stream/APP-001_TCP-003__mbap_stream__maximum-adu.bin",
+      "requirement_ids": [
+        "APP-001",
+        "TCP-003"
+      ],
+      "class": "boundary",
+      "source": "Derived from MAX_TCP_ADU_SIZE and MAX_PDU_SIZE.",
+      "contract": "A fragmented 260-byte MBAP ADU decodes once and leaves no retained bytes.",
+      "sha256": "f349cda414248db000ec7123d0e80abc8bc969fa9113977a7cd67fcbcdba9d50"
+    },
+    {
+      "target": "mbap_stream",
+      "path": "mbap_stream/TCP-001_TCP-003_TCP-004__mbap_stream__partial-body.bin",
+      "requirement_ids": [
+        "TCP-001",
+        "TCP-003",
+        "TCP-004"
+      ],
+      "class": "boundary",
+      "source": "Truncated FC03 MBAP frame derived from spec_parser_resilience.rs.",
+      "contract": "Incremental decode returns None for a valid header with one body byte missing.",
+      "sha256": "c6366e9372a46d9e1727e2e56870c1e809bf1733aaa3b9a8aac843fe0258ad43"
+    },
+    {
+      "target": "mbap_stream",
+      "path": "mbap_stream/TCP-003__mbap_stream__length-one.bin",
+      "requirement_ids": [
+        "TCP-003"
+      ],
+      "class": "malformed",
+      "source": "Named invalid MBAP length vector from spec_parser_resilience.rs.",
+      "contract": "A length field containing only the Unit Identifier returns an expected framing error.",
+      "sha256": "7039e7f671c8c594ec3b7fb93106873f7d2240f83e3b322b2b0ab4f5b741d13d"
+    },
+    {
+      "target": "mbap_stream",
+      "path": "mbap_stream/TCP-004__mbap_stream__coalesced.bin",
+      "requirement_ids": [
+        "TCP-004"
+      ],
+      "class": "valid",
+      "source": "Two repository FC03 and FC06 MBAP examples concatenated as one TCP stream.",
+      "contract": "One append can emit two frames; each emission strictly reduces the retained buffer.",
+      "sha256": "72491a36b140c858cbc5c1e86a9021d5a4b605a54cbc014cfb71b17653423e60"
+    },
+    {
+      "target": "rtu_assembler",
+      "path": "rtu_assembler/RTU-002_RTU-003_RTU-004__rtu_assembler__valid-deadline.bin",
+      "requirement_ids": [
+        "RTU-002",
+        "RTU-003",
+        "RTU-004"
+      ],
+      "class": "valid",
+      "source": "Minimal CRC-valid RTU ADU with an exact active t3.5 deadline.",
+      "contract": "The deadline emits the whole four-byte ADU with bounded inline output.",
+      "sha256": "06d348683182e489dc04451bfdfc4bd1bf4745770450c7eefb6339cc2ea08f6b"
+    },
+    {
+      "target": "rtu_assembler",
+      "path": "rtu_assembler/RTU-004__rtu_assembler__exact-t3-boundary.bin",
+      "requirement_ids": [
+        "RTU-004"
+      ],
+      "class": "boundary",
+      "source": "Exact t3.5 byte boundary followed by the obsolete prior deadline token.",
+      "contract": "The byte closes the valid candidate, starts another, and makes the old callback harmlessly stale.",
+      "sha256": "b3aea1b750585bbca87be0a0165b3e7388ca02a094509440219839d6c5104f9e"
+    },
+    {
+      "target": "rtu_assembler",
+      "path": "rtu_assembler/RTU-005__rtu_assembler__intercharacter-quarantine.bin",
+      "requirement_ids": [
+        "RTU-005"
+      ],
+      "class": "boundary",
+      "source": "A second byte arrives one nanosecond beyond the retained t1.5 interval.",
+      "contract": "The violating byte is noise, the candidate is discarded, and the active recovery deadline returns to idle.",
+      "sha256": "ca40d596b0a69749ae6e886c82ba70dc8c1777b3425852557fec23a6a052d9bd"
+    },
+    {
+      "target": "rtu_assembler",
+      "path": "rtu_assembler/RTU-009__rtu_assembler__quarantine-recovery.bin",
+      "requirement_ids": [
+        "RTU-009"
+      ],
+      "class": "regression",
+      "source": "Inter-character invalidation, another noise byte, and exact t3.5 recovery.",
+      "contract": "Noise extends quarantine and only a clean gap from the latest noise starts a new candidate.",
+      "sha256": "ed6084caeb8b6d63721db2802037979486d15570760fe2705407ccc9ecd46a60"
+    },
+    {
+      "target": "rtu_frame",
+      "path": "rtu_frame/RTU-002__rtu_frame__maximum-adu.bin",
+      "requirement_ids": [
+        "RTU-002"
+      ],
+      "class": "boundary",
+      "source": "Derived from MAX_RTU_ADU_SIZE and MAX_PDU_SIZE.",
+      "contract": "One complete 256-byte RTU candidate validates and round-trips without timing claims.",
+      "sha256": "54f159b3f2056d6fdd65daae1efc7f310be575a104bab9ec99705d56e523cc15"
+    },
+    {
+      "target": "rtu_frame",
+      "path": "rtu_frame/RTU-002__rtu_frame__oversize-adu.bin",
+      "requirement_ids": [
+        "RTU-002"
+      ],
+      "class": "malformed",
+      "source": "One byte beyond MAX_RTU_ADU_SIZE with a terminal CRC.",
+      "contract": "The complete-candidate decoder rejects the 257-byte ADU before retaining output.",
+      "sha256": "72ba7b7d943803a42b132c3e505561ef6e0777e742fb40a0f5fb97afb3792490"
+    },
+    {
+      "target": "rtu_frame",
+      "path": "rtu_frame/RTU-003__rtu_frame__bad-crc.bin",
+      "requirement_ids": [
+        "RTU-003"
+      ],
+      "class": "malformed",
+      "source": "Valid FC03 RTU example with one CRC bit flipped.",
+      "contract": "CRC mismatch is an expected complete-candidate decoder error.",
+      "sha256": "d4545c91d3d9c7aa8e1da1b213801f7f8bdac75b8875624a13c8763714d9bb6d"
+    },
+    {
+      "target": "rtu_frame",
+      "path": "rtu_frame/RTU-003__rtu_frame__fc03-valid.bin",
+      "requirement_ids": [
+        "RTU-003"
+      ],
+      "class": "valid",
+      "source": "MODBUS serial-line FC03 request with repository CRC-16 algorithm.",
+      "contract": "A complete candidate decodes once, consumes the input, and round-trips.",
+      "sha256": "4432501870439b24a38109e020f02054cb913e3c567e9e38609dea5fbc17aae5"
+    },
+    {
+      "target": "rtu_tcp_stream",
+      "path": "rtu_tcp_stream/EXT-002__rtu_tcp_stream__coalesced.bin",
+      "requirement_ids": [
+        "EXT-002"
+      ],
+      "class": "valid",
+      "source": "Two CRC-unambiguous RTU examples concatenated for the extension stream.",
+      "contract": "Coalesced data emits both current first-valid-CRC frames with bounded calls.",
+      "sha256": "2c21f0b5936c775fd33ebaf845ba30cded12d039f2e20e6a8c8a65ff0131570a"
+    },
+    {
+      "target": "rtu_tcp_stream",
+      "path": "rtu_tcp_stream/EXT-002__rtu_tcp_stream__fragmented.bin",
+      "requirement_ids": [
+        "EXT-002"
+      ],
+      "class": "valid",
+      "source": "CRC-unambiguous FC03 response split across varying append widths.",
+      "contract": "Fragmentation does not change the decoded frame for an unambiguous CRC boundary.",
+      "sha256": "60c10cffb976cba564ff51d87081b35cceafd6927ad759fd07011d26717f4281"
+    },
+    {
+      "target": "rtu_tcp_stream",
+      "path": "rtu_tcp_stream/EXT-002__rtu_tcp_stream__partial.bin",
+      "requirement_ids": [
+        "EXT-002"
+      ],
+      "class": "boundary",
+      "source": "CRC-unambiguous RTU example with its final CRC byte removed.",
+      "contract": "The stream decoder returns None and retains no more than the RTU ADU bound.",
+      "sha256": "2ed4e88e57577078ca00712efc7bcbfacaacb095e05336efc71478ee2a88dba2"
+    },
+    {
+      "target": "rtu_tcp_stream",
+      "path": "rtu_tcp_stream/EXT-003__rtu_tcp_stream__first-prefix.bin",
+      "requirement_ids": [
+        "EXT-003"
+      ],
+      "class": "regression",
+      "source": "Exact first-valid-CRC-prefix regression from spec_parser_resilience.rs.",
+      "contract": "The current extension policy emits the four-byte valid prefix and does not claim a stricter boundary.",
+      "sha256": "1cdbe3982ced4b41f3dc1ec5c7b4abb5fc6c985a831b8ae0141e12643e163f98"
+    },
+    {
+      "target": "rtu_tcp_stream",
+      "path": "rtu_tcp_stream/EXT-004__rtu_tcp_stream__exact-max-crc-miss.bin",
+      "requirement_ids": [
+        "EXT-004"
+      ],
+      "class": "regression",
+      "source": "Deterministic 256-byte CRC-miss generator from spec_parser_resilience.rs.",
+      "contract": "An exact-maximum CRC miss returns None and retains exactly the current bounded maximum.",
+      "sha256": "00a342e21afa4c6860b6d0998c524aaac6eb996970ff1b2b92caaaa603fd76e0"
+    },
+    {
+      "target": "rtu_tcp_stream",
+      "path": "rtu_tcp_stream/EXT-004__rtu_tcp_stream__oversize-crc-miss.bin",
+      "requirement_ids": [
+        "EXT-004"
+      ],
+      "class": "malformed",
+      "source": "The exact-maximum CRC-miss regression with one additional byte.",
+      "contract": "A CRC miss beyond 256 bytes returns an expected framing error without decoder reuse.",
+      "sha256": "8869dc0a6d9c5641bc6c68948b2399d618a0a4802d4e41783779152590c9f10b"
+    }
+  ]
+}

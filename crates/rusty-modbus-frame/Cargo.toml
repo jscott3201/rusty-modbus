@@ -13,8 +13,8 @@ description = "Modbus framing — MBAP/RTU codecs, CRC-16, owned Bytes types"
 readme = "README.md"
 
 [dependencies]
-rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
-rusty-modbus-codec = { path = "../rusty-modbus-codec", version = "0.1.0" }
+rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.1" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec", version = "0.1.1" }
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 thiserror = "2"

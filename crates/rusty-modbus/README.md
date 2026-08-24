@@ -1,9 +1,15 @@
 # rusty-modbus
 
-Complete Modbus protocol stack — TCP, RTU, TLS
+Feature-gated facade for the workspace's Modbus components
 
-Part of [**rusty-modbus**](https://github.com/jscott3201/rusty-modbus) — an async Modbus protocol stack for Rust
-(TCP / RTU / TLS, with client, server, gateway, and connection pool).
+Capability and limitation evidence is profile-scoped: [TCP client](../../docs/conformance/ledger.md#profile-tcp-client),
+[TCP server](../../docs/conformance/ledger.md#profile-tcp-server),
+[physical RTU client](../../docs/conformance/ledger.md#profile-physical-rtu-client),
+[physical RTU responder](../../docs/conformance/ledger.md#profile-physical-rtu-responder),
+[gateway](../../docs/conformance/ledger.md#profile-gateway),
+[Modbus/TCP Security](../../docs/conformance/ledger.md#profile-modbus-security),
+[simulator](../../docs/conformance/ledger.md#profile-simulator), and
+[RTU-over-TCP extension](../../docs/conformance/ledger.md#profile-rtu-over-tcp-extension).
 
 - 📖 [API documentation](https://docs.rs/rusty-modbus)
 - 📦 [Workspace & examples](https://github.com/jscott3201/rusty-modbus)

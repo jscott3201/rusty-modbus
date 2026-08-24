@@ -23,3 +23,6 @@ futures-util = "0.3"
 zerocopy = { version = "0.8", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
+
+[dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }

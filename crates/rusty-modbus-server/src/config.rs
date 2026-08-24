@@ -63,11 +63,31 @@ impl Default for DeviceIdentification {
         Self {
             vendor_name: String::from("rusty-modbus"),
             product_code: String::from("RMOD"),
-            major_minor_revision: String::from("0.1.0"),
+            major_minor_revision: String::from(env!("CARGO_PKG_VERSION")),
             vendor_url: None,
             product_name: None,
             model_name: None,
             user_application_name: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceIdentification;
+
+    #[test]
+    fn default_device_revision_matches_package_version() {
+        let device_id = DeviceIdentification::default();
+        assert_eq!(device_id.major_minor_revision, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn configured_device_revision_is_preserved() {
+        let device_id = DeviceIdentification {
+            major_minor_revision: String::from("device-firmware-7"),
+            ..DeviceIdentification::default()
+        };
+        assert_eq!(device_id.major_minor_revision, "device-firmware-7");
     }
 }

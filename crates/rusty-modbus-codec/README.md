@@ -2,8 +2,15 @@
 
 Modbus sans-IO encode/decode codec (no_std)
 
-Part of [**rusty-modbus**](https://github.com/jscott3201/rusty-modbus) — an async Modbus protocol stack for Rust
-(TCP / RTU / TLS, with client, server, gateway, and connection pool).
+Codec evidence is assessed through the [TCP client](../../docs/conformance/ledger.md#profile-tcp-client),
+[TCP server](../../docs/conformance/ledger.md#profile-tcp-server),
+[physical RTU client](../../docs/conformance/ledger.md#profile-physical-rtu-client),
+[physical RTU responder](../../docs/conformance/ledger.md#profile-physical-rtu-responder),
+[gateway](../../docs/conformance/ledger.md#profile-gateway),
+[Modbus/TCP Security](../../docs/conformance/ledger.md#profile-modbus-security),
+[simulator](../../docs/conformance/ledger.md#profile-simulator), and
+[RTU-over-TCP extension](../../docs/conformance/ledger.md#profile-rtu-over-tcp-extension)
+profiles; it is not a blanket transport-conformance claim.
 
 - 📖 [API documentation](https://docs.rs/rusty-modbus-codec)
 - 📦 [Workspace & examples](https://github.com/jscott3201/rusty-modbus)

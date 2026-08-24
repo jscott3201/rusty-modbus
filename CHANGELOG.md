@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1]
+
+### Added
+
+- Added SHA-bound correctness and benchmark recording, a structurally validated
+  conformance ledger, fixed-seed parser resilience properties, and pinned
+  retained fuzz replay.
+- Added a strict physical RTU configuration profile for 8E1, 8O1, and 8N2,
+  including direction-aware Unit Identifier validation and ceiling-based timing.
+- Added a timestamp-driven, fixed-buffer RTU frame assembler with bounded
+  recovery diagnostics and retained fuzz coverage.
+
+### Changed
+
+- Refreshed the local and Docker benchmark report and corrected the Python
+  cargo-deny command ordering.
+
+### Security
+
+- Updated PyO3 and pyo3-async-runtimes to 0.29 to address
+  RUSTSEC-2026-0176 and RUSTSEC-2026-0177 in the Python binding lockfile.
+- Updated crossbeam-epoch to 0.9.20, the first patched release for
+  RUSTSEC-2026-0204.
+
+### Boundaries
+
+- The timestamp-driven assembler is not integrated with the physical
+  `SerialTransport`. Its repository tests and fuzz targets do not establish
+  OS/USB read-chunk invariance or physical interoperability.
+- The recorded evidence is repository-scoped. This candidate makes no claim of
+  independent interoperability, formal certification, or 1.0 readiness.
+
+## [0.1.0] - 2026-06-03
+
 The first public release. `rusty-modbus` is a layered, async Modbus protocol
 stack for Rust.
 
@@ -62,4 +96,6 @@ stack for Rust.
 - `#![forbid(unsafe_code)]` on all Rust crates (except the PyO3 bindings, where
   the macros generate `unsafe` internally).
 
-[Unreleased]: https://github.com/jscott3201/rusty-modbus/commits/main
+[Unreleased]: https://github.com/jscott3201/rusty-modbus/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/jscott3201/rusty-modbus/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/jscott3201/rusty-modbus/releases/tag/v0.1.0

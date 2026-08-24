@@ -1,8 +1,23 @@
 # API Surfaces
 
-This document summarizes the public Rust and Python surfaces for the current
-0.1.0 line. It is intended to be stable enough for users evaluating the public
-repository while still reflecting the current pre-release state.
+This document summarizes the public Rust and Python surfaces for the 0.1.1
+candidate. The project remains pre-1.0, and these APIs may change.
+
+## Conformance evidence
+
+The canonical ledger records profile-scoped dispositions and evidence for the
+[TCP client](conformance/ledger.md#profile-tcp-client),
+[TCP server](conformance/ledger.md#profile-tcp-server),
+[physical RTU client](conformance/ledger.md#profile-physical-rtu-client),
+[physical RTU responder](conformance/ledger.md#profile-physical-rtu-responder),
+[gateway](conformance/ledger.md#profile-gateway),
+[Modbus/TCP Security](conformance/ledger.md#profile-modbus-security),
+[simulator](conformance/ledger.md#profile-simulator), and
+[RTU-over-TCP extension](conformance/ledger.md#profile-rtu-over-tcp-extension).
+The current positive profile claims are seeded at `implemented`. The ledger
+defines the higher evidence levels and their requirements. The physical
+RTU responder is `not-implemented`. Each profile lists its compatibility
+deviations and evidence gaps.
 
 ## Rust Crates
 
@@ -17,12 +32,12 @@ smaller API when they only need codec, transport, server, or simulator pieces.
 | `rusty-modbus-codec` | Sans-IO PDU request/response encode and decode. |
 | `rusty-modbus-frame` | MBAP/RTU framing, CRC-16, Tokio codecs, and owned `Bytes` response types. |
 | `rusty-modbus-tcp` | TCP transport traits and Modbus/TCP transport implementation. |
-| `rusty-modbus-rtu` | Serial RTU and RTU-over-TCP transport support. |
-| `rusty-modbus-tls` | Modbus/TCP Security client transport using rustls. |
+| `rusty-modbus-rtu` | Serial RTU and RTU-over-TCP transports, plus timestamp-driven RTU assembly. |
+| `rusty-modbus-tls` | Modbus/TCP Security TLS transport and role primitives using rustls; not a composed secured server. |
 | `rusty-modbus-client` | Pipelined async client with typed function-code methods. |
 | `rusty-modbus-server` | Async server and pluggable `DataStore` trait. |
 | `rusty-modbus-pool` | Connection pooling for client workloads. |
-| `rusty-modbus-gateway` | TCP to RTU gateway bridge. |
+| `rusty-modbus-gateway` | TCP frontend with RTU-over-TCP backend routing and frame translation; not a physical serial gateway. |
 | `rusty-modbus-sim` | YAML-driven in-process simulator. |
 
 The CLI crate is intentionally `publish = false`; release binaries are produced
@@ -33,8 +48,9 @@ by the GitHub release pipeline instead of crates.io.
 | Feature | Default | API exposed |
 |---|---:|---|
 | `tcp` | yes | `rusty_modbus::tcp`, `rusty_modbus::client`, `rusty_modbus::Client` |
-| `rtu` | no | `rusty_modbus::rtu` |
-| `rtu-tcp` | no | Alias for `rtu` |
+| `rtu` | no | `rusty_modbus::rtu` configuration and RTU-over-TCP support, without physical serial dependencies |
+| `rtu-serial` | no | Physical serial support in `rusty_modbus::rtu`, in addition to `rtu` |
+| `rtu-tcp` | no | Alias for `rtu`, without physical serial dependencies |
 | `tls` | no | `rusty_modbus::tls` |
 | `server` | no | `rusty_modbus::server`, `rusty_modbus::Server` |
 | `gateway` | no | `rusty_modbus::gateway`, `rusty_modbus::Gateway` |
@@ -43,6 +59,44 @@ by the GitHub release pipeline instead of crates.io.
 
 The foundation crates `types`, `codec`, and `frame` are always re-exported by
 the facade crate.
+
+## Physical RTU configuration
+
+`rusty_modbus_rtu::RtuConfig` and `SerialTransport::open` are the compatibility
+path. Their public fields, 9600/8N1 default, and legacy timing calculations are
+unchanged. Code that requires a Modbus serial character format uses
+`StrictRtuConfig` with `SerialTransport::open_strict` instead. The strict type
+accepts 8E1, 8O1, and 8N2 and cannot contain a zero baud rate.
+
+`StrictRtuConfig::resolve` returns a `ResolvedRtuConfig` with the concrete data,
+parity, and stop-bit settings; response timeout; character time; t1.5; t3.5;
+and timing mode. Character-calculated values use independent integer
+nanosecond ceiling calculations through 19,200 bit/s. Higher rates use the
+recommended fixed 750 microsecond t1.5 and 1.750 millisecond t3.5 values. The
+strict serial halves expose the same resolved snapshot that supplied the port
+settings and transmit delay.
+
+Strict physical sends accept Unit Identifiers 0 through 247 as destinations,
+preserving address zero for broadcast. Strict receives accept responder sources
+1 through 247. This is address-class validation only: expected-peer correlation,
+broadcast operation policy, and physical RTU responder support are not part of
+this API.
+
+## RTU frame assembler
+
+`rusty_modbus_rtu::RtuFrameAssembler` accepts explicit byte timestamps and
+tokenized t3.5 deadline events. `RtuTiming` validates `0 < t1.5 < t3.5` and can
+be constructed from `ResolvedRtuConfig`. The assembler keeps one fixed
+`MAX_RTU_ADU_SIZE` candidate, enters quarantine after an inter-character gap or
+overlength input, and returns `OwnedRtuAdu` only when a t3.5 boundary closes a
+4-through-256-byte candidate with a valid whole-buffer CRC. Diagnostic counters
+are fixed and saturating.
+
+Callers are responsible for monotonic per-byte timestamps that preserve wire
+timing. This API is not wired to `SerialTransport` or `AsyncRead`; it cannot
+derive timing concealed within one OS/USB read. The assembler tests and fuzz
+target therefore do not prove physical interoperability or read-chunk
+invariance. PDU function semantics remain the codec's responsibility.
 
 ## Rust Client
 
@@ -67,6 +121,11 @@ The client supports typed methods for the public client function-code surface:
 
 Modbus/TCP supports up to 16 concurrent in-flight transactions. RTU transports
 force one in-flight request because RTU frames have no transaction ID.
+These surfaces map to the [TCP client](conformance/ledger.md#profile-tcp-client),
+[physical RTU client](conformance/ledger.md#profile-physical-rtu-client),
+[Modbus/TCP Security](conformance/ledger.md#profile-modbus-security), and
+[RTU-over-TCP extension](conformance/ledger.md#profile-rtu-over-tcp-extension)
+profiles.
 
 ## Rust Server
 
@@ -81,8 +140,11 @@ tables:
 
 Optional `DataStore` methods cover file records, FIFO queues, Report Server ID,
 Diagnostics, Read Exception Status, Get Comm Event Counter, and Get Comm Event
-Log. Defaults return the spec-correct unsupported-capability exception, so
-stores only override what they support.
+Log. Defaults return `IllegalFunction` for unsupported optional operations, so
+stores only override what they support. The server crate maps to the
+[TCP server profile](conformance/ledger.md#profile-tcp-server); there is no
+first-party [physical RTU responder](conformance/ledger.md#profile-physical-rtu-responder),
+and TLS primitives do not compose a secured server on their own.
 
 The built-in `InMemoryStore` is thread-safe and optimized for common paths:
 
@@ -100,7 +162,7 @@ paths validate function-specific envelopes and borrow variable-length payloads
 from the input buffer. Owned frame responses use `bytes::Bytes` slicing to keep
 payload ownership cheap without copying full response bodies.
 
-Current spec-compliance work includes stricter validation for:
+The current capability and evidence inventory includes validation for:
 
 - FC 0x14/0x15 file-record reference types and byte counts.
 - FC 0x18 FIFO response limits.
@@ -126,9 +188,16 @@ Public Python classes:
 | `ModbusServer` | Background Modbus/TCP server wrapper. |
 | `DeviceIdentification` | Result object for FC 0x2B / MEI 0x0E reads. |
 
-The Python client supports the same high-level operations as the Rust client:
-coils, registers, mask write, read/write multiple registers, FIFO, file records,
-and device identification.
+The Python client exposes coils, registers, mask write, read/write multiple
+registers, FIFO, file records, and device identification operations. This list
+is not a parity claim; unresolved surface differences are recorded under
+[CONF-008](conformance/ledger.md#requirement-conf-008).
+
+The gateway and simulator are tracked separately under the
+[gateway](conformance/ledger.md#profile-gateway) and
+[simulator](conformance/ledger.md#profile-simulator) profiles. Simulator fields
+that are parsed but do not affect runtime behavior remain explicit evidence
+gaps rather than implied capabilities.
 
 ## Python Server Store Protocols
 
@@ -178,9 +247,8 @@ Everyday work lands on `dev`. Release work is a PR from `dev` into `main`; that
 PR runs the broader `release.yml` gate across Linux, macOS, and Windows, plus
 feature checks, cargo-deny, cargo-audit, and the Python binding compile check.
 
-A `v*` tag on `main` triggers `publish.yml`. For the 0.1.0 line, the tag should
-match the workspace version exactly, for example `v0.1.0`. The publish workflow
-then:
+A `v*` tag on `main` triggers `publish.yml`. The tag must match the workspace
+version exactly. The publish workflow then:
 
 1. Validates tag version against `Cargo.toml`.
 2. Runs the inter-crate publish-version guard.

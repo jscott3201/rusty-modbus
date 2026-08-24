@@ -1,27 +1,40 @@
 # Rusty Modbus
 
-A complete Modbus protocol stack written in Rust, with Python bindings for
-client and server workflows. The workspace covers TCP, RTU, RTU-over-TCP, TLS,
-pipelined async clients, pluggable servers, TCP-RTU gatewaying, connection
-pooling, YAML-driven simulation, Docker packaging, benchmarks, and a diagnostic
-CLI.
+A Modbus protocol workspace written in Rust, with Python bindings for selected
+client and server workflows. It includes TCP clients and servers, a physical RTU
+client, a separately labeled RTU-over-TCP extension, TLS transport primitives,
+TCP-to-RTU-over-TCP gatewaying, connection pooling, simulation, packaging, benchmarks,
+and a diagnostic CLI.
 
 [![CI](https://github.com/jscott3201/rusty-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/jscott3201/rusty-modbus/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+## Conformance scope
+
+Public capability claims are profile-scoped: [TCP client](docs/conformance/ledger.md#profile-tcp-client),
+[TCP server](docs/conformance/ledger.md#profile-tcp-server),
+[physical RTU client](docs/conformance/ledger.md#profile-physical-rtu-client),
+[physical RTU responder](docs/conformance/ledger.md#profile-physical-rtu-responder),
+[gateway](docs/conformance/ledger.md#profile-gateway), [Modbus/TCP Security](docs/conformance/ledger.md#profile-modbus-security),
+[simulator](docs/conformance/ledger.md#profile-simulator), and the
+[RTU-over-TCP extension](docs/conformance/ledger.md#profile-rtu-over-tcp-extension).
+
+This ledger reports repository-scoped evidence for named profiles. It does not
+state or imply Modbus Organization conformance testing or certification.
+
 ## Features
 
-- **3 transports** — Modbus/TCP, RTU (serial + RTU-over-TCP), TLS 1.3 (mutual auth)
+- **Transport components** — Modbus/TCP, a physical serial RTU client, an RTU-over-TCP extension, and TLS 1.3 primitives with mutual authentication enabled by default
 - **Pipelined async client** — 16-slot transaction ring with background reader task
 - **Pluggable server** — async `DataStore` trait for custom register backends
-- **TCP-RTU gateway** — transparent protocol translation bridge
-- **Connection pooling** — two-pool architecture with health checks and backoff
-- **YAML simulator** — device profiles with scenario-driven register behavior
+- **TCP-to-RTU-over-TCP gateway** — request routing and frame translation; no physical serial gateway
+- **Connection pooling** — two-pool architecture with idle eviction and reconnect backoff
+- **YAML simulator** — initial register maps and device profiles; parsed update and fault settings are not active
 - **CLI tool** — read/write/server/shell/dashboard/discover commands with JSON output
 - **Python bindings** — CPython 3.14/3.14t wheels with typed async/sync clients and server stores
-- **Spec conformance** — Rust conformance tests plus Python wheel, stub, and typing gates
+- **Conformance evidence** — 70 requirement rows and the live Rust conformance-test inventory in the [profile ledger](docs/conformance/ledger.md)
 - **`no_std` foundation** — types and codec crates work without allocator
-- **Zero `unsafe`** — `#![forbid(unsafe_code)]` on all crates
+- **Unsafe-code policy** — workspace library crates use `#![forbid(unsafe_code)]`
 - **Zero clippy warnings**, fast `dev` CI and broader release-gate CI
 
 ## Rust Quick Start
@@ -189,11 +202,11 @@ crates/
   rusty-modbus-pool/        Two-pool connection pooling
   rusty-modbus-client/      Pipelined async client
   rusty-modbus-server/      Pluggable DataStore server
-  rusty-modbus-gateway/     TCP <-> RTU bridge
+  rusty-modbus-gateway/     TCP <-> RTU-over-TCP bridge
   rusty-modbus-sim/         YAML simulator + device profiles
   rusty-modbus-cli/         CLI binary (read/write/server/shell/dashboard/discover)
   rusty-modbus/             Facade crate with feature flags
-  rusty-modbus-conformance/ Spec compliance test suite
+  rusty-modbus-conformance/ Requirement-oriented test suite
   rusty-modbus-python/      PyO3 bindings, excluded from the Rust workspace
 benchmarks/                 Criterion benchmarks + stress-test binary
 ```
@@ -213,7 +226,7 @@ The `rusty-modbus` facade crate re-exports subcrates behind feature flags:
 | `pool`    | no      | `rusty-modbus-pool` |
 | `full`    | no      | all of the above |
 
-## Supported Function Codes
+## Function-code capability inventory
 
 The client exposes **14** typed function codes. The server dispatches all 19
 standard codes: the built-in `InMemoryStore` serves **17**, and the `DataStore`
@@ -245,16 +258,17 @@ trait exposes hooks for the remaining two.
 `IllegalFunction`. Implement the trait method to serve device-specific counters.
 
 The serial-line diagnostics codes (0x07/0x08/0x0B/0x0C/0x11) are accepted over
-Modbus/TCP through `DataStore` methods with conformant defaults — override them
-for device-specific behavior.
+Modbus/TCP through `DataStore` methods. Their defaults return `IllegalFunction`;
+override them for device-specific behavior. This table is an API inventory, not
+a blanket conformance claim.
 
 ## API Documentation
 
 - [docs/api.md](docs/api.md) summarizes the current Rust and Python public API
   surfaces, including feature flags, server stores, typing contracts, and the
   release branch model.
-- Rust crates are documented with rustdoc and are configured for docs.rs with
-  all facade features enabled once the 0.1.0 crates are published.
+- Rust crates are documented with rustdoc and configured for docs.rs with all
+  facade features enabled.
 - Python typing is shipped through `py.typed` and `rusty_modbus.pyi`, with
   `stubtest`, `pyright --verifytypes`, and a strict pyright public-contract test
   in CI.
@@ -315,9 +329,9 @@ Release flow:
 
 1. Work lands on `dev` through ordinary PRs.
 2. Releases are cut by opening a `dev` -> `main` PR and passing `release.yml`.
-3. A `v0.1.0` tag on `main` triggers `publish.yml`, which publishes crates in
-   dependency order, publishes Python distributions to PyPI, and builds CLI
-   release binaries.
+3. A `v*` tag on `main` matching the workspace version triggers `publish.yml`,
+   which publishes crates in dependency order, publishes Python distributions
+   to PyPI, and builds CLI release binaries.
 
 Minimum Rust version: 1.95 (pinned in `rust-toolchain.toml`)
 

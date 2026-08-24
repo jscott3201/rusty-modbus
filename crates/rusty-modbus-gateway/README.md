@@ -1,9 +1,10 @@
 # rusty-modbus-gateway
 
-Modbus TCP-to-RTU gateway bridge
+Modbus TCP-to-RTU-over-TCP gateway bridge
 
-Part of [**rusty-modbus**](https://github.com/jscott3201/rusty-modbus) — an async Modbus protocol stack for Rust
-(TCP / RTU / TLS, with client, server, gateway, and connection pool).
+The [gateway profile](../../docs/conformance/ledger.md#profile-gateway) records
+implemented routing evidence. The current backend uses RTU-over-TCP; a physical
+serial gateway is not implemented.
 
 - 📖 [API documentation](https://docs.rs/rusty-modbus-gateway)
 - 📦 [Workspace & examples](https://github.com/jscott3201/rusty-modbus)

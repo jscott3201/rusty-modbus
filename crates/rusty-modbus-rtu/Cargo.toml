@@ -13,10 +13,10 @@ description = "Modbus RTU transport — serial and RTU-over-TCP"
 readme = "README.md"
 
 [dependencies]
-rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.0" }
-rusty-modbus-codec = { path = "../rusty-modbus-codec", version = "0.1.0" }
-rusty-modbus-frame = { path = "../rusty-modbus-frame", version = "0.1.0", features = ["rtu"] }
-rusty-modbus-tcp = { path = "../rusty-modbus-tcp", version = "0.1.0" }
+rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.1" }
+rusty-modbus-codec = { path = "../rusty-modbus-codec", version = "0.1.1" }
+rusty-modbus-frame = { path = "../rusty-modbus-frame", version = "0.1.1", features = ["rtu"] }
+rusty-modbus-tcp = { path = "../rusty-modbus-tcp", version = "0.1.1" }
 tokio = { version = "1", features = ["net", "rt", "time", "macros"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
