@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use rusty_modbus_codec::DecodeError;
 use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_types::{FunctionCode, TransactionId, UnitId};
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use tokio::time::Instant;
 
 use crate::error::ClientError;
@@ -29,6 +29,8 @@ struct ExpectedResponse {
 pub(crate) enum CompletionOutcome {
     /// The frame completed the matching request with a decoded response.
     Delivered,
+    /// The matching request was already due and completed with a timeout.
+    Expired,
     /// No active transaction matched the frame.
     UnknownOrDuplicate,
     /// The frame's Unit Identifier did not match the pending request.
@@ -55,8 +57,10 @@ pub(crate) struct PendingTransaction {
     pub txn_id: TransactionId,
     /// Channel to send the response (or error) to the caller.
     pub sender: oneshot::Sender<Result<OwnedResponsePdu, ClientError>>,
-    /// When the request was sent.
+    /// When the request was registered for sending.
     pub sent_at: Instant,
+    /// Absolute deadline for this request attempt.
+    pub deadline: Instant,
     expected: ExpectedResponse,
 }
 
@@ -64,6 +68,9 @@ pub(crate) struct PendingTransaction {
 pub(crate) struct TransactionManager {
     next_id: AtomicU16,
     slots: [Mutex<Option<PendingTransaction>>; MAX_SLOTS],
+    deadline_changed: Notify,
+    #[cfg(test)]
+    scheduler_scans: std::sync::atomic::AtomicUsize,
 }
 
 impl TransactionManager {
@@ -72,6 +79,9 @@ impl TransactionManager {
         Self {
             next_id: AtomicU16::new(1), // Keep 0 reserved; some devices treat it specially.
             slots: std::array::from_fn(|_| Mutex::new(None)),
+            deadline_changed: Notify::new(),
+            #[cfg(test)]
+            scheduler_scans: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -91,7 +101,7 @@ impl TransactionManager {
     /// modular index would collide with the next sequential ID.
     ///
     /// Returns the transaction ID and a receiver that will yield the response.
-    /// Dropping the receiver does not reclaim the slot; timeout sweeping or a
+    /// Dropping the receiver does not reclaim the slot; deadline expiry or a
     /// later terminal event remains responsible for removing it.
     ///
     /// # Errors
@@ -101,6 +111,7 @@ impl TransactionManager {
         &self,
         unit_id: UnitId,
         function_code: FunctionCode,
+        deadline: Instant,
     ) -> Result<
         (
             TransactionId,
@@ -127,12 +138,14 @@ impl TransactionManager {
                     txn_id,
                     sender: tx,
                     sent_at: Instant::now(),
+                    deadline,
                     expected: ExpectedResponse {
                         unit_id,
                         function_code,
                     },
                 });
 
+                self.deadline_changed.notify_one();
                 return Ok((txn_id, rx));
             }
         }
@@ -147,8 +160,9 @@ impl TransactionManager {
     /// to prevent stale responses from being delivered to the wrong caller.
     ///
     /// An unknown, duplicate, or same-ring response leaves every active slot
-    /// unchanged. Once the transaction ID matches, Unit Identifier, decoding,
-    /// and function identity errors are terminal for that request.
+    /// unchanged. Once the transaction ID matches, deadline expiry takes
+    /// precedence; otherwise Unit Identifier, decoding, and function identity
+    /// errors are terminal for that request.
     pub fn complete_response(
         &self,
         txn_id: TransactionId,
@@ -163,6 +177,13 @@ impl TransactionManager {
         }
 
         let pending = slot.take().expect("transaction ID matched above");
+        let expired = pending.deadline <= Instant::now();
+        drop(slot);
+        self.deadline_changed.notify_one();
+        if expired {
+            let _ = pending.sender.send(Err(ClientError::Timeout));
+            return CompletionOutcome::Expired;
+        }
         deliver_response(pending, response_unit_id, pdu)
     }
 
@@ -173,8 +194,9 @@ impl TransactionManager {
     /// [`ModbusClient::from_rtu_transport`](crate::ModbusClient::from_rtu_transport))
     /// there is at most one outstanding transaction; if more than one is somehow
     /// present, the oldest (earliest `sent_at`) is selected to preserve FIFO
-    /// ordering. A response for another Unit Identifier is unrelated multidrop
-    /// traffic and leaves that transaction pending.
+    /// ordering. Before the deadline, a response for another Unit Identifier is
+    /// unrelated multidrop traffic and leaves that transaction pending. A due
+    /// transaction expires before Unit Identifier matching.
     ///
     /// RTU has no transaction identifier, so a late response with the same
     /// Unit Identifier and function envelope is indistinguishable from the
@@ -200,6 +222,13 @@ impl TransactionManager {
         let Some(pending) = slot.as_ref() else {
             return CompletionOutcome::UnknownOrDuplicate;
         };
+        if pending.deadline <= Instant::now() {
+            let pending = slot.take().expect("pending transaction checked above");
+            drop(slot);
+            self.deadline_changed.notify_one();
+            let _ = pending.sender.send(Err(ClientError::Timeout));
+            return CompletionOutcome::Expired;
+        }
         let expected = pending.expected.unit_id.0;
         let got = response_unit_id.0;
         if expected != got {
@@ -207,6 +236,8 @@ impl TransactionManager {
         }
 
         let pending = slot.take().expect("pending transaction checked above");
+        drop(slot);
+        self.deadline_changed.notify_one();
         deliver_response(pending, response_unit_id, pdu)
     }
 
@@ -222,44 +253,82 @@ impl TransactionManager {
         }
 
         slot.take().expect("transaction ID matched above");
+        drop(slot);
+        self.deadline_changed.notify_one();
         true
     }
 
     /// Cancel all pending transactions with the given error.
     pub fn cancel_all(&self, make_error: impl Fn() -> ClientError) {
+        let mut cancelled = false;
         for slot in &self.slots {
             let mut slot = slot.lock();
             if let Some(pending) = slot.take() {
                 let _ = pending.sender.send(Err(make_error()));
+                cancelled = true;
             }
+        }
+        if cancelled {
+            self.deadline_changed.notify_one();
         }
     }
 
-    /// Sweep for timed-out transactions.
-    ///
-    /// Returns the number of transactions that were timed out.
-    pub fn sweep_timeouts(&self, timeout: std::time::Duration) -> usize {
-        let now = Instant::now();
-        let mut count = 0;
+    /// Expire due transactions and return the nearest remaining deadline.
+    fn expire_due_and_next_deadline(&self, now: Instant) -> Option<Instant> {
+        #[cfg(test)]
+        self.scheduler_scans
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+        let mut expired = false;
+        let mut nearest = None;
         for slot in &self.slots {
             let mut slot = slot.lock();
-            let timed_out = slot
-                .as_ref()
-                .is_some_and(|p| now.duration_since(p.sent_at) > timeout);
-
-            if timed_out && let Some(pending) = slot.take() {
+            if slot.as_ref().is_some_and(|pending| pending.deadline <= now) {
+                let pending = slot.take().expect("due transaction checked above");
                 let _ = pending.sender.send(Err(ClientError::Timeout));
-                count += 1;
+                expired = true;
+            } else if let Some(deadline) = slot.as_ref().map(|pending| pending.deadline)
+                && nearest.is_none_or(|current| deadline < current)
+            {
+                nearest = Some(deadline);
             }
         }
-        count
+        if expired {
+            self.deadline_changed.notify_one();
+        }
+        nearest
+    }
+
+    /// Run the exact-deadline scheduler until its task is cancelled.
+    pub async fn run_deadline_scheduler(&self) {
+        loop {
+            let notified = self.deadline_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            match self.expire_due_and_next_deadline(Instant::now()) {
+                Some(deadline) => {
+                    tokio::select! {
+                        biased;
+                        () = notified.as_mut() => {}
+                        () = tokio::time::sleep_until(deadline) => {}
+                    }
+                }
+                None => notified.as_mut().await,
+            }
+        }
     }
 
     /// Number of currently pending transactions.
     #[must_use]
     pub fn pending_count(&self) -> usize {
         self.slots.iter().filter(|s| s.lock().is_some()).count()
+    }
+
+    #[cfg(test)]
+    fn scheduler_scan_count(&self) -> usize {
+        self.scheduler_scans
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -316,7 +385,11 @@ mod tests {
         function_code: FunctionCode,
     ) -> (TransactionId, ResponseReceiver) {
         manager
-            .register(UnitId(unit_id), function_code)
+            .register(
+                UnitId(unit_id),
+                function_code,
+                Instant::now() + std::time::Duration::from_secs(5),
+            )
             .expect("transaction slot should be available")
     }
 
@@ -358,7 +431,11 @@ mod tests {
         assert_eq!(manager.pending_count(), MAX_SLOTS);
         assert!(
             manager
-                .register(UnitId(1), FunctionCode::ReadHoldingRegisters)
+                .register(
+                    UnitId(1),
+                    FunctionCode::ReadHoldingRegisters,
+                    Instant::now() + std::time::Duration::from_secs(5),
+                )
                 .is_err()
         );
     }
@@ -461,6 +538,25 @@ mod tests {
     }
 
     #[test]
+    fn tcp_response_at_deadline_expires_without_scheduler_scan() {
+        let manager = TransactionManager::new();
+        let (txn_id, rx) = manager
+            .register(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                Instant::now(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            manager.complete_response(txn_id, UnitId(1), holding_register_response(0x002A)),
+            CompletionOutcome::Expired
+        );
+        assert!(matches!(receive(rx), Err(ClientError::Timeout)));
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
     fn tcp_unknown_id_does_not_mutate_active_transaction() {
         let manager = TransactionManager::new();
         let (txn_id, rx) = register_pending(&manager, 1, FunctionCode::ReadHoldingRegisters);
@@ -558,6 +654,44 @@ mod tests {
     }
 
     #[test]
+    fn rtu_response_for_wrong_unit_at_deadline_expires_request() {
+        let manager = TransactionManager::new();
+        let (_txn_id, rx) = manager
+            .register(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                Instant::now(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            manager.complete_oldest_response(UnitId(2), holding_register_response(0x002A)),
+            CompletionOutcome::Expired
+        );
+        assert!(matches!(receive(rx), Err(ClientError::Timeout)));
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
+    fn rtu_response_at_deadline_expires_without_scheduler_scan() {
+        let manager = TransactionManager::new();
+        let (_txn_id, rx) = manager
+            .register(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                Instant::now(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            manager.complete_oldest_response(UnitId(1), holding_register_response(0x002A)),
+            CompletionOutcome::Expired
+        );
+        assert!(matches!(receive(rx), Err(ClientError::Timeout)));
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
     fn rtu_wrong_function_is_terminal() {
         let manager = TransactionManager::new();
         let (_txn_id, rx) = register_pending(&manager, 1, FunctionCode::ReadHoldingRegisters);
@@ -604,6 +738,117 @@ mod tests {
         assert_eq!(manager.pending_count(), 1);
         assert!(manager.remove(txn_id));
         assert!(rx.blocking_recv().is_err());
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nearest_deadline_expires_first_and_earlier_registration_wakes_scheduler() {
+        let manager = std::sync::Arc::new(TransactionManager::new());
+        let scheduler_manager = std::sync::Arc::clone(&manager);
+        let scheduler = tokio::spawn(async move {
+            scheduler_manager.run_deadline_scheduler().await;
+        });
+        tokio::task::yield_now().await;
+
+        let start = Instant::now();
+        let (_later_id, mut later_rx) = manager
+            .register(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                start + std::time::Duration::from_millis(100),
+            )
+            .unwrap();
+        tokio::task::yield_now().await;
+        let (_earlier_id, earlier_rx) = manager
+            .register(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                start + std::time::Duration::from_millis(20),
+            )
+            .unwrap();
+
+        tokio::time::advance(std::time::Duration::from_millis(20)).await;
+        assert!(matches!(
+            earlier_rx.await.unwrap(),
+            Err(ClientError::Timeout)
+        ));
+        assert!(matches!(
+            later_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(manager.pending_count(), 1);
+
+        tokio::time::advance(std::time::Duration::from_millis(80)).await;
+        assert!(matches!(later_rx.await.unwrap(), Err(ClientError::Timeout)));
+        assert_eq!(manager.pending_count(), 0);
+        scheduler.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_deadline_scheduler_has_no_periodic_scan() {
+        let manager = std::sync::Arc::new(TransactionManager::new());
+        let scheduler_manager = std::sync::Arc::clone(&manager);
+        let scheduler = tokio::spawn(async move {
+            scheduler_manager.run_deadline_scheduler().await;
+        });
+        tokio::task::yield_now().await;
+        let scans_before = manager.scheduler_scan_count();
+
+        tokio::time::advance(std::time::Duration::from_mins(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(manager.scheduler_scan_count(), scans_before);
+        scheduler.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_and_expiry_race_returns_timeout_for_due_deadline() {
+        let manager = std::sync::Arc::new(TransactionManager::new());
+        let (txn_id, rx) = manager
+            .register(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                Instant::now(),
+            )
+            .unwrap();
+        let completing = std::sync::Arc::clone(&manager);
+        let expiring = std::sync::Arc::clone(&manager);
+
+        let complete = tokio::spawn(async move {
+            completing.complete_response(txn_id, UnitId(1), holding_register_response(0x002A))
+        });
+        let expire = tokio::spawn(async move {
+            expiring.expire_due_and_next_deadline(Instant::now());
+        });
+        let (completion, expiration) = tokio::join!(complete, expire);
+        let completion = completion.unwrap();
+        expiration.unwrap();
+        let result = rx.await.unwrap();
+
+        assert!(matches!(result, Err(ClientError::Timeout)));
+        assert!(matches!(
+            completion,
+            CompletionOutcome::Expired | CompletionOutcome::UnknownOrDuplicate
+        ));
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn late_response_after_exact_expiry_is_ignored() {
+        let manager = TransactionManager::new();
+        let (txn_id, rx) = manager
+            .register(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                Instant::now(),
+            )
+            .unwrap();
+
+        assert_eq!(manager.expire_due_and_next_deadline(Instant::now()), None);
+        assert!(matches!(rx.await.unwrap(), Err(ClientError::Timeout)));
+        assert_eq!(
+            manager.complete_response(txn_id, UnitId(1), holding_register_response(0x002A),),
+            CompletionOutcome::UnknownOrDuplicate
+        );
         assert_eq!(manager.pending_count(), 0);
     }
 }

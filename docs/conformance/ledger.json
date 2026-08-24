@@ -7,7 +7,7 @@
     "as_of": "2026-08-23",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 50
+    "test_count": 51
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -1332,40 +1332,44 @@
         },
         {
           "path": "crates/rusty-modbus-client/src/client.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/error.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-gateway/src/translator.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/rtu_tcp.rs"
         }
       ],
       "test_ids": [
+        "spec_client_retry_policy",
         "spec_exceptions"
       ],
-      "evidence_gap": {
-        "detail": "Acknowledge is currently retryable and lacks a deferred-completion workflow.",
-        "owner": "maintainers",
-        "follow_up": "PR-203"
-      },
+      "evidence_gap": null,
       "assessments": [
         {
           "profile": "tcp-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Acknowledge is included in the ordinary retryable exception set rather than a deferred-completion state."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "physical-rtu-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Acknowledge is included in the ordinary retryable exception set rather than a deferred-completion state."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "gateway",
-          "disposition": "compatibility-deviation",
+          "disposition": "supported",
           "evidence": "implemented",
-          "reason": "Acknowledge is included in the ordinary retryable exception set rather than a deferred-completion state."
+          "reason": "The gateway forwards raw response PDUs and has no retryable exception set."
         },
         {
           "profile": "rtu-over-tcp-extension",
-          "disposition": "compatibility-deviation",
+          "disposition": "supported",
           "evidence": "implemented",
-          "reason": "Acknowledge is included in the ordinary retryable exception set rather than a deferred-completion state."
+          "reason": "The RTU-over-TCP layer provides transport framing and has no retryable exception set."
         }
       ]
     },
@@ -2067,6 +2071,12 @@
       "owner": "maintainers",
       "implementation_refs": [
         {
+          "path": "crates/rusty-modbus-client/src/client.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/transaction.rs"
+        },
+        {
           "path": "crates/rusty-modbus-server/src/server.rs"
         },
         {
@@ -2074,14 +2084,27 @@
         }
       ],
       "test_ids": [
+        "spec_client_retry_policy",
         "spec_tcp_transport"
       ],
       "evidence_gap": {
-        "detail": "Idle, half-open, and shutdown behavior lacks one bounded lifecycle proof.",
+        "detail": "Client admission and drain ordering and server idle, half-open, and shutdown behavior still lack bounded lifecycle proof.",
         "owner": "maintainers",
-        "follow_up": "PR-301"
+        "follow_up": "PR-204, PR-301"
       },
       "assessments": [
+        {
+          "profile": "tcp-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Attempt deadlines and retry envelopes are bounded, but shutdown does not seal admission before drain."
+        },
+        {
+          "profile": "physical-rtu-client",
+          "disposition": "compatibility-deviation",
+          "evidence": "implemented",
+          "reason": "Attempt deadlines and retry envelopes are bounded, but shutdown does not seal admission before drain."
+        },
         {
           "profile": "tcp-server",
           "disposition": "compatibility-deviation",
@@ -3389,9 +3412,13 @@
         },
         {
           "path": "crates/rusty-modbus-conformance/tests/spec_client_server.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-conformance/tests/spec_client_retry_policy.rs"
         }
       ],
       "test_ids": [
+        "spec_client_retry_policy",
         "spec_client_server",
         "spec_server_function_codes"
       ],
@@ -3922,6 +3949,16 @@
         "APP-011",
         "APP-012",
         "APP-013"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_client_retry_policy",
+      "path": "crates/rusty-modbus-conformance/tests/spec_client_retry_policy.rs",
+      "requirement_ids": [
+        "APP-018",
+        "TCP-011",
+        "CONF-002"
       ],
       "category": null
     },
@@ -4855,7 +4892,8 @@
       "title": "Automatic timeout retry applies to writes and can duplicate side effects after an ambiguous response loss",
       "priority": "P1",
       "confidence": "Verified source finding / safety gap",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed for typed TCP and physical RTU clients by explicit replay-safe versus mutating request classification. Response and transport timeouts can replay reads but are terminal for writes; spec_client_retry_policy and client_tests cover dropped responses, transport timeouts, FC15, and write-before-read FC17.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-203"
@@ -4870,7 +4908,8 @@
       "title": "Exception `0x05` Acknowledge is treated as a normal retry signal",
       "priority": "P1",
       "confidence": "Verified source finding / normative gap",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by removing Acknowledge from the default retry set and making exception 0x05 terminal even when configured manually. The typed exception remains available for application-owned completion handling, with direct evidence in spec_client_retry_policy.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-203"
@@ -4884,7 +4923,8 @@
       "title": "A fixed 500 ms sweeper makes timeout precision coarse and wakes when idle",
       "priority": "P2",
       "confidence": "Verified source finding",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by storing absolute attempt deadlines in the fixed 16-slot ring and scheduling the nearest deadline through race-safe notifications. Client unit tests cover exact expiry, earlier registration wakeup, idle waiting, response races, late responses, and ring wrap behavior.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-203"

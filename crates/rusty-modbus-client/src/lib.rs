@@ -1,8 +1,8 @@
 //! High-level async Modbus client with transaction pipelining.
 //!
 //! Supports concurrent in-flight requests matched by Transaction ID,
-//! automatic retries on transient failures, and typed methods for every
-//! Modbus function code.
+//! bounded retries for replay-safe requests and explicit Server Device Busy
+//! responses, and typed methods for every supported client function code.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::all, clippy::pedantic)]

@@ -153,8 +153,8 @@ Finding status is `open`, `mitigated`, or `closed`. A mitigated or closed record
 includes a nonblank `status_reason`. Status transitions are made in
 `ledger.json`; they do not require validator-source changes. As seed regression
 decisions, version 1 records `F-023` as `closed` by this ledger and `F-027` as
-`mitigated`, with final closure assigned to PR-704. All other findings are
-currently `open`.
+`mitigated`, with final closure assigned to PR-704. Later work closed F-005
+through F-009 and F-024; current status remains authoritative in `ledger.json`.
 
 Follow-up IDs `ISSUE-90` through `ISSUE-93` are the fixed linked-issue inventory.
 Each record has a nonblank title, owner, follow-up description, URL, and a

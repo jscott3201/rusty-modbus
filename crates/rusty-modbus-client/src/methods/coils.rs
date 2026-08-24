@@ -8,7 +8,7 @@ use rusty_modbus_types::{Address, CoilValue, FunctionCode, Quantity, UnitId};
 
 use rusty_modbus_tcp::transport::TransportSink;
 
-use crate::client::ModbusClient;
+use crate::client::{ModbusClient, RequestKind};
 use crate::error::ClientError;
 use crate::methods::{
     MAX_WRITE_MULTIPLE_COILS, checked_byte_count_len, checked_quantity_len, encode_request,
@@ -39,7 +39,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let len = encode_request(&req, &mut buf)?;
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::ReadCoils, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::ReadCoils,
+                &buf[..len],
+                RequestKind::ReplaySafe,
+            )
             .await?;
 
         match response {
@@ -85,7 +90,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let len = encode_request(&req, &mut buf)?;
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::ReadDiscreteInputs, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::ReadDiscreteInputs,
+                &buf[..len],
+                RequestKind::ReplaySafe,
+            )
             .await?;
 
         match response {
@@ -131,7 +141,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::WriteSingleCoil, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::WriteSingleCoil,
+                &buf[..len],
+                RequestKind::Mutating,
+            )
             .await?;
 
         match response {
@@ -182,7 +197,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::WriteMultipleCoils, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::WriteMultipleCoils,
+                &buf[..len],
+                RequestKind::Mutating,
+            )
             .await?;
 
         match response {

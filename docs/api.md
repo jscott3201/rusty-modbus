@@ -121,6 +121,14 @@ The client supports typed methods for the public client function-code surface:
 
 Modbus/TCP supports up to 16 concurrent in-flight transactions. RTU transports
 force one in-flight request because RTU frames have no transaction ID.
+`ClientConfig::timeout` applies to each attempt after semaphore admission.
+Waiting for admission is not timed; the bounded logical-request envelope starts
+when a permit is acquired. Response and transport timeouts are retried only for
+replay-safe reads; typed writes are not replayed because a timeout or send
+failure does not prove non-execution. A configured Server Device Busy (`0x06`)
+response can retry either request kind. Acknowledge (`0x05`) is returned as
+`ClientError::Exception` to report accepted, still-processing work; the
+application owns any completion check.
 These surfaces map to the [TCP client](conformance/ledger.md#profile-tcp-client),
 [physical RTU client](conformance/ledger.md#profile-physical-rtu-client),
 [Modbus/TCP Security](conformance/ledger.md#profile-modbus-security), and

@@ -9,9 +9,12 @@ use rusty_modbus_types::{ExceptionCode, UnitId};
 pub struct ClientConfig {
     /// Default unit ID for requests. Default: `UnitId(0xFF)` (direct TCP device).
     pub unit_id: UnitId,
-    /// Per-request timeout. Default: 5s.
+    /// Per-attempt timeout after admission. The operation envelope starts when
+    /// an admission permit is acquired; waiting for that permit is not timed.
+    /// Default: 5s.
     pub timeout: Duration,
-    /// Maximum concurrent in-flight transactions. Default: 16 (spec max).
+    /// Maximum concurrent admitted logical operations. A permit is held across
+    /// retries and backoff. Default: 16.
     pub max_in_flight: usize,
     /// Retry configuration.
     pub retry: RetryConfig,
@@ -38,7 +41,10 @@ pub struct RetryConfig {
     pub max_retries: u32,
     /// Delay between retry attempts. Default: 100ms.
     pub retry_delay: Duration,
-    /// Exception codes that trigger a retry. Default: `[ServerDeviceBusy, Acknowledge]`.
+    /// Exception codes selected for retry. Default: `[ServerDeviceBusy]`.
+    ///
+    /// Only `ServerDeviceBusy` is eligible for exception-driven replay.
+    /// `Acknowledge` remains terminal even when included here.
     pub retryable_exceptions: Vec<ExceptionCode>,
 }
 
@@ -47,15 +53,42 @@ impl Default for RetryConfig {
         Self {
             max_retries: 3,
             retry_delay: Duration::from_millis(100),
-            retryable_exceptions: vec![ExceptionCode::ServerDeviceBusy, ExceptionCode::Acknowledge],
+            retryable_exceptions: vec![ExceptionCode::ServerDeviceBusy],
         }
     }
 }
 
 impl RetryConfig {
-    /// Check if an exception code should trigger a retry.
+    /// Check whether an exception code is effectively eligible for retry.
     #[must_use]
     pub fn is_retryable(&self, code: ExceptionCode) -> bool {
-        self.retryable_exceptions.contains(&code)
+        code == ExceptionCode::ServerDeviceBusy
+            && self
+                .retryable_exceptions
+                .contains(&ExceptionCode::ServerDeviceBusy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_retry_exceptions_include_busy_but_not_acknowledge() {
+        let retry = RetryConfig::default();
+        assert!(retry.is_retryable(ExceptionCode::ServerDeviceBusy));
+        assert!(!retry.is_retryable(ExceptionCode::Acknowledge));
+    }
+
+    #[test]
+    fn effective_retry_eligibility_rejects_configured_non_busy_exceptions() {
+        let retry = RetryConfig {
+            retryable_exceptions: vec![ExceptionCode::Acknowledge, ExceptionCode::IllegalDataValue],
+            ..RetryConfig::default()
+        };
+
+        assert!(!retry.is_retryable(ExceptionCode::Acknowledge));
+        assert!(!retry.is_retryable(ExceptionCode::IllegalDataValue));
+        assert!(!retry.is_retryable(ExceptionCode::ServerDeviceBusy));
     }
 }

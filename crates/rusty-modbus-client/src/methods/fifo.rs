@@ -6,7 +6,7 @@ use rusty_modbus_types::{Address, FunctionCode, UnitId};
 
 use rusty_modbus_tcp::transport::TransportSink;
 
-use crate::client::ModbusClient;
+use crate::client::{ModbusClient, RequestKind};
 use crate::error::ClientError;
 use crate::methods::encode_request;
 
@@ -36,7 +36,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let len = encode_request(&req, &mut buf)?;
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::ReadFifoQueue, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::ReadFifoQueue,
+                &buf[..len],
+                RequestKind::ReplaySafe,
+            )
             .await?;
 
         match response {

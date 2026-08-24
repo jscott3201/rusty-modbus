@@ -13,12 +13,13 @@ use rusty_modbus_tcp::TransportError;
 use rusty_modbus_tcp::config::TcpServerConfig;
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
-use rusty_modbus_types::{MbapHeader, UnitId};
+use rusty_modbus_types::{ExceptionCode, MbapHeader, UnitId};
 use tokio::sync::mpsc;
 
 enum SendOutcome {
     Success,
     Failure,
+    Timeout,
 }
 
 struct ControlledSink {
@@ -36,6 +37,7 @@ impl TransportSink for ControlledSink {
             Some(SendOutcome::Failure) => Err(TransportError::Io(std::io::Error::other(
                 "controlled send failure",
             ))),
+            Some(SendOutcome::Timeout) => Err(TransportError::Timeout),
             None => Err(TransportError::Disconnected),
         }
     }
@@ -83,6 +85,18 @@ fn rtu_frame(unit_id: u8, pdu: impl Into<Bytes>) -> Frame {
     Frame {
         header: FrameHeader::Rtu { unit_id },
         pdu: pdu.into(),
+    }
+}
+
+fn mbap_response(request: &Frame, pdu: impl Into<Bytes>) -> Frame {
+    let txn_id = match request.header {
+        FrameHeader::Mbap(header) => header.transaction_id.get(),
+        FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+    };
+    let pdu = pdu.into();
+    Frame {
+        header: FrameHeader::Mbap(MbapHeader::new(txn_id, request.unit_id(), pdu.len() as u16)),
+        pdu,
     }
 }
 
@@ -292,6 +306,36 @@ fn assert_unexpected_padding<T>(
         ),
         "expected response padding mismatch for function {function_code:#04x}"
     );
+}
+
+fn assert_no_sent_frame(controls: &mut TransportControls) {
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+async fn assert_mutating_timeout_once<F, T>(
+    controls: &mut TransportControls,
+    future: F,
+    expected_function: u8,
+) where
+    F: Future<Output = Result<T, ClientError>>,
+{
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut future = Box::pin(future);
+    assert!(poll_once(future.as_mut()).await.is_none());
+    assert_eq!(
+        controls.sent_rx.try_recv().unwrap().pdu[0],
+        expected_function
+    );
+
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert!(matches!(
+        poll_once(future.as_mut()).await,
+        Some(Err(ClientError::Timeout))
+    ));
+    assert_no_sent_frame(controls);
 }
 
 #[tokio::test]
@@ -697,6 +741,511 @@ async fn retry_on_server_device_busy() {
         .unwrap();
 
     assert_eq!(regs, vec![0x0042]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_policy_mutating_response_timeout_sends_once() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        retry: RetryConfig {
+            max_retries: 1,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.write_single_register(UnitId(1), 7, 0x1234));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let first = controls.sent_rx.try_recv().unwrap();
+    assert_eq!(first.pdu[0], 0x06);
+
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert!(matches!(request.await, Err(ClientError::Timeout)));
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_policy_acknowledge_is_terminal_even_when_configured() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(100),
+        retry: RetryConfig {
+            max_retries: 1,
+            retry_delay: Duration::from_millis(10),
+            retryable_exceptions: vec![ExceptionCode::Acknowledge],
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let first = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(&first, Bytes::from_static(&[0x83, 0x05])))
+        .unwrap();
+
+    let mut result = poll_once(request.as_mut()).await;
+    if result.is_none() {
+        tokio::time::advance(Duration::from_millis(10)).await;
+        result = poll_once(request.as_mut()).await;
+    }
+
+    assert!(matches!(
+        result,
+        Some(Err(ClientError::Exception(exc)))
+            if exc.exception_code == ExceptionCode::Acknowledge
+    ));
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn attempt_deadline_is_not_delayed_by_periodic_sweep() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        retry: RetryConfig {
+            max_retries: 0,
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert!(matches!(
+        poll_once(request.as_mut()).await,
+        Some(Err(ClientError::RetriesExhausted {
+            attempts: 1,
+            last_error,
+        })) if matches!(*last_error, ClientError::Timeout)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn replay_safe_response_timeout_retries_then_succeeds() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        retry: RetryConfig {
+            max_retries: 1,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert!(poll_once(request.as_mut()).await.is_none());
+    tokio::time::advance(Duration::from_millis(9)).await;
+    assert!(poll_once(request.as_mut()).await.is_none());
+    assert_no_sent_frame(&mut controls);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let retry = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &retry,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+
+    assert_eq!(request.await.unwrap(), vec![0x002A]);
+    assert_no_sent_frame(&mut controls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn transport_timeout_retries_reads_but_not_writes() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(50),
+        retry: RetryConfig {
+            max_retries: 1,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Timeout).unwrap();
+    let mut read = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(read.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(poll_once(read.as_mut()).await.is_none());
+    let retry = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &retry,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+    assert_eq!(read.await.unwrap(), vec![0x002A]);
+
+    controls.outcome_tx.send(SendOutcome::Timeout).unwrap();
+    let result = client.write_single_register(UnitId(1), 7, 0x1234).await;
+    assert!(matches!(
+        result,
+        Err(ClientError::Transport(TransportError::Timeout))
+    ));
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x06);
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert_no_sent_frame(&mut controls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn non_timeout_transport_errors_remain_terminal_for_reads() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        retry: RetryConfig {
+            max_retries: 3,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..default_config()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Failure).unwrap();
+    let result = client.read_holding_registers(UnitId(1), 0, 1).await;
+    assert!(matches!(
+        result,
+        Err(ClientError::Transport(TransportError::Io(_)))
+    ));
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert_no_sent_frame(&mut controls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn busy_write_retries_after_configured_delay_then_succeeds() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(50),
+        retry: RetryConfig {
+            max_retries: 1,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut write = Box::pin(client.write_single_register(UnitId(1), 7, 0x1234));
+    assert!(poll_once(write.as_mut()).await.is_none());
+    let first = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(&first, Bytes::from_static(&[0x86, 0x06])))
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(poll_once(write.as_mut()).await.is_none());
+
+    tokio::time::advance(Duration::from_millis(9)).await;
+    assert!(poll_once(write.as_mut()).await.is_none());
+    assert_no_sent_frame(&mut controls);
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert!(poll_once(write.as_mut()).await.is_none());
+    let retry = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(&retry, retry.pdu.clone()))
+        .unwrap();
+
+    write.await.unwrap();
+    assert_no_sent_frame(&mut controls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_mutating_typed_function_sends_once_after_response_timeout() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        retry: RetryConfig {
+            max_retries: 3,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    assert_mutating_timeout_once(
+        &mut controls,
+        client.write_single_coil(UnitId(1), 0, true),
+        0x05,
+    )
+    .await;
+    assert_mutating_timeout_once(
+        &mut controls,
+        client.write_single_register(UnitId(1), 0, 1),
+        0x06,
+    )
+    .await;
+    assert_mutating_timeout_once(
+        &mut controls,
+        client.write_multiple_coils(UnitId(1), 0, &[true, false]),
+        0x0F,
+    )
+    .await;
+    assert_mutating_timeout_once(
+        &mut controls,
+        client.write_multiple_registers(UnitId(1), 0, &[1, 2]),
+        0x10,
+    )
+    .await;
+    assert_mutating_timeout_once(
+        &mut controls,
+        client.write_file_record(UnitId(1), &[0x06, 0, 1, 0, 0, 0, 1, 0, 1]),
+        0x15,
+    )
+    .await;
+    assert_mutating_timeout_once(
+        &mut controls,
+        client.mask_write_register(UnitId(1), 0, 0xFF00, 0x00FF),
+        0x16,
+    )
+    .await;
+    assert_mutating_timeout_once(
+        &mut controls,
+        client.read_write_multiple_registers(UnitId(1), 0, 1, 0, &[1]),
+        0x17,
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_cap_and_total_operation_envelope_are_exact() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        retry: RetryConfig {
+            max_retries: 2,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+    let start = tokio::time::Instant::now();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+
+    for attempt in 1..=3 {
+        controls.outcome_tx.send(SendOutcome::Success).unwrap();
+        assert!(poll_once(request.as_mut()).await.is_none());
+        assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+        tokio::time::advance(Duration::from_millis(20)).await;
+        let result = poll_once(request.as_mut()).await;
+        if attempt < 3 {
+            assert!(result.is_none());
+            tokio::time::advance(Duration::from_millis(10)).await;
+        } else {
+            assert!(matches!(
+                result,
+                Some(Err(ClientError::RetriesExhausted {
+                    attempts: 3,
+                    last_error,
+                })) if matches!(*last_error, ClientError::Timeout)
+            ));
+        }
+    }
+
+    assert_eq!(
+        tokio::time::Instant::now().duration_since(start),
+        Duration::from_millis(80)
+    );
+    assert_no_sent_frame(&mut controls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn logical_operation_holds_one_admission_permit_across_backoff() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        max_in_flight: 1,
+        retry: RetryConfig {
+            max_retries: 1,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut first = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(first.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert!(poll_once(first.as_mut()).await.is_none());
+
+    let mut waiting = Box::pin(client.read_input_registers(UnitId(1), 0, 1));
+    assert!(poll_once(waiting.as_mut()).await.is_none());
+    assert_no_sent_frame(&mut controls);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(poll_once(first.as_mut()).await.is_none());
+    let retry = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &retry,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+    assert_eq!(first.await.unwrap(), vec![0x002A]);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    assert!(poll_once(waiting.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    assert_eq!(sent.pdu[0], 0x04);
+    controls
+        .response_tx
+        .send(mbap_response(
+            &sent,
+            Bytes::from_static(&[0x04, 0x02, 0x00, 0x11]),
+        ))
+        .unwrap();
+    assert_eq!(waiting.await.unwrap(), vec![0x0011]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_sink_wait_does_not_send_orphan_request() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        max_in_flight: 2,
+        retry: RetryConfig {
+            max_retries: 0,
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    let mut holding_sink = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(holding_sink.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+
+    let mut waiting = Box::pin(client.write_single_register(UnitId(1), 0, 1));
+    assert!(poll_once(waiting.as_mut()).await.is_none());
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert!(matches!(
+        poll_once(waiting.as_mut()).await,
+        Some(Err(ClientError::Timeout))
+    ));
+    assert_no_sent_frame(&mut controls);
+
+    drop(holding_sink);
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert_no_sent_frame(&mut controls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_request_releases_permit_and_deadline_reclaims_slot() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        max_in_flight: 1,
+        retry: RetryConfig {
+            max_retries: 0,
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut cancelled = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(cancelled.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+    drop(cancelled);
+
+    tokio::time::advance(Duration::from_millis(20)).await;
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut next = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(next.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &sent,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+    assert_eq!(next.await.unwrap(), vec![0x002A]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn rtu_client_uses_same_read_and_write_retry_classification() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_millis(20),
+        retry: RetryConfig {
+            max_retries: 1,
+            retry_delay: Duration::from_millis(10),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_rtu_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut read = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(read.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert!(poll_once(read.as_mut()).await.is_none());
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(poll_once(read.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+    controls
+        .response_tx
+        .send(rtu_frame(1, Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A])))
+        .unwrap();
+    assert_eq!(read.await.unwrap(), vec![0x002A]);
+
+    assert_mutating_timeout_once(
+        &mut controls,
+        client.write_single_register(UnitId(1), 0, 1),
+        0x06,
+    )
+    .await;
 }
 
 #[tokio::test]
