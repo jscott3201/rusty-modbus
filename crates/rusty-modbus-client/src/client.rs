@@ -233,7 +233,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             .map_err(|_| ClientError::ShuttingDown)?;
 
         // Register transaction.
-        let (txn_id, rx) = self.txn_mgr.register(function_code)?;
+        let (txn_id, rx) = self.txn_mgr.register(unit_id, function_code)?;
         tracing::Span::current().record("txn_id", txn_id.0);
         trace!(txn_id = txn_id.0, "registered Modbus transaction");
 
@@ -250,12 +250,8 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             let mut sink = self.sink.lock().await;
             if let Err(e) = sink.send(frame).await {
                 warn!(txn_id = txn_id.0, error = %e, "failed to send Modbus request");
-                self.txn_mgr
-                    .complete(txn_id, Err(ClientError::Transport(e)));
-                return match rx.await {
-                    Ok(result) => result,
-                    Err(_) => Err(ClientError::ShuttingDown),
-                };
+                self.txn_mgr.remove(txn_id);
+                return Err(ClientError::Transport(e));
             }
         }
         trace!(txn_id = txn_id.0, "sent Modbus request frame");
@@ -271,20 +267,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             return Err(ClientError::ShuttingDown);
         };
 
-        // Verify the server echoed the requested function code (Modbus V1.1b3
-        // §4.4: a normal response repeats the FC; an error response sets
-        // `fc | 0x80`). Reject anything else so a stale or misrouted frame that
-        // happens to land on this transaction slot cannot be delivered as if it
-        // answered this request.
-        let expected = function_code.code();
         let got = response.function_code();
-        if got != expected && got != (expected | 0x80) {
-            warn!(
-                txn_id = txn_id.0,
-                expected, got, "server response function code did not match request"
-            );
-            return Err(ClientError::UnexpectedResponse { expected, got });
-        }
 
         debug!(
             txn_id = txn_id.0,
