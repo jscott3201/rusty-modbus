@@ -22,6 +22,7 @@ fn bench_server_process_request(c: &mut Criterion) {
     let fc03 = [0x03, 0x00, 0x00, 0x00, 0x7D]; // 125 holding registers
     let fc0f = write_multiple_coils_pdu(0, 1968);
     let fc10 = write_multiple_registers_pdu(0, 123);
+    let fc16 = [0x16, 0x00, 0x00, 0xFF, 0xFE, 0x00, 0x01];
     let fc14 = [
         0x14, 0x0E, // byte count
         0x06, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, // file 4, record 1, len 2
@@ -98,6 +99,14 @@ fn bench_server_process_request(c: &mut Criterion) {
         &device_id,
         "fc15_write_file_two_groups",
         &fc15,
+    );
+    bench_pdu(
+        &mut group,
+        &rt,
+        store.as_ref(),
+        &device_id,
+        "fc16_atomic_mask_write",
+        &fc16,
     );
     bench_pdu(
         &mut group,

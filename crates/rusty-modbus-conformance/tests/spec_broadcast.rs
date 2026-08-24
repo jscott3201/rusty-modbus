@@ -83,6 +83,48 @@ async fn broadcast_write_multiple_registers_executes() {
 }
 
 #[tokio::test]
+async fn broadcast_mask_write_register_executes() {
+    let s = store();
+    s.set_holding_register(4, 0x0012).unwrap();
+    let pdu = [0x16, 0x00, 0x04, 0x00, 0xF2, 0x00, 0x25];
+
+    let resp = handler::process_request(
+        &pdu,
+        UnitId(0),
+        s.as_ref(),
+        &DeviceIdentification::default(),
+    )
+    .await;
+
+    assert!(resp.is_none());
+    let mut buf = [0u16; 1];
+    s.read_holding_registers(4, 1, &mut buf).await.unwrap();
+    assert_eq!(buf, [0x0017]);
+}
+
+#[tokio::test]
+async fn broadcast_read_write_multiple_registers_does_not_access_store() {
+    let s = store();
+    s.set_holding_register(0, 0x1234).unwrap();
+    let pdu = [
+        0x17, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x02, 0xBE, 0xEF,
+    ];
+
+    let resp = handler::process_request(
+        &pdu,
+        UnitId(0),
+        s.as_ref(),
+        &DeviceIdentification::default(),
+    )
+    .await;
+
+    assert!(resp.is_none());
+    let mut buf = [0u16; 1];
+    s.read_holding_registers(0, 1, &mut buf).await.unwrap();
+    assert_eq!(buf, [0x1234]);
+}
+
+#[tokio::test]
 async fn broadcast_read_returns_none() {
     let s = store();
     // FC 03: read holding registers, unit_id=0 (broadcast)

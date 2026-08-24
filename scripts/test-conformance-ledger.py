@@ -269,7 +269,6 @@ class ConformanceLedgerTests(unittest.TestCase):
             "APP-011": "PR-402",
             "APP-012": "PR-402",
             "APP-013": "PR-402",
-            "APP-019": "PR-303",
             "TCP-006": "PR-201",
             "TCP-010": "PR-302",
             "TCP-011": "PR-401, PR-701",

@@ -161,10 +161,13 @@ tables:
 - Holding registers.
 - Input registers.
 
-Optional `DataStore` methods cover file records, FIFO queues, Report Server ID,
-Diagnostics, Read Exception Status, Get Comm Event Counter, and Get Comm Event
-Log. Defaults return `IllegalFunction` for unsupported optional operations, so
-stores only override what they support. The server crate maps to the
+Optional `DataStore` methods cover atomic FC 0x16/0x17 operations, file records,
+FIFO queues, Report Server ID, Diagnostics, Read Exception Status, Get Comm Event
+Counter, and Get Comm Event Log. The compound-operation defaults return
+`IllegalFunction` without composing ordinary register methods. Existing stores
+continue to compile, but FC 0x16 and FC 0x17 remain unavailable until the store
+implements `atomic_mask_write_register` and
+`atomic_read_write_registers_be`. The server crate maps to the
 [TCP server profile](conformance/ledger.md#profile-tcp-server); there is no
 first-party [physical RTU responder](conformance/ledger.md#profile-physical-rtu-responder),
 and TLS primitives do not compose a secured server on their own.
@@ -200,8 +203,17 @@ The built-in `InMemoryStore` is thread-safe and optimized for common paths:
 - Store hooks can write packed coils, register bytes, file records, FIFO data,
   diagnostics, and server-identification payloads directly into response
   buffers.
-- File-record writes are validated before commit to preserve all-or-nothing
-  behavior.
+- FC 0x16 uses one holding-register write guard. FC 0x17 validates its buffers
+  and both table ranges before writing and encoding the post-write read under one
+  guard.
+
+FC 0x15 validates every subrequest before submitting the first write. It then
+calls the backend once per group. Backend failure, cancellation, and concurrent
+access do not provide rollback or a transaction spanning those groups.
+
+Custom stores own transaction and cancellation behavior inside an atomic hook.
+A successful store commit is not rolled back if response encoding or delivery
+fails.
 
 ## Codec And Framing
 
@@ -275,6 +287,7 @@ Optional protocol extensions document additional callbacks:
 
 | Protocol | Optional callbacks |
 |---|---|
+| `AtomicCompoundDataStore` | `atomic_mask_write_register`, `atomic_read_write_registers` |
 | `FileRecordDataStore` | `read_file_record`, `write_file_record` |
 | `FifoDataStore` | `read_fifo_queue` |
 | `SerialDiagnosticsDataStore` | `read_exception_status`, `get_comm_event_counter`, `get_comm_event_log`, `diagnostic` |
@@ -282,6 +295,9 @@ Optional protocol extensions document additional callbacks:
 
 Callbacks may raise the Python Modbus exception classes to control the wire
 exception code. Unknown Python exceptions map to Server Device Failure.
+Compound callbacks are invoked once per accepted request and must provide their
+own synchronization, transaction, and cancellation policy. The adapter does not
+serialize them through a process-wide lock or assume GIL serialization.
 
 ## Python Typing Guarantees
 

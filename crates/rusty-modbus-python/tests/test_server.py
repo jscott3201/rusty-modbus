@@ -2,6 +2,7 @@
 
 import socket
 import struct
+import threading
 
 import pytest
 
@@ -57,6 +58,12 @@ def test_in_memory_server_round_trip():
 
             client.write_single_register(unit_id=1, address=1, value=456)
             assert client.read_holding_registers(unit_id=1, address=1, quantity=1) == [456]
+
+            client.mask_write_register(1, 0, 0xFF00, 0x00AA)
+            assert client.read_write_multiple_registers(1, 0, 2, 1, [0xBEEF]) == [
+                0x00AA,
+                0xBEEF,
+            ]
 
 
 def test_stop_returns_stable_outcome_and_typed_metrics():
@@ -163,6 +170,37 @@ class PythonOptionalStore(PythonStore):
         return [byte ^ 0xFF for byte in payload]
 
 
+class PythonAtomicStore(PythonStore):
+    def __init__(self):
+        super().__init__()
+        self.compound_lock = threading.Lock()
+        self.mask_calls = []
+        self.read_write_calls = []
+
+    def atomic_mask_write_register(self, address, and_mask, or_mask):
+        with self.compound_lock:
+            self.mask_calls.append((address, and_mask, or_mask))
+            current = self.holding_registers[address]
+            self.holding_registers[address] = (current & and_mask) | (
+                or_mask & ~and_mask
+            )
+
+    def atomic_read_write_registers(
+        self, read_address, read_quantity, write_address, write_values
+    ):
+        with self.compound_lock:
+            values = list(write_values)
+            self.read_write_calls.append(
+                (read_address, read_quantity, write_address, values)
+            )
+            self.holding_registers[
+                write_address : write_address + len(values)
+            ] = values
+            return self.holding_registers[
+                read_address : read_address + read_quantity
+            ]
+
+
 def test_python_data_store_server_round_trip():
     with ModbusServer.start(ServerConfig(), PythonStore()) as server:
         with SyncModbusClient.connect(server.local_addr) as client:
@@ -171,6 +209,101 @@ def test_python_data_store_server_round_trip():
 
             client.write_single_register(unit_id=1, address=1, value=99)
             assert client.read_holding_registers(unit_id=1, address=1, quantity=1) == [99]
+
+
+def test_python_atomic_compound_callbacks_succeed_once():
+    store = PythonAtomicStore()
+    store.holding_registers[0] = 0x0012
+
+    with ModbusServer.start(ServerConfig(), store) as server:
+        with SyncModbusClient.connect(server.local_addr) as client:
+            client.mask_write_register(
+                unit_id=1, address=0, and_mask=0x00F2, or_mask=0x0025
+            )
+            assert client.read_holding_registers(1, 0, 1) == [0x0017]
+
+            values = client.read_write_multiple_registers(
+                unit_id=1,
+                read_address=0,
+                read_quantity=2,
+                write_address=1,
+                write_values=[0xCAFE, 0xBABE],
+            )
+            assert values == [0x0017, 0xCAFE]
+
+    assert store.mask_calls == [(0, 0x00F2, 0x0025)]
+    assert store.read_write_calls == [(0, 2, 1, [0xCAFE, 0xBABE])]
+
+
+def test_python_store_missing_atomic_callbacks_fails_closed_without_ordinary_calls():
+    class CountingStore(PythonStore):
+        def __init__(self):
+            super().__init__()
+            self.ordinary_calls = 0
+
+        def read_holding_registers(self, address, quantity):
+            self.ordinary_calls += 1
+            return super().read_holding_registers(address, quantity)
+
+        def write_register(self, address, value):
+            self.ordinary_calls += 1
+            return super().write_register(address, value)
+
+        def write_registers(self, address, values):
+            self.ordinary_calls += 1
+            return super().write_registers(address, values)
+
+    store = CountingStore()
+    initial = list(store.holding_registers)
+    fc16 = bytes([0x16, 0, 0, 0x00, 0xF2, 0x00, 0x25])
+    fc17 = bytes([0x17, 0, 0, 0, 1, 0, 1, 0, 1, 2, 0x12, 0x34])
+
+    with ModbusServer.start(ServerConfig(), store) as server:
+        assert _send_raw_pdu(server.local_addr, fc16) == bytes([0x96, 0x01])
+        assert _send_raw_pdu(server.local_addr, fc17) == bytes([0x97, 0x01])
+
+    assert store.ordinary_calls == 0
+    assert store.holding_registers == initial
+
+
+def test_python_atomic_compound_callbacks_map_typed_exceptions():
+    class FailingStore(PythonStore):
+        def atomic_mask_write_register(self, address, and_mask, or_mask):
+            raise IllegalDataAddressError("mask address")
+
+        def atomic_read_write_registers(
+            self, read_address, read_quantity, write_address, write_values
+        ):
+            raise IllegalDataAddressError("read/write address")
+
+    fc16 = bytes([0x16, 0, 0, 0x00, 0xF2, 0x00, 0x25])
+    fc17 = bytes([0x17, 0, 0, 0, 1, 0, 1, 0, 1, 2, 0x12, 0x34])
+
+    with ModbusServer.start(ServerConfig(), FailingStore()) as server:
+        assert _send_raw_pdu(server.local_addr, fc16) == bytes([0x96, 0x02])
+        assert _send_raw_pdu(server.local_addr, fc17) == bytes([0x97, 0x02])
+
+
+@pytest.mark.parametrize("result", [[], [0x10000]])
+def test_python_atomic_read_write_rejects_invalid_results(result):
+    class InvalidResultStore(PythonStore):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def atomic_read_write_registers(
+            self, read_address, read_quantity, write_address, write_values
+        ):
+            self.calls += 1
+            return result
+
+    store = InvalidResultStore()
+    fc17 = bytes([0x17, 0, 0, 0, 1, 0, 1, 0, 1, 2, 0x12, 0x34])
+
+    with ModbusServer.start(ServerConfig(), store) as server:
+        assert _send_raw_pdu(server.local_addr, fc17) == bytes([0x97, 0x04])
+
+    assert store.calls == 1
 
 
 def test_python_data_store_exception_mapping():

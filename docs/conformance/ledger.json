@@ -1390,24 +1390,27 @@
         },
         {
           "path": "crates/rusty-modbus-server/src/store/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/store/memory.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-python/src/server.rs"
         }
       ],
       "test_ids": [
+        "spec_broadcast",
         "spec_fc16_mask_write",
         "spec_fc17_read_write_regs",
         "spec_server_handler"
       ],
-      "evidence_gap": {
-        "detail": "The data-store contract does not require atomic compound operations under concurrent requests.",
-        "owner": "maintainers",
-        "follow_up": "PR-303"
-      },
+      "evidence_gap": null,
       "assessments": [
         {
           "profile": "tcp-server",
-          "disposition": "compatibility-deviation",
+          "disposition": "supported",
           "evidence": "implemented",
-          "reason": "Handler sequencing does not make the compound data-store operation atomic against concurrent requests."
+          "reason": "The handler invokes one atomic capability hook; InMemoryStore linearizes the write and post-write read under one guard, while incapable stores return Illegal Function."
         },
         {
           "profile": "physical-rtu-responder",
@@ -1417,15 +1420,15 @@
         },
         {
           "profile": "gateway",
-          "disposition": "compatibility-deviation",
+          "disposition": "supported",
           "evidence": "implemented",
-          "reason": "Handler sequencing does not make the compound data-store operation atomic against concurrent requests."
+          "reason": "The gateway forwards FC 0x17 as one PDU without decomposing the target operation."
         },
         {
           "profile": "simulator",
-          "disposition": "compatibility-deviation",
+          "disposition": "supported",
           "evidence": "implemented",
-          "reason": "Handler sequencing does not make the compound data-store operation atomic against concurrent requests."
+          "reason": "The simulator uses InMemoryStore, whose FC 0x17 hook holds one write guard across the write and post-write read."
         }
       ]
     },
@@ -3947,6 +3950,7 @@
       "id": "spec_broadcast",
       "path": "crates/rusty-modbus-conformance/tests/spec_broadcast.rs",
       "requirement_ids": [
+        "APP-019",
         "APP-022",
         "RTU-001",
         "RTU-011"
@@ -5009,7 +5013,8 @@
       "title": "FC16/FC17 compound store operations can interleave across clients",
       "priority": "P1",
       "confidence": "Verified source finding / semantic gap",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by default-deny atomic FC16/FC17 DataStore hooks, one-guard InMemoryStore implementations, and Rust/Python tests covering opt-in, fail-closed defaults, validation, broadcast behavior, and concurrent linearization.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-303"

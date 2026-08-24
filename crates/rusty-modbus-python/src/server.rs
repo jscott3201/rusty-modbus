@@ -11,7 +11,9 @@ use rusty_modbus_server::{
     ServerConfig as RustServerConfig, ServerMetrics as RustServerMetrics,
     ShutdownOutcome as RustShutdownOutcome, StoreConfig as RustStoreConfig, StoreError,
 };
-use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, UnitId};
+use rusty_modbus_types::{
+    DiagnosticSubFunction, ExceptionCode, MAX_RW_READ_REGISTERS, MAX_RW_WRITE_REGISTERS, UnitId,
+};
 use tokio::runtime::Runtime;
 
 use crate::errors;
@@ -405,6 +407,62 @@ impl DataStore for PyDataStore {
         })
     }
 
+    async fn atomic_mask_write_register(
+        &self,
+        address: u16,
+        and_mask: u16,
+        or_mask: u16,
+    ) -> Result<(), ExceptionCode> {
+        Python::attach(|py| {
+            let obj = self.obj.bind(py);
+            if !has_method(obj, "atomic_mask_write_register")? {
+                return Err(ExceptionCode::IllegalFunction);
+            }
+            obj.call_method1("atomic_mask_write_register", (address, and_mask, or_mask))
+                .map(|_| ())
+                .map_err(|err| errors::pyerr_to_exception_code(py, err))
+        })
+    }
+
+    async fn atomic_read_write_registers_be(
+        &self,
+        read_address: u16,
+        read_quantity: u16,
+        write_address: u16,
+        write_quantity: u16,
+        write_values: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, ExceptionCode> {
+        let (read_count, write_count) =
+            validate_atomic_read_write_buffers(read_quantity, write_quantity, write_values, out)?;
+        let write_values: Vec<u16> = write_values
+            .chunks_exact(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect();
+        debug_assert_eq!(write_values.len(), write_count);
+
+        let values = Python::attach(|py| {
+            let obj = self.obj.bind(py);
+            if !has_method(obj, "atomic_read_write_registers")? {
+                return Err(ExceptionCode::IllegalFunction);
+            }
+            obj.call_method1(
+                "atomic_read_write_registers",
+                (read_address, read_quantity, write_address, write_values),
+            )
+            .and_then(|result| result.extract::<Vec<u16>>())
+            .map_err(|err| errors::pyerr_to_exception_code(py, err))
+        })?;
+
+        if values.len() != read_count {
+            return Err(ExceptionCode::ServerDeviceFailure);
+        }
+        for (chunk, value) in out.chunks_exact_mut(2).zip(values) {
+            chunk.copy_from_slice(&value.to_be_bytes());
+        }
+        Ok(read_count)
+    }
+
     async fn read_input_registers(
         &self,
         address: u16,
@@ -731,6 +789,28 @@ fn store_error_to_pyerr(err: StoreError) -> PyErr {
 fn has_method(obj: &Bound<'_, PyAny>, method: &str) -> Result<bool, ExceptionCode> {
     obj.hasattr(method)
         .map_err(|err| errors::pyerr_to_exception_code(obj.py(), err))
+}
+
+fn validate_atomic_read_write_buffers(
+    read_quantity: u16,
+    write_quantity: u16,
+    write_values: &[u8],
+    out: &[u8],
+) -> Result<(usize, usize), ExceptionCode> {
+    if read_quantity == 0
+        || read_quantity > MAX_RW_READ_REGISTERS
+        || write_quantity == 0
+        || write_quantity > MAX_RW_WRITE_REGISTERS
+    {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+
+    let read_count = usize::from(read_quantity);
+    let write_count = usize::from(write_quantity);
+    if write_values.len() != write_count * 2 || out.len() < read_count * 2 {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    Ok((read_count, write_count))
 }
 
 fn copy_returned_values<T: Copy>(

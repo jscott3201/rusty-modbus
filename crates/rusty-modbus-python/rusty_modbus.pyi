@@ -252,6 +252,20 @@ class DataStore(Protocol):
     def write_registers(self, address: int, values: Sequence[int]) -> None: ...
     def read_input_registers(self, address: int, quantity: int) -> Sequence[int]: ...
 
+class AtomicCompoundDataStore(DataStore, Protocol):
+    """Optional atomic FC 0x16/0x17 callbacks for Python-backed stores."""
+
+    def atomic_mask_write_register(
+        self, address: int, and_mask: int, or_mask: int
+    ) -> None: ...
+    def atomic_read_write_registers(
+        self,
+        read_address: int,
+        read_quantity: int,
+        write_address: int,
+        write_values: Sequence[int],
+    ) -> Sequence[int]: ...
+
 class FileRecordDataStore(DataStore, Protocol):
     """Optional FC 0x14/0x15 callbacks for Python-backed stores."""
 
