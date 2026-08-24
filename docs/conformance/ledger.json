@@ -7,7 +7,7 @@
     "as_of": "2026-08-23",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 49
+    "test_count": 50
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -831,30 +831,33 @@
         },
         {
           "path": "crates/rusty-modbus-server/src/handler.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/methods/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/methods/coils.rs"
         }
       ],
       "test_ids": [
+        "spec_client_response_shape",
         "spec_fc01_read_coils",
         "spec_fc02_read_discrete",
         "spec_response_encode"
       ],
       "evidence_gap": {
-        "detail": "Server encoding zeroes final-byte padding, but client decoding does not universally reject nonzero peer padding.",
+        "detail": "Gateway raw forwarding does not use typed client methods, so it does not validate response padding against the initiating request quantity.",
         "owner": "maintainers",
-        "follow_up": "PR-202",
+        "follow_up": "PR-402",
         "profiles": [
-          "tcp-client",
-          "physical-rtu-client",
-          "gateway",
-          "rtu-over-tcp-extension"
+          "gateway"
         ]
       },
       "assessments": [
         {
           "profile": "tcp-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "tcp-server",
@@ -863,9 +866,8 @@
         },
         {
           "profile": "physical-rtu-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "physical-rtu-responder",
@@ -877,7 +879,7 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding."
+          "reason": "Gateway raw forwarding validates response envelope identity but does not invoke typed request-aware padding validation."
         },
         {
           "profile": "simulator",
@@ -886,9 +888,8 @@
         },
         {
           "profile": "rtu-over-tcp-extension",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding."
+          "disposition": "supported",
+          "evidence": "implemented"
         }
       ]
     },
@@ -900,7 +901,7 @@
       "source": {
         "document": "modbus-application-protocol",
         "revision": "V1.1b3",
-        "locator": "§6.3 and §6.4, response byte count"
+        "locator": "§6.3, §6.4, and §6.17, response byte count"
       },
       "owner": "maintainers",
       "implementation_refs": [
@@ -912,31 +913,40 @@
         },
         {
           "path": "crates/rusty-modbus-server/src/handler.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/reg_read.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-codec/src/response/reg_write.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-frame/src/owned.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/methods/registers.rs"
         }
       ],
       "test_ids": [
         "spec_byte_count_semantic",
+        "spec_client_response_shape",
         "spec_fc03_read_holding",
         "spec_fc04_read_input",
         "spec_response_encode"
       ],
       "evidence_gap": {
-        "detail": "Fixed-length checks do not yet prove request-correlated register quantities on every client path.",
+        "detail": "Gateway raw forwarding does not use typed client methods, so it does not correlate register response byte counts with initiating request quantities.",
         "owner": "maintainers",
-        "follow_up": "PR-202",
+        "follow_up": "PR-402",
         "profiles": [
-          "tcp-client",
-          "physical-rtu-client",
-          "gateway",
-          "rtu-over-tcp-extension"
+          "gateway"
         ]
       },
       "assessments": [
         {
           "profile": "tcp-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Implemented decoding checks byte shape but not every request-correlated quantity."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "tcp-server",
@@ -945,9 +955,8 @@
         },
         {
           "profile": "physical-rtu-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Implemented decoding checks byte shape but not every request-correlated quantity."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "physical-rtu-responder",
@@ -959,7 +968,7 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Implemented decoding checks byte shape but not every request-correlated quantity."
+          "reason": "Gateway raw forwarding validates response envelope identity but does not invoke typed request-aware quantity validation."
         },
         {
           "profile": "simulator",
@@ -968,9 +977,8 @@
         },
         {
           "profile": "rtu-over-tcp-extension",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Implemented decoding checks byte shape but not every request-correlated quantity."
+          "disposition": "supported",
+          "evidence": "implemented"
         }
       ]
     },
@@ -982,7 +990,7 @@
       "source": {
         "document": "modbus-application-protocol",
         "revision": "V1.1b3",
-        "locator": "§6.1 through §6.4, response quantity derived from request"
+        "locator": "§6.1 through §6.4 and §6.17, response quantity derived from request"
       },
       "owner": "maintainers",
       "implementation_refs": [
@@ -994,44 +1002,54 @@
         },
         {
           "path": "crates/rusty-modbus-server/src/handler.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/methods/mod.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/methods/coils.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/methods/registers.rs"
         }
       ],
       "test_ids": [
         "spec_byte_count_semantic",
+        "spec_client_response_shape",
         "spec_fc03_read_holding",
         "spec_fc04_read_input",
         "spec_fixed_pdu_lengths",
         "spec_owned_response"
       ],
       "evidence_gap": {
-        "detail": "Request-correlated quantity validation remains incomplete across client response variants.",
+        "detail": "Gateway raw forwarding does not use typed client methods, so exact request-correlated quantity validation remains a gateway-owned gap.",
         "owner": "maintainers",
-        "follow_up": "PR-202"
+        "follow_up": "PR-402",
+        "profiles": [
+          "gateway"
+        ]
       },
       "assessments": [
         {
           "profile": "tcp-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Some client paths validate shape without retaining enough request context for an exact quantity check."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "physical-rtu-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Some client paths validate shape without retaining enough request context for an exact quantity check."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Some client paths validate shape without retaining enough request context for an exact quantity check."
+          "reason": "Gateway raw forwarding validates response envelope identity but does not invoke typed request-aware quantity validation."
         },
         {
           "profile": "rtu-over-tcp-extension",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Some client paths validate shape without retaining enough request context for an exact quantity check."
+          "disposition": "supported",
+          "evidence": "implemented"
         }
       ]
     },
@@ -3898,6 +3916,16 @@
       "category": null
     },
     {
+      "id": "spec_client_response_shape",
+      "path": "crates/rusty-modbus-conformance/tests/spec_client_response_shape.rs",
+      "requirement_ids": [
+        "APP-011",
+        "APP-012",
+        "APP-013"
+      ],
+      "category": null
+    },
+    {
       "id": "spec_client_server",
       "path": "crates/rusty-modbus-conformance/tests/spec_client_server.rs",
       "requirement_ids": [
@@ -4810,7 +4838,8 @@
       "title": "Read responses are not validated against exact requested quantity; odd register byte counts and non-zero bit padding are not universally rejected",
       "priority": "P1",
       "confidence": "Verified source finding / normative gap",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed for typed TCP and RTU client methods by exact request-aware response-shape validation and intrinsic even-byte register decoding. Gateway raw forwarding remains a gateway-owned gap assigned to PR-402.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-202"

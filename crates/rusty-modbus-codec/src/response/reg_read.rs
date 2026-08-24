@@ -51,6 +51,7 @@ impl<'buf> ReadHoldingRegistersResponse<'buf> {
     /// Returns `DecodeError::Truncated` if `data` is too short.
     /// Returns `DecodeError::ByteCountMismatch` if the declared byte count
     /// does not match the remaining data length.
+    /// Returns `DecodeError::InvalidRegisterDataLength` if the byte count is odd.
     pub fn decode(data: &'buf [u8]) -> Result<Self, DecodeError> {
         if data.is_empty() {
             return Err(DecodeError::Truncated {
@@ -66,6 +67,7 @@ impl<'buf> ReadHoldingRegistersResponse<'buf> {
                 actual: register_data.len(),
             });
         }
+        DecodeError::check_register_data_len(register_data.len())?;
         Ok(Self {
             byte_count,
             register_data,
@@ -84,6 +86,7 @@ impl Encode for ReadHoldingRegistersResponse<'_> {
         }
         EncodeError::check_byte_count(usize::from(self.byte_count), self.register_data.len())?;
         EncodeError::check_pdu_len(len)?;
+        EncodeError::check_register_data_len(self.register_data.len())?;
         buf[0] = FunctionCode::ReadHoldingRegisters.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.register_data);
@@ -142,6 +145,7 @@ impl<'buf> ReadInputRegistersResponse<'buf> {
     /// Returns `DecodeError::Truncated` if `data` is too short.
     /// Returns `DecodeError::ByteCountMismatch` if the declared byte count
     /// does not match the remaining data length.
+    /// Returns `DecodeError::InvalidRegisterDataLength` if the byte count is odd.
     pub fn decode(data: &'buf [u8]) -> Result<Self, DecodeError> {
         if data.is_empty() {
             return Err(DecodeError::Truncated {
@@ -157,6 +161,7 @@ impl<'buf> ReadInputRegistersResponse<'buf> {
                 actual: register_data.len(),
             });
         }
+        DecodeError::check_register_data_len(register_data.len())?;
         Ok(Self {
             byte_count,
             register_data,
@@ -175,6 +180,7 @@ impl Encode for ReadInputRegistersResponse<'_> {
         }
         EncodeError::check_byte_count(usize::from(self.byte_count), self.register_data.len())?;
         EncodeError::check_pdu_len(len)?;
+        EncodeError::check_register_data_len(self.register_data.len())?;
         buf[0] = FunctionCode::ReadInputRegisters.code();
         buf[1] = self.byte_count;
         buf[2..2 + usize::from(self.byte_count)].copy_from_slice(self.register_data);

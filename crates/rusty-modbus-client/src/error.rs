@@ -101,6 +101,32 @@ pub enum ClientError {
         actual: usize,
     },
 
+    /// The server returned more data bytes than the initiating read requested.
+    #[error(
+        "unexpected response length for function {function_code:#04x}: expected {expected} data bytes, got {actual}"
+    )]
+    UnexpectedResponseLength {
+        /// Function code of the initiating request.
+        function_code: u8,
+        /// Exact data length required by the request.
+        expected: usize,
+        /// Data bytes returned by the server.
+        actual: usize,
+    },
+
+    /// A bit-read response set high bits outside the requested quantity.
+    #[error(
+        "unexpected response padding for function {function_code:#04x}: byte {actual:#04x} sets bits selected by {invalid_mask:#04x}"
+    )]
+    UnexpectedResponsePadding {
+        /// Function code of the initiating request.
+        function_code: u8,
+        /// Mask selecting the unused high bits in the final byte.
+        invalid_mask: u8,
+        /// Final response byte containing invalid padding.
+        actual: u8,
+    },
+
     /// A Read Device Identification continuation did not advance to a higher
     /// object ID. Without this guard, a malformed peer can keep the client in
     /// an unbounded `more_follows` loop.

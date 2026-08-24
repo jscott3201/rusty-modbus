@@ -186,3 +186,17 @@ fn owned_response_constructors_reject_empty_pdu_without_panicking() {
     assert_empty_pdu_truncated!(OwnedReadWriteMultipleRegistersResponse);
     assert_empty_pdu_truncated!(OwnedEncapsulatedInterfaceResponse);
 }
+
+#[test]
+fn owned_register_responses_reject_odd_byte_counts() {
+    for pdu in [
+        &[0x03, 0x03, 0x00, 0x01, 0x02][..],
+        &[0x04, 0x03, 0x00, 0x01, 0x02][..],
+        &[0x17, 0x03, 0x00, 0x01, 0x02][..],
+    ] {
+        assert!(matches!(
+            OwnedResponsePdu::from_pdu(Bytes::copy_from_slice(pdu)),
+            Err(DecodeError::InvalidRegisterDataLength { length: 3 })
+        ));
+    }
+}

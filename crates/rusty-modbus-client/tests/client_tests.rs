@@ -252,6 +252,48 @@ fn assert_echo_mismatch<T>(
     );
 }
 
+fn assert_unexpected_length<T>(
+    result: Result<T, ClientError>,
+    function_code: u8,
+    expected: usize,
+    actual: usize,
+) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::UnexpectedResponseLength {
+                function_code: got_function_code,
+                expected: got_expected,
+                actual: got_actual,
+            }) if got_function_code == function_code
+                && got_expected == expected
+                && got_actual == actual
+        ),
+        "expected response length mismatch for function {function_code:#04x}"
+    );
+}
+
+fn assert_unexpected_padding<T>(
+    result: Result<T, ClientError>,
+    function_code: u8,
+    invalid_mask: u8,
+    actual: u8,
+) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::UnexpectedResponsePadding {
+                function_code: got_function_code,
+                invalid_mask: got_invalid_mask,
+                actual: got_actual,
+            }) if got_function_code == function_code
+                && got_invalid_mask == invalid_mask
+                && got_actual == actual
+        ),
+        "expected response padding mismatch for function {function_code:#04x}"
+    );
+}
+
 #[tokio::test]
 async fn read_holding_registers() {
     let addr = start_register_server().await;
@@ -1145,6 +1187,245 @@ async fn short_raw_register_response_is_error() {
         matches!(result, Err(ClientError::ShortResponse { .. })),
         "expected ShortResponse, got {result:?}"
     );
+}
+
+#[tokio::test]
+async fn typed_reads_reject_overlong_success_responses() {
+    let addr = start_scripted_server(|fc, _req| match fc {
+        0x01 | 0x02 => vec![fc, 0x02, 0x00, 0x00],
+        0x03 | 0x04 | 0x17 => vec![fc, 0x04, 0x00, 0x01, 0x00, 0x02],
+        _ => vec![fc | 0x80, 0x01],
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_unexpected_length(client.read_coils(UnitId(1), 0, 1).await, 0x01, 1, 2);
+    assert_unexpected_length(
+        client.read_discrete_inputs(UnitId(1), 0, 1).await,
+        0x02,
+        1,
+        2,
+    );
+    assert_unexpected_length(
+        client.read_holding_registers(UnitId(1), 0, 1).await,
+        0x03,
+        2,
+        4,
+    );
+    assert_unexpected_length(
+        client.read_holding_registers_raw(UnitId(1), 0, 1).await,
+        0x03,
+        2,
+        4,
+    );
+    assert_unexpected_length(
+        client.read_input_registers(UnitId(1), 0, 1).await,
+        0x04,
+        2,
+        4,
+    );
+    assert_unexpected_length(
+        client
+            .read_write_multiple_registers(UnitId(1), 0, 1, 0, &[0x0001, 0x0002])
+            .await,
+        0x17,
+        2,
+        4,
+    );
+}
+
+#[tokio::test]
+async fn typed_bit_reads_reject_nonzero_final_padding() {
+    let addr = start_scripted_server(|fc, _req| match fc {
+        0x01 | 0x02 => vec![fc, 0x01, 0x80],
+        _ => vec![fc | 0x80, 0x01],
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    assert_unexpected_padding(client.read_coils(UnitId(1), 0, 1).await, 0x01, 0xFE, 0x80);
+    assert_unexpected_padding(
+        client.read_discrete_inputs(UnitId(1), 0, 1).await,
+        0x02,
+        0xFE,
+        0x80,
+    );
+}
+
+#[tokio::test]
+async fn raw_holding_register_response_keeps_the_owned_payload_slice() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+    let response_pdu = Bytes::from_static(&[0x03, 0x02, 0x12, 0x34]);
+    let expected_data_ptr = response_pdu[2..].as_ptr();
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers_raw(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    let txn_id = match sent.header {
+        FrameHeader::Mbap(header) => header.transaction_id.get(),
+        FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+    };
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(txn_id, 1, 4)),
+            pdu: response_pdu,
+        })
+        .unwrap();
+
+    let raw = request.await.unwrap();
+    assert_eq!(raw, Bytes::from_static(&[0x12, 0x34]));
+    assert_eq!(raw.as_ptr(), expected_data_ptr);
+}
+
+#[tokio::test]
+async fn typed_register_reads_reject_odd_payloads_before_materialization() {
+    let addr = start_scripted_server(|fc, _req| match fc {
+        0x03 | 0x04 | 0x17 => vec![fc, 0x03, 0x00, 0x01, 0x02],
+        _ => vec![fc | 0x80, 0x01],
+    })
+    .await;
+    let client = ModbusClient::connect(addr, default_config()).await.unwrap();
+
+    let results = [
+        client
+            .read_holding_registers(UnitId(1), 0, 1)
+            .await
+            .map(|_| ()),
+        client
+            .read_holding_registers_raw(UnitId(1), 0, 1)
+            .await
+            .map(|_| ()),
+        client
+            .read_input_registers(UnitId(1), 0, 1)
+            .await
+            .map(|_| ()),
+        client
+            .read_write_multiple_registers(UnitId(1), 0, 1, 0, &[0x0001])
+            .await
+            .map(|_| ()),
+    ];
+
+    for result in results {
+        assert!(matches!(
+            result,
+            Err(ClientError::Codec(
+                rusty_modbus_codec::DecodeError::InvalidRegisterDataLength { length: 3 }
+            ))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn response_shape_errors_are_not_retried() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        retry: RetryConfig {
+            max_retries: 3,
+            ..RetryConfig::default()
+        },
+        ..default_config()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_coils(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    let txn_id = match sent.header {
+        FrameHeader::Mbap(header) => header.transaction_id.get(),
+        FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+    };
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(txn_id, 1, 4)),
+            pdu: Bytes::from_static(&[0x01, 0x02, 0x00, 0x00]),
+        })
+        .unwrap();
+
+    assert_unexpected_length(request.await, 0x01, 1, 2);
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn rtu_typed_reads_use_shared_response_shape_validation() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_rtu_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 1);
+    controls
+        .response_tx
+        .send(rtu_frame(
+            1,
+            Bytes::from_static(&[0x03, 0x04, 0x00, 0x01, 0x00, 0x02]),
+        ))
+        .unwrap();
+
+    assert_unexpected_length(request.await, 0x03, 2, 4);
+}
+
+#[tokio::test]
+async fn register_quantity_above_limit_is_rejected_before_transport() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    assert_quantity_encode_error(client.read_holding_registers(UnitId(1), 0, 126).await, 126);
+    assert_quantity_encode_error(
+        client.read_holding_registers_raw(UnitId(1), 0, 126).await,
+        126,
+    );
+    assert_quantity_encode_error(client.read_input_registers(UnitId(1), 0, 126).await, 126);
+    assert_quantity_encode_error(
+        client
+            .read_write_multiple_registers(UnitId(1), 0, 126, 0, &[0x0001])
+            .await,
+        126,
+    );
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn read_write_registers_accepts_maximum_read_and_write_quantities() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+    let write_values = vec![0x1234; 121];
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request =
+        Box::pin(client.read_write_multiple_registers(UnitId(1), 0, 125, 0, &write_values));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    assert_eq!(sent.pdu.len(), 252);
+    assert_eq!(&sent.pdu[3..5], &125u16.to_be_bytes());
+    assert_eq!(&sent.pdu[7..9], &121u16.to_be_bytes());
+    assert_eq!(sent.pdu[9], 242);
+    let txn_id = match sent.header {
+        FrameHeader::Mbap(header) => header.transaction_id.get(),
+        FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+    };
+    let mut response_pdu = vec![0x17, 250];
+    response_pdu.resize(252, 0);
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(txn_id, 1, 252)),
+            pdu: Bytes::from(response_pdu),
+        })
+        .unwrap();
+
+    assert_eq!(request.await.unwrap(), vec![0; 125]);
 }
 
 #[tokio::test]

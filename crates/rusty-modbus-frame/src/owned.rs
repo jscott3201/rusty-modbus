@@ -13,7 +13,8 @@ use rusty_modbus_codec::error::DecodeError;
 use rusty_modbus_codec::response::{
     EncapsulatedInterfaceResponse, ExceptionResponse, GetCommEventCounterResponse,
     GetCommEventLogResponse, MaskWriteRegisterResponse, ReadExceptionStatusResponse,
-    ReadFifoQueueResponse, ReadFileRecordResponse, WriteFileRecordResponse,
+    ReadFifoQueueResponse, ReadFileRecordResponse, ReadHoldingRegistersResponse,
+    ReadInputRegistersResponse, ReadWriteMultipleRegistersResponse, WriteFileRecordResponse,
     WriteMultipleCoilsResponse, WriteMultipleRegistersResponse, WriteSingleCoilResponse,
     WriteSingleRegisterResponse,
 };
@@ -156,23 +157,10 @@ impl OwnedReadHoldingRegistersResponse {
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
         let data = pdu_data(&pdu)?;
-        if data.is_empty() {
-            return Err(DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            });
-        }
-        let byte_count = data[0];
-        let payload = &data[1..];
-        if payload.len() != usize::from(byte_count) {
-            return Err(DecodeError::ByteCountMismatch {
-                declared: usize::from(byte_count),
-                actual: payload.len(),
-            });
-        }
-        let register_data = pdu.slice(2..2 + usize::from(byte_count));
+        let decoded = ReadHoldingRegistersResponse::decode(data)?;
+        let register_data = pdu.slice(2..2 + decoded.register_data.len());
         Ok(Self {
-            byte_count,
+            byte_count: decoded.byte_count,
             register_data,
         })
     }
@@ -225,23 +213,10 @@ impl OwnedReadInputRegistersResponse {
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
         let data = pdu_data(&pdu)?;
-        if data.is_empty() {
-            return Err(DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            });
-        }
-        let byte_count = data[0];
-        let payload = &data[1..];
-        if payload.len() != usize::from(byte_count) {
-            return Err(DecodeError::ByteCountMismatch {
-                declared: usize::from(byte_count),
-                actual: payload.len(),
-            });
-        }
-        let register_data = pdu.slice(2..2 + usize::from(byte_count));
+        let decoded = ReadInputRegistersResponse::decode(data)?;
+        let register_data = pdu.slice(2..2 + decoded.register_data.len());
         Ok(Self {
-            byte_count,
+            byte_count: decoded.byte_count,
             register_data,
         })
     }
@@ -298,23 +273,10 @@ impl OwnedReadWriteMultipleRegistersResponse {
     /// Returns `DecodeError` if the PDU is malformed.
     pub fn from_pdu(pdu: Bytes) -> Result<Self, DecodeError> {
         let data = pdu_data(&pdu)?;
-        if data.is_empty() {
-            return Err(DecodeError::Truncated {
-                expected: 1,
-                actual: 0,
-            });
-        }
-        let byte_count = data[0];
-        let payload = &data[1..];
-        if payload.len() != usize::from(byte_count) {
-            return Err(DecodeError::ByteCountMismatch {
-                declared: usize::from(byte_count),
-                actual: payload.len(),
-            });
-        }
-        let register_data = pdu.slice(2..2 + usize::from(byte_count));
+        let decoded = ReadWriteMultipleRegistersResponse::decode(data)?;
+        let register_data = pdu.slice(2..2 + decoded.register_data.len());
         Ok(Self {
-            byte_count,
+            byte_count: decoded.byte_count,
             register_data,
         })
     }
