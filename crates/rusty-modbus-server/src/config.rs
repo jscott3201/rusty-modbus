@@ -6,6 +6,8 @@ use std::time::Duration;
 use rusty_modbus_tcp::config::TcpServerConfig;
 use rusty_modbus_types::UnitId;
 
+use crate::error::ServerConfigError;
+
 /// Server configuration.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -36,6 +38,30 @@ impl Default for ServerConfig {
             device_id: DeviceIdentification::default(),
             tcp_config: TcpServerConfig::default(),
         }
+    }
+}
+
+impl ServerConfig {
+    /// Validate limits that must be usable before the listen socket is bound.
+    ///
+    /// `max_transactions` is validated as configuration only. The current
+    /// server processes one request at a time per connection and does not
+    /// enforce this value at runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first zero connection, transaction, or shutdown limit.
+    pub fn validate(&self) -> Result<(), ServerConfigError> {
+        if self.max_connections == 0 {
+            return Err(ServerConfigError::ZeroMaxConnections);
+        }
+        if self.max_transactions == 0 {
+            return Err(ServerConfigError::ZeroMaxTransactions);
+        }
+        if self.shutdown_timeout.is_zero() {
+            return Err(ServerConfigError::ZeroShutdownTimeout);
+        }
+        Ok(())
     }
 }
 
@@ -74,7 +100,10 @@ impl Default for DeviceIdentification {
 
 #[cfg(test)]
 mod tests {
-    use super::DeviceIdentification;
+    use std::time::Duration;
+
+    use super::{DeviceIdentification, ServerConfig};
+    use crate::error::ServerConfigError;
 
     #[test]
     fn default_device_revision_matches_package_version() {
@@ -89,5 +118,44 @@ mod tests {
             ..DeviceIdentification::default()
         };
         assert_eq!(device_id.major_minor_revision, "device-firmware-7");
+    }
+
+    #[test]
+    fn zero_server_limits_are_rejected() {
+        let config = ServerConfig {
+            max_connections: 0,
+            ..ServerConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ServerConfigError::ZeroMaxConnections)
+        );
+
+        let config = ServerConfig {
+            max_transactions: 0,
+            ..ServerConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ServerConfigError::ZeroMaxTransactions)
+        );
+
+        let config = ServerConfig {
+            shutdown_timeout: Duration::ZERO,
+            ..ServerConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ServerConfigError::ZeroShutdownTimeout)
+        );
+    }
+
+    #[test]
+    fn transaction_limit_above_client_ring_size_is_valid_configuration() {
+        let config = ServerConfig {
+            max_transactions: 17,
+            ..ServerConfig::default()
+        };
+        assert_eq!(config.validate(), Ok(()));
     }
 }

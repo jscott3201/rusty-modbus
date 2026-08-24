@@ -7,7 +7,7 @@
     "as_of": "2026-08-23",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 52
+    "test_count": 53
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -2035,7 +2035,7 @@
       "evidence_gap": {
         "detail": "The server configuration exposes a transaction bound, but each connection processes requests sequentially.",
         "owner": "maintainers",
-        "follow_up": "PR-301, PR-302"
+        "follow_up": "PR-302"
       },
       "assessments": [
         {
@@ -2095,18 +2095,28 @@
           "path": "crates/rusty-modbus-server/src/server.rs"
         },
         {
+          "path": "crates/rusty-modbus-server/src/lifecycle.rs"
+        },
+        {
           "path": "crates/rusty-modbus-tcp/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-cli/src/server.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-python/src/server.rs"
         }
       ],
       "test_ids": [
         "spec_client_lifecycle",
         "spec_client_retry_policy",
+        "spec_server_lifecycle",
         "spec_tcp_transport"
       ],
       "evidence_gap": {
-        "detail": "Client shutdown is internally verified. Server shutdown bounds remain open, and gateway and simulator lifecycle and idle ownership do not yet have equivalent proof.",
+        "detail": "Client and direct TCP server shutdown are internally verified. The gateway owns a separate listener/task lifecycle without equivalent proof. The simulator wraps ModbusServer but does not expose or directly verify lifecycle outcomes and metrics.",
         "owner": "maintainers",
-        "follow_up": "PR-301"
+        "follow_up": "PR-401, PR-701"
       },
       "assessments": [
         {
@@ -2121,21 +2131,20 @@
         },
         {
           "profile": "tcp-server",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Lifecycle controls exist without complete idle and half-open coverage."
+          "disposition": "supported",
+          "evidence": "internally-verified"
         },
         {
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Lifecycle controls exist without complete idle and half-open coverage."
+          "reason": "The gateway owns a separate listener and task lifecycle without equivalent shutdown and idle-connection proof."
         },
         {
           "profile": "simulator",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Lifecycle controls exist without complete idle and half-open coverage."
+          "reason": "The simulator wraps ModbusServer but does not expose or directly verify lifecycle outcomes and metrics."
         }
       ]
     },
@@ -4393,6 +4402,14 @@
       "category": null
     },
     {
+      "id": "spec_server_lifecycle",
+      "path": "crates/rusty-modbus-conformance/tests/spec_server_lifecycle.rs",
+      "requirement_ids": [
+        "TCP-011"
+      ],
+      "category": null
+    },
+    {
       "id": "spec_server_store_counts",
       "path": "crates/rusty-modbus-conformance/tests/spec_server_store_counts.rs",
       "requirement_ids": [
@@ -4975,7 +4992,8 @@
       "title": "Server `max_transactions` and configured shutdown timeout are not enforced by runtime behavior",
       "priority": "P1",
       "confidence": "Verified source finding / API-contract gap",
-      "status": "open",
+      "status": "mitigated",
+      "status_reason": "PR-301 validates server limits before bind, enforces the configured shutdown deadline, seals listener and request admission, joins owned connection tasks, and reports drained versus forced completion with counters across Rust, CLI, and Python. Runtime enforcement of max_transactions remains assigned to PR-302.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-301",

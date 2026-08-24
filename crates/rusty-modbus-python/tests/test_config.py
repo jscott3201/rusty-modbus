@@ -1,6 +1,6 @@
 """Tests for configuration classes."""
 import pytest
-from rusty_modbus import ClientConfig, RetryConfig, StoreConfig, TlsConfig
+from rusty_modbus import ClientConfig, RetryConfig, ServerConfig, StoreConfig, TlsConfig
 
 
 class TestClientConfig:
@@ -64,3 +64,13 @@ class TestStoreConfig:
     def test_rejects_oversized_table(self):
         with pytest.raises(ValueError, match="holding_registers"):
             StoreConfig(holding_register_count=65_537)
+
+
+class TestServerConfig:
+    @pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan"), 1e300])
+    def test_invalid_shutdown_timeout(self, value):
+        with pytest.raises(ValueError, match="shutdown_timeout_secs"):
+            ServerConfig(shutdown_timeout_secs=value)
+
+    def test_transaction_limit_above_client_ring_size_is_accepted(self):
+        assert ServerConfig(max_transactions=17).max_transactions == 17

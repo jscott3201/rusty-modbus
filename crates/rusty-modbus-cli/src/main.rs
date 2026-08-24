@@ -330,7 +330,26 @@ mod tests {
         };
         assert_eq!(args.listen.to_string(), "0.0.0.0:5502");
         assert_eq!(args.table_size, 65_536);
+        assert_eq!(args.shutdown_timeout_secs, 10.0);
         assert!(args.holding.is_empty());
+    }
+
+    #[test]
+    fn parses_finite_positive_server_shutdown_timeout() {
+        let cli =
+            Cli::try_parse_from(["modbus", "server", "--shutdown-timeout-secs", "2.5"]).unwrap();
+        let Commands::Server(args) = cli.command else {
+            panic!("expected server command");
+        };
+        assert_eq!(args.shutdown_timeout_secs, 2.5);
+
+        for value in ["0", "-1", "NaN", "inf", "1e300"] {
+            assert!(
+                Cli::try_parse_from(["modbus", "server", "--shutdown-timeout-secs", value,])
+                    .is_err(),
+                "{value} should be rejected"
+            );
+        }
     }
 
     #[test]

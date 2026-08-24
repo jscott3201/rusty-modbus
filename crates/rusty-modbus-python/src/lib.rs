@@ -32,6 +32,7 @@ const PUBLIC_NAMES: &[&str] = &[
     "ModbusClient",
     "SyncModbusClient",
     "ServerConfig",
+    "ServerMetrics",
     "StoreConfig",
     "InMemoryStore",
     "ModbusServer",
@@ -57,6 +58,7 @@ fn rusty_modbus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::ModbusClient>()?;
     m.add_class::<sync_client::SyncModbusClient>()?;
     m.add_class::<server::ServerConfig>()?;
+    m.add_class::<server::ServerMetrics>()?;
     m.add_class::<server::StoreConfig>()?;
     m.add_class::<server::InMemoryStore>()?;
     m.add_class::<server::ModbusServer>()?;

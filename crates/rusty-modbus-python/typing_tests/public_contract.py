@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Sequence
-from typing import TYPE_CHECKING, assert_type
+from typing import TYPE_CHECKING, Literal, assert_type
 
 import rusty_modbus
 
@@ -118,6 +118,14 @@ def _server_contracts(store: DataStore) -> None:
         rusty_modbus.ModbusServer,
     )
     assert_type(rusty_modbus.ModbusServer.start(store=store), rusty_modbus.ModbusServer)
+
+
+def _server_lifecycle_contracts(server: rusty_modbus.ModbusServer) -> None:
+    assert_type(server.stop(), Literal["drained", "forced"])
+    metrics = server.metrics()
+    assert_type(metrics, rusty_modbus.ServerMetrics)
+    assert_type(metrics.active_connections, int)
+    metrics.active_connections = 1  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def _protocol_contracts(

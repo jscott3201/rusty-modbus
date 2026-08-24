@@ -132,8 +132,8 @@ modbus shell -H 192.168.1.100
 # Discover devices on a subnet
 modbus discover --range 192.168.1.0/24
 
-# Run an in-memory Modbus/TCP server
-modbus server --listen 0.0.0.0:5502 --holding 0=0x1234
+# Run an in-memory Modbus/TCP server with a 10-second shutdown deadline
+modbus server --listen 0.0.0.0:5502 --shutdown-timeout-secs 10 --holding 0=0x1234
 
 # JSON output (for scripting)
 modbus read -H 192.168.1.100 holding 0 10 --format json

@@ -2,9 +2,12 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Args;
-use rusty_modbus::server::{InMemoryStore, ModbusServer, ServerConfig, StoreConfig};
+use rusty_modbus::server::{
+    InMemoryStore, ModbusServer, ServerConfig, ServerMetrics, ShutdownOutcome, StoreConfig,
+};
 use rusty_modbus_types::UnitId;
 
 /// Arguments for the `server` subcommand.
@@ -21,6 +24,14 @@ pub struct ServerArgs {
     /// Maximum concurrent transactions per connection.
     #[arg(long, default_value_t = 16)]
     pub max_transactions: u16,
+
+    /// Seconds allowed for admitted requests to drain during shutdown.
+    #[arg(
+        long,
+        default_value_t = 10.0,
+        value_parser = parse_finite_positive_seconds
+    )]
+    pub shutdown_timeout_secs: f64,
 
     /// Size for each in-memory Modbus data table.
     #[arg(long, default_value_t = 65_536)]
@@ -50,6 +61,7 @@ pub struct ServerCommandConfig {
     unit_id: UnitId,
     max_connections: usize,
     max_transactions: u16,
+    shutdown_timeout: Duration,
     table_size: usize,
     holding: Vec<String>,
     input: Vec<String>,
@@ -65,6 +77,7 @@ impl ServerCommandConfig {
             unit_id,
             max_connections: args.max_connections,
             max_transactions: args.max_transactions,
+            shutdown_timeout: Duration::from_secs_f64(args.shutdown_timeout_secs),
             table_size: args.table_size,
             holding: args.holding,
             input: args.input,
@@ -111,6 +124,7 @@ pub async fn run(config: ServerCommandConfig) -> Result<(), String> {
             unit_id: config.unit_id,
             max_connections: config.max_connections,
             max_transactions: config.max_transactions,
+            shutdown_timeout: config.shutdown_timeout,
             ..ServerConfig::default()
         },
         Arc::clone(&store),
@@ -131,8 +145,48 @@ pub async fn run(config: ServerCommandConfig) -> Result<(), String> {
 
     wait_for_shutdown_signal().await?;
     tracing::info!(addr = %local_addr, "Modbus CLI server shutting down");
-    server.stop().await;
+    let outcome = server.stop().await;
+    let metrics = server.metrics();
+    let report = shutdown_report(outcome, metrics);
+    eprintln!("{report}");
+    tracing::info!(
+        addr = %local_addr,
+        %outcome,
+        active_connections = metrics.active_connections,
+        active_requests = metrics.active_requests,
+        accepted_connections = metrics.accepted_connections,
+        access_denied_connections = metrics.access_denied_connections,
+        connection_limit_rejections = metrics.connection_limit_rejections,
+        accept_errors = metrics.accept_errors,
+        "Modbus CLI server stopped"
+    );
     Ok(())
+}
+
+fn shutdown_report(outcome: ShutdownOutcome, metrics: ServerMetrics) -> String {
+    format!(
+        "Modbus server shutdown {outcome}: active_connections={}, active_requests={}, \
+         accepted_connections={}, access_denied_connections={}, \
+         connection_limit_rejections={}, accept_errors={}",
+        metrics.active_connections,
+        metrics.active_requests,
+        metrics.accepted_connections,
+        metrics.access_denied_connections,
+        metrics.connection_limit_rejections,
+        metrics.accept_errors,
+    )
+}
+
+fn parse_finite_positive_seconds(value: &str) -> Result<f64, String> {
+    let seconds = value
+        .parse::<f64>()
+        .map_err(|error| format!("invalid duration {value:?}: {error}"))?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err(String::from("duration must be finite and positive"));
+    }
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|error| format!("duration is out of range: {error}"))?;
+    Ok(seconds)
 }
 
 fn seed_registers(
@@ -242,5 +296,35 @@ mod tests {
         assert!(!parse_bool("off").unwrap());
         assert!(!parse_bool("False").unwrap());
         assert!(!parse_bool("0").unwrap());
+    }
+
+    #[test]
+    fn shutdown_report_includes_outcome_and_all_counters() {
+        let report = shutdown_report(
+            ShutdownOutcome::Forced,
+            ServerMetrics {
+                active_connections: 0,
+                active_requests: 0,
+                accepted_connections: 5,
+                access_denied_connections: 1,
+                connection_limit_rejections: 2,
+                accept_errors: 3,
+            },
+        );
+
+        assert_eq!(
+            report,
+            "Modbus server shutdown forced: active_connections=0, active_requests=0, \
+             accepted_connections=5, access_denied_connections=1, \
+             connection_limit_rejections=2, accept_errors=3"
+        );
+    }
+
+    #[test]
+    fn shutdown_timeout_parser_rejects_non_finite_and_non_positive_values() {
+        for value in ["0", "-1", "NaN", "inf", "1e300"] {
+            assert!(parse_finite_positive_seconds(value).is_err(), "{value}");
+        }
+        assert_eq!(parse_finite_positive_seconds("2.5"), Ok(2.5));
     }
 }

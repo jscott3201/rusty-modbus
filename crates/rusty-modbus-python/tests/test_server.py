@@ -11,6 +11,7 @@ from rusty_modbus import (
     ModbusExceptionError,
     ModbusServer,
     ServerConfig,
+    ServerMetrics,
     StoreConfig,
     SyncModbusClient,
 )
@@ -56,6 +57,22 @@ def test_in_memory_server_round_trip():
 
             client.write_single_register(unit_id=1, address=1, value=456)
             assert client.read_holding_registers(unit_id=1, address=1, quantity=1) == [456]
+
+
+def test_stop_returns_stable_outcome_and_typed_metrics():
+    server = ModbusServer.start(ServerConfig())
+    assert server.stop() == "drained"
+    assert server.stop() == "drained"
+
+    metrics = server.metrics()
+    assert isinstance(metrics, ServerMetrics)
+    assert metrics.active_connections == 0
+    assert metrics.active_requests == 0
+    assert metrics.accepted_connections == 0
+    assert metrics.access_denied_connections == 0
+    assert metrics.connection_limit_rejections == 0
+    assert metrics.accept_errors == 0
+    assert "ServerMetrics" in repr(metrics)
 
 
 def test_in_memory_store_setup_rejects_address_outside_configured_table():

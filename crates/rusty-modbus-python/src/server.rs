@@ -8,7 +8,8 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rusty_modbus_server::{
     CommEventLog, DataStore, InMemoryStore as RustInMemoryStore, ModbusServer as RustModbusServer,
-    ServerConfig as RustServerConfig, StoreConfig as RustStoreConfig, StoreError,
+    ServerConfig as RustServerConfig, ServerMetrics as RustServerMetrics,
+    ShutdownOutcome as RustShutdownOutcome, StoreConfig as RustStoreConfig, StoreError,
 };
 use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode, UnitId};
 use tokio::runtime::Runtime;
@@ -57,11 +58,14 @@ impl ServerConfig {
         if max_transactions == 0 {
             return Err(PyValueError::new_err("max_transactions must be >= 1"));
         }
-        if shutdown_timeout_secs <= 0.0 {
+        if !shutdown_timeout_secs.is_finite() || shutdown_timeout_secs <= 0.0 {
             return Err(PyValueError::new_err(
-                "shutdown_timeout_secs must be positive",
+                "shutdown_timeout_secs must be finite and positive",
             ));
         }
+        Duration::try_from_secs_f64(shutdown_timeout_secs).map_err(|error| {
+            PyValueError::new_err(format!("shutdown_timeout_secs is out of range: {error}"))
+        })?;
         Ok(Self {
             listen_addr,
             unit_id,
@@ -91,14 +95,64 @@ impl ServerConfig {
             .parse::<SocketAddr>()
             .map_err(|e| PyValueError::new_err(format!("invalid listen_addr: {e}")))?;
 
+        let shutdown_timeout = Duration::try_from_secs_f64(self.shutdown_timeout_secs)
+            .map_err(|error| PyValueError::new_err(format!("invalid shutdown timeout: {error}")))?;
+
         Ok(RustServerConfig {
             listen_addr,
             unit_id: UnitId(self.unit_id),
             max_connections: self.max_connections,
             max_transactions: self.max_transactions,
-            shutdown_timeout: Duration::from_secs_f64(self.shutdown_timeout_secs),
+            shutdown_timeout,
             ..RustServerConfig::default()
         })
+    }
+}
+
+/// Immutable server counter snapshot.
+#[pyclass(frozen, skip_from_py_object, module = "rusty_modbus")]
+#[derive(Debug, Clone, Copy)]
+pub struct ServerMetrics {
+    #[pyo3(get)]
+    pub active_connections: usize,
+    #[pyo3(get)]
+    pub active_requests: usize,
+    #[pyo3(get)]
+    pub accepted_connections: usize,
+    #[pyo3(get)]
+    pub access_denied_connections: usize,
+    #[pyo3(get)]
+    pub connection_limit_rejections: usize,
+    #[pyo3(get)]
+    pub accept_errors: usize,
+}
+
+impl From<RustServerMetrics> for ServerMetrics {
+    fn from(metrics: RustServerMetrics) -> Self {
+        Self {
+            active_connections: metrics.active_connections,
+            active_requests: metrics.active_requests,
+            accepted_connections: metrics.accepted_connections,
+            access_denied_connections: metrics.access_denied_connections,
+            connection_limit_rejections: metrics.connection_limit_rejections,
+            accept_errors: metrics.accept_errors,
+        }
+    }
+}
+
+#[pymethods]
+impl ServerMetrics {
+    fn __repr__(&self) -> String {
+        format!(
+            "ServerMetrics(active_connections={}, active_requests={}, accepted_connections={}, \
+             access_denied_connections={}, connection_limit_rejections={}, accept_errors={})",
+            self.active_connections,
+            self.active_requests,
+            self.accepted_connections,
+            self.access_denied_connections,
+            self.connection_limit_rejections,
+            self.accept_errors,
+        )
     }
 }
 
@@ -563,11 +617,20 @@ impl ModbusServer {
         self.local_socket_addr().to_string()
     }
 
-    /// Stop accepting new connections.
-    fn stop(&self) {
-        match &self.inner {
+    /// Drain admitted requests or force cancellation at the configured deadline.
+    fn stop(&self, py: Python<'_>) -> &'static str {
+        let outcome = py.detach(|| match &self.inner {
             ServerInner::Memory(server) => self.runtime.block_on(server.stop()),
             ServerInner::Python(server) => self.runtime.block_on(server.stop()),
+        });
+        shutdown_outcome_name(outcome)
+    }
+
+    /// Return an immutable snapshot of server counters.
+    fn metrics(&self) -> ServerMetrics {
+        match &self.inner {
+            ServerInner::Memory(server) => server.metrics().into(),
+            ServerInner::Python(server) => server.metrics().into(),
         }
     }
 
@@ -579,16 +642,24 @@ impl ModbusServer {
     /// Sync context manager — exit (calls stop).
     fn __exit__(
         &self,
+        py: Python<'_>,
         _exc_type: &Bound<'_, PyAny>,
         _exc_val: &Bound<'_, PyAny>,
         _exc_tb: &Bound<'_, PyAny>,
     ) -> bool {
-        self.stop();
+        self.stop(py);
         false
     }
 
     fn __repr__(&self) -> String {
         format!("ModbusServer(local_addr='{}')", self.local_addr())
+    }
+}
+
+fn shutdown_outcome_name(outcome: RustShutdownOutcome) -> &'static str {
+    match outcome {
+        RustShutdownOutcome::Drained => "drained",
+        RustShutdownOutcome::Forced => "forced",
     }
 }
 

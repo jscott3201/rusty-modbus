@@ -169,6 +169,31 @@ stores only override what they support. The server crate maps to the
 first-party [physical RTU responder](conformance/ledger.md#profile-physical-rtu-responder),
 and TLS primitives do not compose a secured server on their own.
 
+`ServerConfig::validate` runs before bind and rejects zero
+`max_connections`, `max_transactions`, or `shutdown_timeout`. Values of
+`max_transactions` above 16 remain valid configuration, but the server does not
+enforce that field at runtime: each TCP connection processes requests
+sequentially.
+
+`ModbusServer::stop().await` seals listener and request admission and records
+one absolute deadline. Idle connections are signalled to exit and are joined. A
+request admitted before the seal may finish its handler and response send; a
+later frame on that connection is rejected. The supervisor drops the listener
+before waiting, returns `ShutdownOutcome::Drained` when all connection tasks
+finish, or aborts and joins the remainder before returning
+`ShutdownOutcome::Forced`. Concurrent and repeated calls receive the same result
+even if an earlier stop future was cancelled.
+
+`ModbusServer::metrics()` returns an immutable `ServerMetrics` snapshot with
+active connections and requests, accepted connections, access-control denials,
+connection-limit rejections, and accept errors. Accept failures use
+shutdown-interruptible exponential backoff from 10 milliseconds to 1 second.
+
+Tokio abort is cooperative. A datastore future or Python callback that does not
+yield can delay task termination beyond the configured deadline. Dropping a
+server requests a synchronous, non-waiting supervisor abort; it does not provide
+graceful completion or an immediate-rebind guarantee.
+
 The built-in `InMemoryStore` is thread-safe and optimized for common paths:
 
 - Coil and discrete-input tables are stored as packed byte-backed bit tables.
@@ -207,6 +232,7 @@ Public Python classes:
 | `ModbusClient` | Asyncio client. Methods return `Awaitable[...]`. |
 | `SyncModbusClient` | Blocking client with the same typed operation surface. |
 | `ServerConfig`, `StoreConfig` | Read-only server and store sizing configuration. |
+| `ServerMetrics` | Read-only server connection, request, rejection, and accept-error snapshot. |
 | `InMemoryStore` | Python-visible in-memory store for local servers. |
 | `ModbusServer` | Background Modbus/TCP server wrapper. |
 | `DeviceIdentification` | Result object for FC 0x2B / MEI 0x0E reads. |
@@ -218,6 +244,13 @@ is not a parity claim; unresolved surface differences are recorded under
 Both client classes expose synchronous `abort()` methods. Their context-manager
 exits still call graceful `shutdown`; `ClientConfig.shutdown_timeout_secs`
 controls that drain and defaults to 10 seconds.
+
+Python `ModbusServer.stop()` blocks without holding the GIL and returns the
+literal string `"drained"` or `"forced"`. `ModbusServer.metrics()` returns a
+read-only `ServerMetrics` object with the same fields as Rust. Server
+`shutdown_timeout_secs` must be finite and positive. Synchronous Python
+callbacks are not preempted while they are executing; a callback that does not
+return can delay forced shutdown beyond the deadline.
 
 The gateway and simulator are tracked separately under the
 [gateway](conformance/ledger.md#profile-gateway) and

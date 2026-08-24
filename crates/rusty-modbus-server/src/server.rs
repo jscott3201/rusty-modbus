@@ -1,7 +1,8 @@
-//! `ModbusServer` — async Modbus server with pluggable data store.
+//! `ModbusServer` TCP admission and sequential request execution.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
@@ -10,32 +11,44 @@ use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_types::{ExceptionCode, MAX_PDU_SIZE, MbapHeader, UnitId};
 use tokio::sync::watch;
+use tokio::task::{JoinError, JoinSet};
+use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
 use crate::config::{DeviceIdentification, ServerConfig};
 use crate::error::ServerError;
 use crate::handler;
+use crate::lifecycle::{ServerLifecycle, ServerMetrics, ShutdownOutcome};
 use crate::store::DataStore;
 
+const ACCEPT_BACKOFF_INITIAL: Duration = Duration::from_millis(10);
+const ACCEPT_BACKOFF_MAXIMUM: Duration = Duration::from_secs(1);
+
 /// Async Modbus server, generic over the data store implementation.
+///
+/// [`Self::stop`] closes listener admission, drains admitted sequential
+/// requests, and joins connection tasks. Dropping the server instead aborts its
+/// supervisor without waiting; `Drop` does not guarantee graceful completion or
+/// immediate rebinding of the listen address.
 pub struct ModbusServer<S: DataStore> {
     config: ServerConfig,
     store: Arc<S>,
     local_addr: SocketAddr,
-    shutdown_tx: watch::Sender<bool>,
-    accept_handle: Option<tokio::task::JoinHandle<()>>,
+    lifecycle: Arc<ServerLifecycle>,
 }
 
 impl<S: DataStore + 'static> ModbusServer<S> {
-    /// Create and start a new Modbus server.
-    ///
-    /// Binds to the configured address and begins accepting connections immediately.
+    /// Validate configuration, bind the listen address, and start the supervisor.
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::Bind`] if the address cannot be bound.
+    /// Returns [`ServerError::InvalidConfig`] before bind when a required limit
+    /// is zero. Returns [`ServerError::Bind`] if the validated address cannot be
+    /// bound.
     #[tracing::instrument(level = "debug", skip(config, store), fields(addr = %config.listen_addr, unit_id = config.unit_id.0))]
     pub async fn start(config: ServerConfig, store: Arc<S>) -> Result<Self, ServerError> {
+        config.validate()?;
+
         let tcp_config = TcpServerConfig {
             max_connections: config.max_connections,
             ..config.tcp_config.clone()
@@ -43,49 +56,53 @@ impl<S: DataStore + 'static> ModbusServer<S> {
 
         let listener = TcpServerListener::bind(config.listen_addr, tcp_config)
             .await
-            .map_err(|e| match e {
+            .map_err(|error| match error {
                 rusty_modbus_tcp::TransportError::Io(io) => ServerError::Bind(io),
                 other => ServerError::Transport(other),
             })?;
 
-        let local_addr = listener.local_addr().map_err(|e| match e {
+        let local_addr = listener.local_addr().map_err(|error| match error {
             rusty_modbus_tcp::TransportError::Io(io) => ServerError::Bind(io),
             other => ServerError::Transport(other),
         })?;
         info!(addr = %local_addr, unit_id = config.unit_id.0, "Modbus server listening");
 
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-        let server_unit_id = config.unit_id;
-        let server_store = Arc::clone(&store);
-        let server_device_id = config.device_id.clone();
-
-        let accept_handle = tokio::spawn(async move {
-            accept_loop(
-                listener,
-                server_unit_id,
-                server_store,
-                server_device_id,
-                shutdown_rx,
-            )
-            .await;
-        });
+        let lifecycle = ServerLifecycle::new(listener.metrics());
+        let supervisor = tokio::spawn(supervise(
+            listener,
+            config.unit_id,
+            Arc::clone(&store),
+            config.device_id.clone(),
+            Arc::clone(&lifecycle),
+            lifecycle.shutdown_receiver(),
+        ));
+        lifecycle.install_supervisor(supervisor);
 
         Ok(Self {
             config,
             store,
             local_addr,
-            shutdown_tx,
-            accept_handle: Some(accept_handle),
+            lifecycle,
         })
     }
 
-    /// Graceful shutdown: stop accepting, wait for in-flight, close connections.
-    pub async fn stop(&self) {
+    /// Stop admission and wait for the stable shutdown outcome.
+    ///
+    /// The first call records one absolute deadline. Concurrent and later calls
+    /// wait for or return the same outcome. Cancelling a caller does not cancel
+    /// the shutdown coordinator. At the deadline, Tokio aborts unfinished tasks
+    /// and the supervisor joins them before returning [`ShutdownOutcome::Forced`].
+    /// Tokio task abort is cooperative, so a future that does not yield can delay
+    /// completion beyond the deadline.
+    pub async fn stop(&self) -> ShutdownOutcome {
         info!(addr = %self.local_addr, "stopping Modbus server");
-        let _ = self.shutdown_tx.send(true);
-        // Give in-flight requests time to complete.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.lifecycle.shutdown(self.config.shutdown_timeout).await
+    }
+
+    /// Collect the current server counters.
+    #[must_use]
+    pub fn metrics(&self) -> ServerMetrics {
+        self.lifecycle.metrics()
     }
 
     /// Get a reference to the data store.
@@ -103,10 +120,7 @@ impl<S: DataStore + 'static> ModbusServer<S> {
 
 impl<S: DataStore> Drop for ModbusServer<S> {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(true);
-        if let Some(h) = self.accept_handle.take() {
-            h.abort();
-        }
+        self.lifecycle.abort_owned_tasks();
     }
 }
 
@@ -119,36 +133,105 @@ impl<S: DataStore> std::fmt::Debug for ModbusServer<S> {
     }
 }
 
-async fn accept_loop<S: DataStore + 'static>(
+async fn supervise<S: DataStore + 'static>(
     listener: TcpServerListener,
     unit_id: UnitId,
     store: Arc<S>,
     device_id: DeviceIdentification,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
-    loop {
+    lifecycle: Arc<ServerLifecycle>,
+    mut shutdown_rx: watch::Receiver<Option<Instant>>,
+) -> ShutdownOutcome {
+    let mut connections = JoinSet::new();
+    let mut backoff = AcceptBackoff::new();
+
+    let deadline = loop {
+        if let Some(deadline) = lifecycle.shutdown_deadline() {
+            break deadline;
+        }
+
         tokio::select! {
-            result = listener.accept() => {
-                if let Ok((sink, stream, addr, guard)) = result {
-                    debug!(peer_addr = %addr, "accepted Modbus server connection");
-                    let conn_store = Arc::clone(&store);
-                    let conn_device_id = device_id.clone();
-                    tokio::spawn(async move {
-                        handle_connection(sink, stream, addr, unit_id, conn_store, conn_device_id).await;
-                        drop(guard);
-                    });
-                } else if let Err(error) = result {
-                    warn!(error = %error, "Modbus server accept failed");
+            biased;
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() {
+                    warn!("Modbus server shutdown channel closed");
                 }
-                // Accept error could be transient; continue.
             }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    debug!("Modbus server accept loop received shutdown");
-                    break;
+            joined = connections.join_next(), if !connections.is_empty() => {
+                if let Some(result) = joined {
+                    report_connection_result(result);
+                }
+            }
+            result = listener.accept() => {
+                match result {
+                    Ok((sink, stream, peer_addr, guard)) => {
+                        backoff.reset();
+                        // This state read shares the seal lock, so an accepted
+                        // socket is either admitted before the seal or dropped.
+                        if lifecycle.shutdown_deadline().is_some() {
+                            drop((sink, stream, guard));
+                            continue;
+                        }
+                        debug!(peer_addr = %peer_addr, "accepted Modbus server connection");
+                        let connection_store = Arc::clone(&store);
+                        let connection_device_id = device_id.clone();
+                        let connection_lifecycle = Arc::clone(&lifecycle);
+                        connections.spawn(async move {
+                            let _guard = guard;
+                            handle_connection(
+                                sink,
+                                stream,
+                                peer_addr,
+                                unit_id,
+                                connection_store,
+                                connection_device_id,
+                                connection_lifecycle,
+                            )
+                            .await;
+                        });
+                    }
+                    Err(error) => {
+                        lifecycle.metrics_handle().record_accept_error();
+                        let delay = backoff.failure_delay();
+                        warn!(error = %error, ?delay, "Modbus server accept failed");
+                        let _ = backoff_interrupted(delay, &mut shutdown_rx).await;
+                    }
                 }
             }
         }
+    };
+
+    // Closing the listen socket precedes every connection-drain wait.
+    drop(listener);
+    drain_connections(&mut connections, deadline).await
+}
+
+async fn drain_connections(connections: &mut JoinSet<()>, deadline: Instant) -> ShutdownOutcome {
+    while !connections.is_empty() {
+        tokio::select! {
+            biased;
+            joined = connections.join_next() => {
+                if let Some(result) = joined {
+                    report_connection_result(result);
+                }
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                warn!(remaining = connections.len(), "Modbus server shutdown deadline elapsed");
+                connections.abort_all();
+                while let Some(result) = connections.join_next().await {
+                    report_connection_result(result);
+                }
+                return ShutdownOutcome::Forced;
+            }
+        }
+    }
+    ShutdownOutcome::Drained
+}
+
+fn report_connection_result(result: Result<(), JoinError>) {
+    if let Err(error) = result
+        && !error.is_cancelled()
+    {
+        warn!(%error, "Modbus server connection task failed");
     }
 }
 
@@ -159,8 +242,34 @@ async fn handle_connection<S: DataStore>(
     unit_id: UnitId,
     store: Arc<S>,
     device_id: DeviceIdentification,
+    lifecycle: Arc<ServerLifecycle>,
 ) {
-    while let Ok(frame) = stream.recv().await {
+    let mut shutdown_rx = lifecycle.shutdown_receiver();
+    loop {
+        if lifecycle.shutdown_deadline().is_some() {
+            break;
+        }
+
+        let frame = tokio::select! {
+            biased;
+            _ = shutdown_rx.changed() => None,
+            result = stream.recv() => match result {
+                Ok(frame) => Some(frame),
+                Err(error) => {
+                    trace!(peer_addr = %peer_addr, error = %error, "Modbus server receive ended");
+                    None
+                }
+            },
+        };
+        let Some(frame) = frame else {
+            break;
+        };
+
+        // Rechecking under the lifecycle lock closes the recv/watch race.
+        let Some(_request_guard) = lifecycle.admit_request() else {
+            break;
+        };
+
         let request_unit_id = UnitId(frame.unit_id());
         let pdu_len = frame.pdu.len();
         trace!(
@@ -170,12 +279,10 @@ async fn handle_connection<S: DataStore>(
             "received Modbus server request"
         );
 
-        // Check unit ID: accept if it matches, is broadcast (0x00), or is TCP direct (0xFF).
         if request_unit_id.0 != unit_id.0
             && !request_unit_id.is_broadcast()
             && !request_unit_id.is_tcp_device()
         {
-            // Not for us — discard silently.
             debug!(
                 peer_addr = %peer_addr,
                 request_unit_id = request_unit_id.0,
@@ -186,11 +293,10 @@ async fn handle_connection<S: DataStore>(
         }
 
         let txn_id = match frame.header {
-            FrameHeader::Mbap(h) => h.transaction_id.get(),
+            FrameHeader::Mbap(header) => header.transaction_id.get(),
             FrameHeader::Rtu { .. } => 0,
         };
 
-        // Process the request.
         if let Some(response_pdu) =
             handler::process_request(&frame.pdu, request_unit_id, store.as_ref(), &device_id).await
         {
@@ -200,13 +306,49 @@ async fn handle_connection<S: DataStore>(
             };
             if let Err(error) = sink.send(response_frame).await {
                 debug!(peer_addr = %peer_addr, txn_id, error = %error, "failed to send Modbus response");
-                break; // Connection lost.
+                break;
             }
             trace!(peer_addr = %peer_addr, txn_id, "sent Modbus server response");
         }
-        // If process_request returned None, it was a broadcast — no response.
     }
     debug!(peer_addr = %peer_addr, "Modbus server connection closed");
+}
+
+#[derive(Debug)]
+struct AcceptBackoff {
+    next: Duration,
+}
+
+impl AcceptBackoff {
+    fn new() -> Self {
+        Self {
+            next: ACCEPT_BACKOFF_INITIAL,
+        }
+    }
+
+    fn failure_delay(&mut self) -> Duration {
+        let delay = self.next;
+        self.next = self.next.saturating_mul(2).min(ACCEPT_BACKOFF_MAXIMUM);
+        delay
+    }
+
+    fn reset(&mut self) {
+        self.next = ACCEPT_BACKOFF_INITIAL;
+    }
+}
+
+async fn backoff_interrupted(
+    delay: Duration,
+    shutdown_rx: &mut watch::Receiver<Option<Instant>>,
+) -> bool {
+    if shutdown_rx.borrow().is_some() {
+        return true;
+    }
+    tokio::select! {
+        biased;
+        changed = shutdown_rx.changed() => changed.is_err() || shutdown_rx.borrow().is_some(),
+        () = tokio::time::sleep(delay) => false,
+    }
 }
 
 fn response_frame(txn_id: u16, unit_id: UnitId, response_pdu: Vec<u8>) -> Option<Frame> {
@@ -220,18 +362,21 @@ fn response_frame(txn_id: u16, unit_id: UnitId, response_pdu: Vec<u8>) -> Option
 }
 
 fn bounded_response_pdu(response_pdu: Vec<u8>) -> Option<Vec<u8>> {
-    let fc = response_pdu.first().copied()?;
+    let function_code = response_pdu.first().copied()?;
     if response_pdu.len() <= MAX_PDU_SIZE {
         return Some(response_pdu);
     }
 
     warn!(
-        function_code = fc,
+        function_code,
         pdu_len = response_pdu.len(),
         max_pdu_size = MAX_PDU_SIZE,
         "server response exceeded Modbus PDU limit"
     );
-    Some(vec![fc | 0x80, ExceptionCode::ServerDeviceFailure.code()])
+    Some(vec![
+        function_code | 0x80,
+        ExceptionCode::ServerDeviceFailure.code(),
+    ])
 }
 
 #[cfg(test)]
@@ -276,5 +421,31 @@ mod tests {
     #[test]
     fn response_frame_drops_empty_pdu() {
         assert!(response_frame(0, UnitId(1), Vec::new()).is_none());
+    }
+
+    #[test]
+    fn accept_backoff_caps_and_resets() {
+        let mut backoff = AcceptBackoff::new();
+        let delays: Vec<_> = (0..9).map(|_| backoff.failure_delay()).collect();
+        assert_eq!(
+            delays,
+            [10, 20, 40, 80, 160, 320, 640, 1_000, 1_000].map(Duration::from_millis)
+        );
+
+        backoff.reset();
+        assert_eq!(backoff.failure_delay(), ACCEPT_BACKOFF_INITIAL);
+    }
+
+    #[tokio::test]
+    async fn accept_backoff_is_interrupted_by_shutdown() {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(None);
+        let wait = tokio::spawn(async move {
+            backoff_interrupted(Duration::from_mins(1), &mut shutdown_rx).await
+        });
+        tokio::task::yield_now().await;
+
+        shutdown_tx.send_replace(Some(Instant::now()));
+
+        assert!(wait.await.unwrap());
     }
 }
