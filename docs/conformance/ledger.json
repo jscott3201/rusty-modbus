@@ -7,7 +7,7 @@
     "as_of": "2026-08-23",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 47
+    "test_count": 48
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -156,6 +156,7 @@
         "spec_constants",
         "spec_encode_validation",
         "spec_mbap_framing",
+        "spec_parser_resilience",
         "spec_response_encode"
       ],
       "evidence_gap": null,
@@ -217,9 +218,11 @@
           "path": "crates/rusty-modbus-codec/src/pdu.rs"
         }
       ],
-      "test_ids": [],
+      "test_ids": [
+        "spec_parser_resilience"
+      ],
       "evidence_gap": {
-        "detail": "No direct conformance test is mapped in the current inventory.",
+        "detail": "Fixed-seed FC03 properties cover field byte order; broader function-family property and fuzz coverage remains deferred.",
         "owner": "maintainers",
         "follow_up": "PR-003"
       },
@@ -489,6 +492,7 @@
         "spec_encode_validation",
         "spec_fc0f_write_coils",
         "spec_fc15_write_file",
+        "spec_parser_resilience",
         "spec_server_validation",
         "spec_validation"
       ],
@@ -559,6 +563,7 @@
         "spec_constants",
         "spec_encode_validation",
         "spec_fc10_write_registers",
+        "spec_parser_resilience",
         "spec_server_validation",
         "spec_validation"
       ],
@@ -1191,6 +1196,7 @@
         "spec_exceptions",
         "spec_fixed_pdu_lengths",
         "spec_handler_exceptions",
+        "spec_parser_resilience",
         "spec_response_encode"
       ],
       "evidence_gap": null,
@@ -1428,6 +1434,7 @@
         "spec_encode_validation",
         "spec_fc14_read_file",
         "spec_fc15_write_file",
+        "spec_parser_resilience",
         "spec_server_validation",
         "spec_validation"
       ],
@@ -1600,7 +1607,8 @@
       ],
       "test_ids": [
         "spec_header",
-        "spec_mbap_framing"
+        "spec_mbap_framing",
+        "spec_parser_resilience"
       ],
       "evidence_gap": null,
       "assessments": [
@@ -1650,7 +1658,8 @@
       ],
       "test_ids": [
         "spec_header",
-        "spec_mbap_framing"
+        "spec_mbap_framing",
+        "spec_parser_resilience"
       ],
       "evidence_gap": null,
       "assessments": [
@@ -1700,7 +1709,8 @@
       ],
       "test_ids": [
         "spec_header",
-        "spec_mbap_framing"
+        "spec_mbap_framing",
+        "spec_parser_resilience"
       ],
       "evidence_gap": null,
       "assessments": [
@@ -1749,7 +1759,8 @@
         }
       ],
       "test_ids": [
-        "spec_mbap_framing"
+        "spec_mbap_framing",
+        "spec_parser_resilience"
       ],
       "evidence_gap": null,
       "assessments": [
@@ -2252,6 +2263,7 @@
       ],
       "test_ids": [
         "spec_constants",
+        "spec_parser_resilience",
         "spec_rtu_framing"
       ],
       "evidence_gap": null,
@@ -2791,11 +2803,12 @@
         }
       ],
       "test_ids": [
+        "spec_parser_resilience",
         "spec_rtu_framing",
         "spec_rtu_transport"
       ],
       "evidence_gap": {
-        "detail": "No direct conformance test is mapped in the current inventory.",
+        "detail": "Fixed-seed chunk schedules cover unambiguous frames; boundary selection and recovery policy remain assigned to PR-104.",
         "owner": "maintainers",
         "follow_up": "PR-104"
       },
@@ -2827,6 +2840,7 @@
         }
       ],
       "test_ids": [
+        "spec_parser_resilience",
         "spec_rtu_framing"
       ],
       "evidence_gap": {
@@ -2863,6 +2877,7 @@
         }
       ],
       "test_ids": [
+        "spec_parser_resilience",
         "spec_rtu_framing"
       ],
       "evidence_gap": {
@@ -3419,10 +3434,11 @@
       "test_ids": [
         "spec_encode_validation",
         "spec_mbap_framing",
+        "spec_parser_resilience",
         "spec_rtu_framing"
       ],
       "evidence_gap": {
-        "detail": "Negative examples exist, but broad property and fuzz evidence is deferred.",
+        "detail": "Fixed-seed parser and stream-chunk properties are mapped; cargo-fuzz targets, corpus campaigns, and nightly scheduling remain deferred.",
         "owner": "maintainers",
         "follow_up": "PR-003"
       },
@@ -3431,19 +3447,19 @@
           "profile": "tcp-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
         },
         {
           "profile": "tcp-server",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
         },
         {
           "profile": "physical-rtu-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+          "reason": "Complete-frame RTU properties are present, but timing-state and open-ended fuzz evidence remain deferred."
         },
         {
           "profile": "physical-rtu-responder",
@@ -3455,25 +3471,25 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
         },
         {
           "profile": "modbus-security",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
         },
         {
           "profile": "simulator",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
         },
         {
           "profile": "rtu-over-tcp-extension",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Negative examples exist, but broad property and fuzz evidence is deferred."
+          "reason": "Fixed-seed stream-chunk properties are present, but boundary-policy and open-ended fuzz evidence remain deferred."
         }
       ]
     },
@@ -4101,6 +4117,28 @@
       "path": "crates/rusty-modbus-conformance/tests/spec_owned_response.rs",
       "requirement_ids": [
         "APP-013"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_parser_resilience",
+      "path": "crates/rusty-modbus-conformance/tests/spec_parser_resilience.rs",
+      "requirement_ids": [
+        "APP-001",
+        "APP-002",
+        "APP-006",
+        "APP-007",
+        "APP-016",
+        "APP-020",
+        "TCP-001",
+        "TCP-002",
+        "TCP-003",
+        "TCP-004",
+        "RTU-002",
+        "EXT-002",
+        "EXT-003",
+        "EXT-004",
+        "CONF-003"
       ],
       "category": null
     },
@@ -4961,17 +4999,18 @@
     },
     {
       "id": "F-024",
-      "title": "No property/fuzz harness was found for codecs, stream chunking, or timing state",
+      "title": "Parser property and fuzz evidence is incomplete",
       "priority": "P2",
       "confidence": "Evidence gap",
-      "status": "open",
+      "status": "mitigated",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-003"
       ],
       "requirement_ids": [
         "CONF-003"
-      ]
+      ],
+      "status_reason": "Fixed-seed PDU and stream-framing properties mitigate the stable evidence gap. Cargo-fuzz targets, retained corpus campaigns, and nightly scheduling remain in the second PR-003 split; physical RTU timing-state properties remain assigned to PR-102."
     },
     {
       "id": "F-025",

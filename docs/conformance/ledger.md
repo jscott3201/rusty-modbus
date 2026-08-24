@@ -12,7 +12,7 @@ This ledger reports repository-scoped evidence for named profiles. It does not s
 - Inventory date: `2026-08-23`
 - Review seed: Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency
 - Requirements: 70
-- Conformance test files: 47
+- Conformance test files: 48
 - Evidence in this seed records repository implementation and mappings; test-file existence does not prove execution.
 
 ## Evidence scale
@@ -56,7 +56,7 @@ Client requests and responses carried in MBAP frames over TCP.
 | ID | Requirement | Disposition | Evidence | Gap or deviation |
 |---|---|---|---|---|
 | [`APP-001`](#requirement-app-001) | The PDU does not exceed 253 bytes | `supported` | `implemented` | — |
-| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | No direct conformance test is mapped in the current inventory. |
+| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | Fixed-seed FC03 properties cover field byte order; broader function-family property and fuzz coverage remains deferred. |
 | [`APP-003`](#requirement-app-003) | Data addresses are zero-based unsigned 16-bit values | `supported` | `implemented` | — |
 | [`APP-004`](#requirement-app-004) | Read Coils and Read Discrete Inputs quantities are 1 through 2000 | `supported` | `implemented` | — |
 | [`APP-005`](#requirement-app-005) | Read Holding and Input Register quantities are 1 through 125 | `supported` | `implemented` | — |
@@ -86,7 +86,7 @@ Client requests and responses carried in MBAP frames over TCP.
 | [`TCP-014`](#requirement-tcp-014) | Priority and non-priority connection pools preserve configured-device priority | `supported` | `implemented` | — |
 | [`CONF-001`](#requirement-conf-001) | Public function and profile claims trace to implementation and tests | `supported` | `implemented` | This seed maps implementation and tests but records no executed-test evidence. |
 | [`CONF-002`](#requirement-conf-002) | Boundary and exception behavior has direct tests and mechanical requirement coverage | `compatibility-deviation` | `implemented` | The test suite has direct examples, but requirement-to-test completeness remains a follow-up. |
-| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Negative examples exist, but broad property and fuzz evidence is deferred. |
+| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred. |
 | [`CONF-005`](#requirement-conf-005) | Independent implementation evidence exists before interoperability is claimed | `unsupported` | `not-implemented` | No independent implementation or authorized tool evidence is recorded. |
 | [`CONF-006`](#requirement-conf-006) | Benchmark baselines record zero errors in a stable environment | `compatibility-deviation` | `implemented` | Benchmark code exists without a pinned stable-environment result artifact. |
 | [`CONF-007`](#requirement-conf-007) | Release documentation makes only named profile and evidence-threshold claims | `supported` | `implemented` | The ledger establishes claim authority; final release-claim audit remains outstanding. |
@@ -108,7 +108,7 @@ Server request processing and responses carried in MBAP frames over TCP.
 | ID | Requirement | Disposition | Evidence | Gap or deviation |
 |---|---|---|---|---|
 | [`APP-001`](#requirement-app-001) | The PDU does not exceed 253 bytes | `supported` | `implemented` | — |
-| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | No direct conformance test is mapped in the current inventory. |
+| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | Fixed-seed FC03 properties cover field byte order; broader function-family property and fuzz coverage remains deferred. |
 | [`APP-003`](#requirement-app-003) | Data addresses are zero-based unsigned 16-bit values | `supported` | `implemented` | — |
 | [`APP-004`](#requirement-app-004) | Read Coils and Read Discrete Inputs quantities are 1 through 2000 | `supported` | `implemented` | — |
 | [`APP-005`](#requirement-app-005) | Read Holding and Input Register quantities are 1 through 125 | `supported` | `implemented` | — |
@@ -137,7 +137,7 @@ Server request processing and responses carried in MBAP frames over TCP.
 | [`TCP-011`](#requirement-tcp-011) | Connection resources, idle handling, and shutdown are bounded | `compatibility-deviation` | `implemented` | Lifecycle controls exist without complete idle and half-open coverage. |
 | [`CONF-001`](#requirement-conf-001) | Public function and profile claims trace to implementation and tests | `supported` | `implemented` | This seed maps implementation and tests but records no executed-test evidence. |
 | [`CONF-002`](#requirement-conf-002) | Boundary and exception behavior has direct tests and mechanical requirement coverage | `compatibility-deviation` | `implemented` | The test suite has direct examples, but requirement-to-test completeness remains a follow-up. |
-| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Negative examples exist, but broad property and fuzz evidence is deferred. |
+| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred. |
 | [`CONF-005`](#requirement-conf-005) | Independent implementation evidence exists before interoperability is claimed | `unsupported` | `not-implemented` | No independent implementation or authorized tool evidence is recorded. |
 | [`CONF-006`](#requirement-conf-006) | Benchmark baselines record zero errors in a stable environment | `compatibility-deviation` | `implemented` | Benchmark code exists without a pinned stable-environment result artifact. |
 | [`CONF-007`](#requirement-conf-007) | Release documentation makes only named profile and evidence-threshold claims | `supported` | `implemented` | The ledger establishes claim authority; final release-claim audit remains outstanding. |
@@ -159,7 +159,7 @@ Client operation over a serial line with RTU framing and timing.
 | ID | Requirement | Disposition | Evidence | Gap or deviation |
 |---|---|---|---|---|
 | [`APP-001`](#requirement-app-001) | The PDU does not exceed 253 bytes | `supported` | `implemented` | — |
-| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | No direct conformance test is mapped in the current inventory. |
+| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | Fixed-seed FC03 properties cover field byte order; broader function-family property and fuzz coverage remains deferred. |
 | [`APP-003`](#requirement-app-003) | Data addresses are zero-based unsigned 16-bit values | `supported` | `implemented` | — |
 | [`APP-004`](#requirement-app-004) | Read Coils and Read Discrete Inputs quantities are 1 through 2000 | `supported` | `implemented` | — |
 | [`APP-005`](#requirement-app-005) | Read Holding and Input Register quantities are 1 through 125 | `supported` | `implemented` | — |
@@ -191,7 +191,7 @@ Client operation over a serial line with RTU framing and timing.
 | [`RTU-011`](#requirement-rtu-011) | RTU broadcast writes do not wait for a response | `supported` | `implemented` | — |
 | [`CONF-001`](#requirement-conf-001) | Public function and profile claims trace to implementation and tests | `supported` | `implemented` | This seed maps implementation and tests but records no executed-test evidence. |
 | [`CONF-002`](#requirement-conf-002) | Boundary and exception behavior has direct tests and mechanical requirement coverage | `compatibility-deviation` | `implemented` | The test suite has direct examples, but requirement-to-test completeness remains a follow-up. |
-| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Negative examples exist, but broad property and fuzz evidence is deferred. |
+| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Complete-frame RTU properties are present, but timing-state and open-ended fuzz evidence remain deferred. |
 | [`CONF-004`](#requirement-conf-004) | Physical RTU is verified under chunking, timing, noise, and turnaround conditions | `unsupported` | `not-implemented` | Physical serial timing, noise, and turnaround verification is incomplete. |
 | [`CONF-005`](#requirement-conf-005) | Independent implementation evidence exists before interoperability is claimed | `unsupported` | `not-implemented` | No independent implementation or authorized tool evidence is recorded. |
 | [`CONF-006`](#requirement-conf-006) | Benchmark baselines record zero errors in a stable environment | `compatibility-deviation` | `implemented` | Benchmark code exists without a pinned stable-environment result artifact. |
@@ -268,7 +268,7 @@ TCP request routing to configured RTU-over-TCP backends; no physical serial gate
 | ID | Requirement | Disposition | Evidence | Gap or deviation |
 |---|---|---|---|---|
 | [`APP-001`](#requirement-app-001) | The PDU does not exceed 253 bytes | `supported` | `implemented` | — |
-| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | No direct conformance test is mapped in the current inventory. |
+| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | Fixed-seed FC03 properties cover field byte order; broader function-family property and fuzz coverage remains deferred. |
 | [`APP-003`](#requirement-app-003) | Data addresses are zero-based unsigned 16-bit values | `supported` | `implemented` | — |
 | [`APP-004`](#requirement-app-004) | Read Coils and Read Discrete Inputs quantities are 1 through 2000 | `supported` | `implemented` | — |
 | [`APP-005`](#requirement-app-005) | Read Holding and Input Register quantities are 1 through 125 | `supported` | `implemented` | — |
@@ -316,7 +316,7 @@ TCP request routing to configured RTU-over-TCP backends; no physical serial gate
 | [`RTU-011`](#requirement-rtu-011) | RTU broadcast writes do not wait for a response | `supported` | `implemented` | — |
 | [`CONF-001`](#requirement-conf-001) | Public function and profile claims trace to implementation and tests | `supported` | `implemented` | This seed maps implementation and tests but records no executed-test evidence. |
 | [`CONF-002`](#requirement-conf-002) | Boundary and exception behavior has direct tests and mechanical requirement coverage | `compatibility-deviation` | `implemented` | The test suite has direct examples, but requirement-to-test completeness remains a follow-up. |
-| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Negative examples exist, but broad property and fuzz evidence is deferred. |
+| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred. |
 | [`CONF-004`](#requirement-conf-004) | Physical RTU is verified under chunking, timing, noise, and turnaround conditions | `unsupported` | `not-implemented` | Physical serial timing, noise, and turnaround verification is incomplete. |
 | [`CONF-005`](#requirement-conf-005) | Independent implementation evidence exists before interoperability is claimed | `unsupported` | `not-implemented` | No independent implementation or authorized tool evidence is recorded. |
 | [`CONF-006`](#requirement-conf-006) | Benchmark baselines record zero errors in a stable environment | `compatibility-deviation` | `implemented` | Benchmark code exists without a pinned stable-environment result artifact. |
@@ -350,7 +350,7 @@ TLS transport primitives and role metadata; mutual certificate authentication is
 | [`SEC-010`](#requirement-sec-010) | Certificate issuance, revocation, and renewal lifecycle is documented and tested | `compatibility-deviation` | `implemented` | Static certificate loading exists without a complete issuance, revocation, rotation, and renewal lifecycle. |
 | [`CONF-001`](#requirement-conf-001) | Public function and profile claims trace to implementation and tests | `supported` | `implemented` | This seed maps implementation and tests but records no executed-test evidence. |
 | [`CONF-002`](#requirement-conf-002) | Boundary and exception behavior has direct tests and mechanical requirement coverage | `compatibility-deviation` | `implemented` | The test suite has direct examples, but requirement-to-test completeness remains a follow-up. |
-| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Negative examples exist, but broad property and fuzz evidence is deferred. |
+| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred. |
 | [`CONF-005`](#requirement-conf-005) | Independent implementation evidence exists before interoperability is claimed | `unsupported` | `not-implemented` | No independent implementation or authorized tool evidence is recorded. |
 | [`CONF-006`](#requirement-conf-006) | Benchmark baselines record zero errors in a stable environment | `compatibility-deviation` | `implemented` | Benchmark code exists without a pinned stable-environment result artifact. |
 | [`CONF-007`](#requirement-conf-007) | Release documentation makes only named profile and evidence-threshold claims | `supported` | `implemented` | The ledger establishes claim authority; final release-claim audit remains outstanding. |
@@ -372,7 +372,7 @@ The simulator's TCP server and data model, including explicit parsed-but-inert c
 | ID | Requirement | Disposition | Evidence | Gap or deviation |
 |---|---|---|---|---|
 | [`APP-001`](#requirement-app-001) | The PDU does not exceed 253 bytes | `supported` | `implemented` | — |
-| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | No direct conformance test is mapped in the current inventory. |
+| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | Fixed-seed FC03 properties cover field byte order; broader function-family property and fuzz coverage remains deferred. |
 | [`APP-003`](#requirement-app-003) | Data addresses are zero-based unsigned 16-bit values | `supported` | `implemented` | — |
 | [`APP-004`](#requirement-app-004) | Read Coils and Read Discrete Inputs quantities are 1 through 2000 | `supported` | `implemented` | — |
 | [`APP-005`](#requirement-app-005) | Read Holding and Input Register quantities are 1 through 125 | `supported` | `implemented` | — |
@@ -401,7 +401,7 @@ The simulator's TCP server and data model, including explicit parsed-but-inert c
 | [`TCP-011`](#requirement-tcp-011) | Connection resources, idle handling, and shutdown are bounded | `compatibility-deviation` | `implemented` | Lifecycle controls exist without complete idle and half-open coverage. |
 | [`CONF-001`](#requirement-conf-001) | Public function and profile claims trace to implementation and tests | `supported` | `implemented` | This seed maps implementation and tests but records no executed-test evidence. |
 | [`CONF-002`](#requirement-conf-002) | Boundary and exception behavior has direct tests and mechanical requirement coverage | `compatibility-deviation` | `implemented` | The test suite has direct examples, but requirement-to-test completeness remains a follow-up. |
-| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Negative examples exist, but broad property and fuzz evidence is deferred. |
+| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred. |
 | [`CONF-005`](#requirement-conf-005) | Independent implementation evidence exists before interoperability is claimed | `unsupported` | `not-implemented` | No independent implementation or authorized tool evidence is recorded. |
 | [`CONF-007`](#requirement-conf-007) | Release documentation makes only named profile and evidence-threshold claims | `supported` | `implemented` | The ledger establishes claim authority; final release-claim audit remains outstanding. |
 | [`CONF-008`](#requirement-conf-008) | Rust, Python, CLI, and simulator surfaces have parity or state non-parity | `compatibility-deviation` | `implemented` | The Python, CLI, and simulator surfaces intentionally expose a narrower capability set. |
@@ -422,7 +422,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 | ID | Requirement | Disposition | Evidence | Gap or deviation |
 |---|---|---|---|---|
 | [`APP-001`](#requirement-app-001) | The PDU does not exceed 253 bytes | `supported` | `implemented` | — |
-| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | No direct conformance test is mapped in the current inventory. |
+| [`APP-002`](#requirement-app-002) | Multi-byte quantities use big-endian byte order | `supported` | `implemented` | Fixed-seed FC03 properties cover field byte order; broader function-family property and fuzz coverage remains deferred. |
 | [`APP-003`](#requirement-app-003) | Data addresses are zero-based unsigned 16-bit values | `supported` | `implemented` | — |
 | [`APP-004`](#requirement-app-004) | Read Coils and Read Discrete Inputs quantities are 1 through 2000 | `supported` | `implemented` | — |
 | [`APP-005`](#requirement-app-005) | Read Holding and Input Register quantities are 1 through 125 | `supported` | `implemented` | — |
@@ -441,12 +441,12 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 | [`APP-020`](#requirement-app-020) | File Record subrequests use reference type 0x06 and internally consistent byte counts | `supported` | `implemented` | — |
 | [`APP-021`](#requirement-app-021) | Device Identification continuation uses the response's next-object identifier | `supported` | `implemented` | — |
 | [`EXT-001`](#requirement-ext-001) | RTU-over-TCP is labeled as a project extension without MBAP or physical-line guarantees | `supported` | `implemented` | No direct conformance test is mapped in the current inventory. |
-| [`EXT-002`](#requirement-ext-002) | TCP fragmentation and coalescing do not break tunneled RTU frames | `supported` | `implemented` | No direct conformance test is mapped in the current inventory. |
+| [`EXT-002`](#requirement-ext-002) | TCP fragmentation and coalescing do not break tunneled RTU frames | `supported` | `implemented` | Fixed-seed chunk schedules cover unambiguous frames; boundary selection and recovery policy remain assigned to PR-104. |
 | [`EXT-003`](#requirement-ext-003) | Frame-boundary selection does not accept an unintended valid CRC prefix | `compatibility-deviation` | `implemented` | The decoder accepts the first valid CRC prefix among candidate frame lengths. |
 | [`EXT-004`](#requirement-ext-004) | Maximum-size corrupt buffers make progress without retaining input indefinitely | `compatibility-deviation` | `implemented` | An exact-256-byte CRC miss waits for another byte before making error progress. |
 | [`CONF-001`](#requirement-conf-001) | Public function and profile claims trace to implementation and tests | `supported` | `implemented` | This seed maps implementation and tests but records no executed-test evidence. |
 | [`CONF-002`](#requirement-conf-002) | Boundary and exception behavior has direct tests and mechanical requirement coverage | `compatibility-deviation` | `implemented` | The test suite has direct examples, but requirement-to-test completeness remains a follow-up. |
-| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Negative examples exist, but broad property and fuzz evidence is deferred. |
+| [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `compatibility-deviation` | `implemented` | Fixed-seed stream-chunk properties are present, but boundary-policy and open-ended fuzz evidence remain deferred. |
 | [`CONF-005`](#requirement-conf-005) | Independent implementation evidence exists before interoperability is claimed | `unsupported` | `not-implemented` | No independent implementation or authorized tool evidence is recorded. |
 | [`CONF-007`](#requirement-conf-007) | Release documentation makes only named profile and evidence-threshold claims | `supported` | `implemented` | The ledger establishes claim authority; final release-claim audit remains outstanding. |
 | [`CONF-008`](#requirement-conf-008) | Rust, Python, CLI, and simulator surfaces have parity or state non-parity | `compatibility-deviation` | `implemented` | The Python, CLI, and simulator surfaces intentionally expose a narrower capability set. |
@@ -458,9 +458,9 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 | ID | Strength | Source | Implementation | Tests / gap |
 |---|---|---|---|---|
 <a id="requirement-app-001"></a>
-| `APP-001` — The PDU does not exceed 253 bytes | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §4.1, MODBUS PDU size constraint | `crates/rusty-modbus-types/src/constants.rs`; `crates/rusty-modbus-frame/src/mbap.rs` | `spec_constants`, `spec_encode_validation`, `spec_mbap_framing`, `spec_response_encode` |
+| `APP-001` — The PDU does not exceed 253 bytes | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §4.1, MODBUS PDU size constraint | `crates/rusty-modbus-types/src/constants.rs`; `crates/rusty-modbus-frame/src/mbap.rs` | `spec_constants`, `spec_encode_validation`, `spec_mbap_framing`, `spec_parser_resilience`, `spec_response_encode` |
 <a id="requirement-app-002"></a>
-| `APP-002` — Multi-byte quantities use big-endian byte order | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §4.2, MODBUS data encoding | `crates/rusty-modbus-codec/src/decode.rs`; `crates/rusty-modbus-codec/src/pdu.rs` | Gap: No direct conformance test is mapped in the current inventory. (PR-003) |
+| `APP-002` — Multi-byte quantities use big-endian byte order | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §4.2, MODBUS data encoding | `crates/rusty-modbus-codec/src/decode.rs`; `crates/rusty-modbus-codec/src/pdu.rs` | `spec_parser_resilience`; Gap: Fixed-seed FC03 properties cover field byte order; broader function-family property and fuzz coverage remains deferred. (PR-003) |
 <a id="requirement-app-003"></a>
 | `APP-003` — Data addresses are zero-based unsigned 16-bit values | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §4.4, MODBUS data model addressing | `crates/rusty-modbus-types/src/model.rs` | `spec_types` |
 <a id="requirement-app-004"></a>
@@ -468,9 +468,9 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-app-005"></a>
 | `APP-005` — Read Holding and Input Register quantities are 1 through 125 | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.3 and §6.4, quantity fields | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_constants`, `spec_fc03_read_holding`, `spec_fc04_read_input`, `spec_server_store_counts`, `spec_server_validation`, `spec_validation` |
 <a id="requirement-app-006"></a>
-| `APP-006` — Write Multiple Coils quantities are 1 through 1968 with matching packed byte count | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.11, request quantity and byte count | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_byte_count_semantic`, `spec_constants`, `spec_encode_validation`, `spec_fc0f_write_coils`, `spec_fc15_write_file`, `spec_server_validation`, `spec_validation` |
+| `APP-006` — Write Multiple Coils quantities are 1 through 1968 with matching packed byte count | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.11, request quantity and byte count | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_byte_count_semantic`, `spec_constants`, `spec_encode_validation`, `spec_fc0f_write_coils`, `spec_fc15_write_file`, `spec_parser_resilience`, `spec_server_validation`, `spec_validation` |
 <a id="requirement-app-007"></a>
-| `APP-007` — Write Multiple Registers quantities are 1 through 123 with matching byte count | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.12, request quantity and byte count | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_byte_count_semantic`, `spec_constants`, `spec_encode_validation`, `spec_fc10_write_registers`, `spec_server_validation`, `spec_validation` |
+| `APP-007` — Write Multiple Registers quantities are 1 through 123 with matching byte count | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.12, request quantity and byte count | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_byte_count_semantic`, `spec_constants`, `spec_encode_validation`, `spec_fc10_write_registers`, `spec_parser_resilience`, `spec_server_validation`, `spec_validation` |
 <a id="requirement-app-008"></a>
 | `APP-008` — Read/Write Multiple Registers limits writes to 1 through 121 and reads to 1 through 125 | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.17, read and write quantity fields | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_constants`, `spec_fc17_read_write_regs`, `spec_server_validation`, `spec_validation` |
 <a id="requirement-app-009"></a>
@@ -488,7 +488,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-app-015"></a>
 | `APP-015` — Multiple-write success responses echo the starting address and quantity | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.11, §6.12, and §6.17, normal response | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_fc0f_write_coils`, `spec_fc10_write_registers`, `spec_fc15_write_file`, `spec_fc17_read_write_regs` |
 <a id="requirement-app-016"></a>
-| `APP-016` — Exception responses set the function-code high bit and carry a defined exception code | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §7, MODBUS exception responses | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_exceptions`, `spec_fixed_pdu_lengths`, `spec_handler_exceptions`, `spec_response_encode` |
+| `APP-016` — Exception responses set the function-code high bit and carry a defined exception code | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §7, MODBUS exception responses | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_exceptions`, `spec_fixed_pdu_lengths`, `spec_handler_exceptions`, `spec_parser_resilience`, `spec_response_encode` |
 <a id="requirement-app-017"></a>
 | `APP-017` — Unsupported function codes receive Illegal Function unless an extension defines them | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §5, server action for an unsupported function code; §7, exception code 01 | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_fc07_exception_status`, `spec_fc08_diagnostics`, `spec_fc0b_event_counter`, `spec_fc0c_event_log`, `spec_fc11_report_server`, `spec_handler_exceptions`, `spec_server_function_codes`, `spec_server_handler`, `spec_server_validation` |
 <a id="requirement-app-018"></a>
@@ -496,7 +496,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-app-019"></a>
 | `APP-019` — Read/Write Multiple Registers preserves one-request write-before-read semantics under concurrency | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.17, write operation performed before the read | `crates/rusty-modbus-server/src/handler.rs`; `crates/rusty-modbus-server/src/store/mod.rs` | `spec_fc16_mask_write`, `spec_fc17_read_write_regs`, `spec_server_handler`; Gap: The data-store contract does not require atomic compound operations under concurrent requests. (PR-303) |
 <a id="requirement-app-020"></a>
-| `APP-020` — File Record subrequests use reference type 0x06 and internally consistent byte counts | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.14 and §6.15, subrequest reference type and byte counts | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_byte_count_semantic`, `spec_encode_validation`, `spec_fc14_read_file`, `spec_fc15_write_file`, `spec_server_validation`, `spec_validation` |
+| `APP-020` — File Record subrequests use reference type 0x06 and internally consistent byte counts | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.14 and §6.15, subrequest reference type and byte counts | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_byte_count_semantic`, `spec_encode_validation`, `spec_fc14_read_file`, `spec_fc15_write_file`, `spec_parser_resilience`, `spec_server_validation`, `spec_validation` |
 <a id="requirement-app-021"></a>
 | `APP-021` — Device Identification continuation uses the response's next-object identifier | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.21, Read Device Identification continuation fields | `crates/rusty-modbus-client/src/methods/device_id.rs`; `crates/rusty-modbus-server/src/device_id.rs` | `spec_fc2b_mei`, `spec_server_device_id` |
 <a id="requirement-app-022"></a>
@@ -507,13 +507,13 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 | ID | Strength | Source | Implementation | Tests / gap |
 |---|---|---|---|---|
 <a id="requirement-tcp-001"></a>
-| `TCP-001` — The seven-byte MBAP header contains transaction, protocol, length, and Unit Identifier fields | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3, MBAP header fields and size | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-tcp/src/transport.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_header`, `spec_mbap_framing` |
+| `TCP-001` — The seven-byte MBAP header contains transaction, protocol, length, and Unit Identifier fields | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3, MBAP header fields and size | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-tcp/src/transport.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_header`, `spec_mbap_framing`, `spec_parser_resilience` |
 <a id="requirement-tcp-002"></a>
-| `TCP-002` — The MBAP protocol identifier is zero for Modbus | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3, Protocol Identifier field | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-tcp/src/transport.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_header`, `spec_mbap_framing` |
+| `TCP-002` — The MBAP protocol identifier is zero for Modbus | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3, Protocol Identifier field | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-tcp/src/transport.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_header`, `spec_mbap_framing`, `spec_parser_resilience` |
 <a id="requirement-tcp-003"></a>
-| `TCP-003` — The MBAP length counts Unit Identifier plus PDU and bounds the ADU to 260 bytes | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.2 and §3.1.3, Length field and maximum frame size | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-tcp/src/transport.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_header`, `spec_mbap_framing` |
+| `TCP-003` — The MBAP length counts Unit Identifier plus PDU and bounds the ADU to 260 bytes | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.2 and §3.1.3, Length field and maximum frame size | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-tcp/src/transport.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_header`, `spec_mbap_framing`, `spec_parser_resilience` |
 <a id="requirement-tcp-004"></a>
-| `TCP-004` — TCP fragmentation and coalescing do not change ADU boundaries | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.2, message framing over a TCP byte stream | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-tcp/src/transport.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_mbap_framing` |
+| `TCP-004` — TCP fragmentation and coalescing do not change ADU boundaries | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.2, message framing over a TCP byte stream | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-tcp/src/transport.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_mbap_framing`, `spec_parser_resilience` |
 <a id="requirement-tcp-005"></a>
 | `TCP-005` — A server copies the request Transaction Identifier into its response | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3 and §4.4.1, Transaction Identifier pairing | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-server/src/server.rs` | `spec_client_server`, `spec_mbap_framing`, `spec_tcp_transport` |
 <a id="requirement-tcp-006"></a>
@@ -542,7 +542,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-rtu-001"></a>
 | `RTU-001` — Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.2, MODBUS addressing rules | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_broadcast`, `spec_rtu_client`; Gap: Reserved serial Unit IDs are not rejected consistently. (PR-101) |
 <a id="requirement-rtu-002"></a>
-| `RTU-002` — An RTU ADU does not exceed 256 bytes | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.5.1.1, RTU frame size | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_constants`, `spec_rtu_framing` |
+| `RTU-002` — An RTU ADU does not exceed 256 bytes | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.5.1.1, RTU frame size | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_constants`, `spec_parser_resilience`, `spec_rtu_framing` |
 <a id="requirement-rtu-003"></a>
 | `RTU-003` — RTU CRC uses the specified polynomial and transmits the low-order byte first | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.5.1.2 and Appendix B, CRC generation and order | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_crc16`, `spec_rtu_framing` |
 <a id="requirement-rtu-004"></a>
@@ -571,11 +571,11 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-ext-001"></a>
 | `EXT-001` — RTU-over-TCP is labeled as a project extension without MBAP or physical-line guarantees | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Project-profile and extension classification | `crates/rusty-modbus-frame/src/rtu_tcp.rs`; `crates/rusty-modbus-rtu/src/rtu_tcp.rs` | Gap: No direct conformance test is mapped in the current inventory. (PR-104, PR-704) |
 <a id="requirement-ext-002"></a>
-| `EXT-002` — TCP fragmentation and coalescing do not break tunneled RTU frames | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Project-profile and extension classification, extension framing | `crates/rusty-modbus-frame/src/rtu_tcp.rs`; `crates/rusty-modbus-rtu/src/rtu_tcp.rs` | `spec_rtu_framing`, `spec_rtu_transport`; Gap: No direct conformance test is mapped in the current inventory. (PR-104) |
+| `EXT-002` — TCP fragmentation and coalescing do not break tunneled RTU frames | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Project-profile and extension classification, extension framing | `crates/rusty-modbus-frame/src/rtu_tcp.rs`; `crates/rusty-modbus-rtu/src/rtu_tcp.rs` | `spec_parser_resilience`, `spec_rtu_framing`, `spec_rtu_transport`; Gap: Fixed-seed chunk schedules cover unambiguous frames; boundary selection and recovery policy remain assigned to PR-104. (PR-104) |
 <a id="requirement-ext-003"></a>
-| `EXT-003` — Frame-boundary selection does not accept an unintended valid CRC prefix | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Project-profile and extension classification | `crates/rusty-modbus-frame/src/rtu_tcp.rs`; `crates/rusty-modbus-rtu/src/rtu_tcp.rs` | `spec_rtu_framing`; Gap: The codec accepts the first valid CRC prefix among candidate lengths. (PR-104) |
+| `EXT-003` — Frame-boundary selection does not accept an unintended valid CRC prefix | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Project-profile and extension classification | `crates/rusty-modbus-frame/src/rtu_tcp.rs`; `crates/rusty-modbus-rtu/src/rtu_tcp.rs` | `spec_parser_resilience`, `spec_rtu_framing`; Gap: The codec accepts the first valid CRC prefix among candidate lengths. (PR-104) |
 <a id="requirement-ext-004"></a>
-| `EXT-004` — Maximum-size corrupt buffers make progress without retaining input indefinitely | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Project-profile and extension classification; § Test inventory | `crates/rusty-modbus-frame/src/rtu_tcp.rs`; `crates/rusty-modbus-rtu/src/rtu_tcp.rs` | `spec_rtu_framing`; Gap: An exact-256-byte CRC miss waits for another byte before returning an error. (PR-104) |
+| `EXT-004` — Maximum-size corrupt buffers make progress without retaining input indefinitely | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Project-profile and extension classification; § Test inventory | `crates/rusty-modbus-frame/src/rtu_tcp.rs`; `crates/rusty-modbus-rtu/src/rtu_tcp.rs` | `spec_parser_resilience`, `spec_rtu_framing`; Gap: An exact-256-byte CRC miss waits for another byte before returning an error. (PR-104) |
 
 ### Modbus/TCP Security
 
@@ -611,7 +611,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-conf-002"></a>
 | `CONF-002` — Boundary and exception behavior has direct tests and mechanical requirement coverage | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Test inventory | `docs/conformance/schema.md`; `scripts/conformance_ledger.py`; `crates/rusty-modbus-conformance/tests/spec_client_server.rs` | `spec_client_server`, `spec_server_function_codes`; Gap: Direct tests exist for many boundaries, but mechanical clause coverage is incomplete. (PR-001, PR-703) |
 <a id="requirement-conf-003"></a>
-| `CONF-003` — Parsers have malformed-input and arbitrary stream-chunking evidence | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Test inventory, hostile and malformed input evidence | `crates/rusty-modbus-codec/src/decode.rs`; `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-frame/src/rtu.rs` | `spec_encode_validation`, `spec_mbap_framing`, `spec_rtu_framing`; Gap: Negative examples exist, but broad property and fuzz evidence is deferred. (PR-003) |
+| `CONF-003` — Parsers have malformed-input and arbitrary stream-chunking evidence | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Test inventory, hostile and malformed input evidence | `crates/rusty-modbus-codec/src/decode.rs`; `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-frame/src/rtu.rs` | `spec_encode_validation`, `spec_mbap_framing`, `spec_parser_resilience`, `spec_rtu_framing`; Gap: Fixed-seed parser and stream-chunk properties are mapped; cargo-fuzz targets, corpus campaigns, and nightly scheduling remain deferred. (PR-003) |
 <a id="requirement-conf-004"></a>
 | `CONF-004` — Physical RTU is verified under chunking, timing, noise, and turnaround conditions | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Evidence and claims, profile-scoped verification | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | Gap: Physical serial timing, noise, and turnaround verification is incomplete. (PR-102, PR-103, PR-702) |
 <a id="requirement-conf-005"></a>
@@ -661,6 +661,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `spec_header` | `crates/rusty-modbus-conformance/tests/spec_header.rs` | `TCP-001`, `TCP-002`, `TCP-003` |
 | `spec_mbap_framing` | `crates/rusty-modbus-conformance/tests/spec_mbap_framing.rs` | `APP-001`, `CONF-003`, `TCP-001`, `TCP-002`, `TCP-003`, `TCP-004`, `TCP-005` |
 | `spec_owned_response` | `crates/rusty-modbus-conformance/tests/spec_owned_response.rs` | `APP-013` |
+| `spec_parser_resilience` | `crates/rusty-modbus-conformance/tests/spec_parser_resilience.rs` | `APP-001`, `APP-002`, `APP-006`, `APP-007`, `APP-016`, `APP-020`, `TCP-001`, `TCP-002`, `TCP-003`, `TCP-004`, `RTU-002`, `EXT-002`, `EXT-003`, `EXT-004`, `CONF-003` |
 | `spec_pool` | `crates/rusty-modbus-conformance/tests/spec_pool.rs` | `TCP-013`, `TCP-014` |
 | `spec_response_encode` | `crates/rusty-modbus-conformance/tests/spec_response_encode.rs` | `APP-001`, `APP-010`, `APP-011`, `APP-012`, `APP-016` |
 | `spec_rtu_client` | `crates/rusty-modbus-conformance/tests/spec_rtu_client.rs` | `RTU-001`, `RTU-010`, `RTU-011` |
@@ -704,7 +705,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `F-021` | `P2` | Verified source finding | `open` | maintainers | `PR-701` | `CONF-008` | No runnable YAML simulator command is shipped | — |
 | `F-022` | `P2` | Verified source finding / evidence gap | `open` | maintainers | `PR-702` | `RTU-012`, `CONF-004` | No first-party serial RTU responder exists for master testing | — |
 | `F-023` | `P2` | Evidence gap | `closed` | maintainers | `PR-001` | `CONF-001` | Conformance tests are broad but not linked to a maintained normative ledger | Closed by the maintained canonical ledger and validator introduced in PR-001. |
-| `F-024` | `P2` | Evidence gap | `open` | maintainers | `PR-003` | `CONF-003` | No property/fuzz harness was found for codecs, stream chunking, or timing state | — |
+| `F-024` | `P2` | Evidence gap | `mitigated` | maintainers | `PR-003` | `CONF-003` | Parser property and fuzz evidence is incomplete | Fixed-seed PDU and stream-framing properties mitigate the stable evidence gap. Cargo-fuzz targets, retained corpus campaigns, and nightly scheduling remain in the second PR-003 split; physical RTU timing-state properties remain assigned to PR-102. |
 | `F-025` | `P2` | Evidence gap | `open` | maintainers | `PR-002`, `PR-601–604` | `CONF-006` | Existing performance report is strong but lacks machine-readable regression budgets and key production topologies | — |
 | `F-026` | `P2` | Evidence gap | `open` | maintainers | `PR-703` | `CONF-005` | Independent implementation/tool interoperability evidence is not part of the release gate | — |
 | `F-027` | `P2` | Claim/evidence gap | `mitigated` | maintainers | `PR-704` | `CONF-007` | Public “complete/conformant” language can outrun the actual evidence level and formal certification status | Claim authority is established; the final release wording audit remains assigned to PR-704. |
