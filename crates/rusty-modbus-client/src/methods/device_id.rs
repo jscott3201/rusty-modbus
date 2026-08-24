@@ -27,6 +27,10 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         &self,
         unit_id: UnitId,
     ) -> Result<OwnedDeviceIdentification, ClientError> {
+        if unit_id.is_broadcast() {
+            return Err(ClientError::BroadcastReadNotAllowed);
+        }
+
         let mut result = OwnedDeviceIdentification::default();
         let mut next_object_id: u8 = 0x00;
         let mut response_pages: u8 = 0;
