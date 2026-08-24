@@ -3429,6 +3429,30 @@
         },
         {
           "path": "crates/rusty-modbus-frame/src/rtu.rs"
+        },
+        {
+          "path": "fuzz/fuzz_targets/pdu_decode.rs"
+        },
+        {
+          "path": "fuzz/fuzz_targets/mbap_stream.rs"
+        },
+        {
+          "path": "fuzz/fuzz_targets/rtu_frame.rs"
+        },
+        {
+          "path": "fuzz/fuzz_targets/rtu_tcp_stream.rs"
+        },
+        {
+          "path": "fuzz/fuzz_targets/support.rs"
+        },
+        {
+          "path": "fuzz/corpus/manifest.json"
+        },
+        {
+          "path": "scripts/fuzz.py"
+        },
+        {
+          "path": ".github/workflows/fuzz.yml"
         }
       ],
       "test_ids": [
@@ -3438,28 +3462,31 @@
         "spec_rtu_framing"
       ],
       "evidence_gap": {
-        "detail": "Fixed-seed parser and stream-chunk properties are mapped; cargo-fuzz targets, corpus campaigns, and nightly scheduling remain deferred.",
+        "detail": "The byte-parser and stream-framer fuzz foundation is present; physical RTU timing/event-state fuzzing and RTU-over-TCP boundary/recovery policy remain assigned to separate packages.",
         "owner": "maintainers",
-        "follow_up": "PR-003"
+        "follow_up": "PR-102, PR-104",
+        "profiles": [
+          "physical-rtu-client",
+          "gateway",
+          "rtu-over-tcp-extension"
+        ]
       },
       "assessments": [
         {
           "profile": "tcp-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "tcp-server",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "physical-rtu-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Complete-frame RTU properties are present, but timing-state and open-ended fuzz evidence remain deferred."
+          "reason": "Complete-candidate RTU byte fuzzing is present; physical timing/event-state fuzzing remains assigned to PR-102."
         },
         {
           "profile": "physical-rtu-responder",
@@ -3471,25 +3498,23 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
+          "reason": "PDU, MBAP, and RTU-over-TCP byte fuzzing is present; the extension boundary/recovery policy remains assigned to PR-104."
         },
         {
           "profile": "modbus-security",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "simulator",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Fixed-seed parser properties are present, but open-ended fuzz evidence remains deferred."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "rtu-over-tcp-extension",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Fixed-seed stream-chunk properties are present, but boundary-policy and open-ended fuzz evidence remain deferred."
+          "reason": "Incremental byte fuzzing preserves the current first-valid-CRC and exact-maximum contracts; boundary/recovery policy remains assigned to PR-104."
         }
       ]
     },
@@ -5002,7 +5027,7 @@
       "title": "Parser property and fuzz evidence is incomplete",
       "priority": "P2",
       "confidence": "Evidence gap",
-      "status": "mitigated",
+      "status": "closed",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-003"
@@ -5010,7 +5035,7 @@
       "requirement_ids": [
         "CONF-003"
       ],
-      "status_reason": "Fixed-seed PDU and stream-framing properties mitigate the stable evidence gap. Cargo-fuzz targets, retained corpus campaigns, and nightly scheduling remain in the second PR-003 split; physical RTU timing-state properties remain assigned to PR-102."
+      "status_reason": "Closed for the byte-parser and stream-framer foundation by fixed-seed properties, four pinned cargo-fuzz targets, a retained manifest corpus, deterministic replay, and bounded scheduling. Physical RTU timing/event state remains assigned to PR-102, and RTU-over-TCP boundary/recovery policy remains assigned to PR-104."
     },
     {
       "id": "F-025",

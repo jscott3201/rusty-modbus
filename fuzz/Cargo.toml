@@ -1,0 +1,57 @@
+[package]
+name = "rusty-modbus-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bytes = { version = "1", optional = true }
+libfuzzer-sys = "0.4"
+rusty-modbus-codec = { path = "../crates/rusty-modbus-codec", default-features = false }
+rusty-modbus-frame = { path = "../crates/rusty-modbus-frame", default-features = false, features = ["rtu", "std"], optional = true }
+rusty-modbus-types = { path = "../crates/rusty-modbus-types", default-features = false }
+tokio-util = { version = "0.7", features = ["codec"], optional = true }
+
+[features]
+default = []
+frame = ["dep:bytes", "dep:rusty-modbus-frame", "dep:tokio-util"]
+
+[[bin]]
+name = "pdu_decode"
+path = "fuzz_targets/pdu_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mbap_stream"
+path = "fuzz_targets/mbap_stream.rs"
+test = false
+doc = false
+bench = false
+required-features = ["frame"]
+
+[[bin]]
+name = "rtu_frame"
+path = "fuzz_targets/rtu_frame.rs"
+test = false
+doc = false
+bench = false
+required-features = ["frame"]
+
+[[bin]]
+name = "rtu_tcp_stream"
+path = "fuzz_targets/rtu_tcp_stream.rs"
+test = false
+doc = false
+bench = false
+required-features = ["frame"]
+
+[workspace]
+members = ["."]
+resolver = "3"

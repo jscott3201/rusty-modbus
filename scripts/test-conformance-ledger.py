@@ -210,6 +210,7 @@ class ConformanceLedgerTests(unittest.TestCase):
     def test_current_seed_finding_decisions_are_preserved(self) -> None:
         findings = {item["id"]: item for item in self.canonical["findings"]}
         self.assertEqual(findings["F-023"]["status"], "closed")
+        self.assertEqual(findings["F-024"]["status"], "closed")
         self.assertEqual(findings["F-027"]["status"], "mitigated")
 
     def test_seeded_requirement_corrections_remain_distinct(self) -> None:
@@ -282,7 +283,7 @@ class ConformanceLedgerTests(unittest.TestCase):
             "SEC-010": "PR-503",
             "CONF-001": "PR-001",
             "CONF-002": "PR-001, PR-703",
-            "CONF-003": "PR-003",
+            "CONF-003": "PR-102, PR-104",
             "CONF-004": "PR-102, PR-103, PR-702",
             "CONF-005": "PR-703",
             "CONF-006": "PR-002, PR-601",
