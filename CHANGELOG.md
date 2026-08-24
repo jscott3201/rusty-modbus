@@ -10,6 +10,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Added `ClientError::UnexpectedResponseUnitId { expected, got }`. Downstream
   Rust code that exhaustively matches `ClientError` must handle this variant.
+- Added `ClientError::UnexpectedResponseLength`,
+  `ClientError::UnexpectedResponsePadding`, and
+  `DecodeError::InvalidRegisterDataLength` /
+  `EncodeError::InvalidRegisterDataLength`. Exhaustive Rust matches on these
+  error enums must handle the new variants.
 
 ### Fixed
 
@@ -17,6 +22,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   transaction ID, Unit Identifier, and normal or exception function identity
   match. RTU clients ignore responses for other units while retaining the active
   request.
+- Typed FC01/02 reads now reject excess data and nonzero final-byte padding.
+  Typed FC03/04/17 reads reject excess register data instead of truncating it,
+  and their decoders reject odd register byte counts. Raw FC03 responses retain
+  their existing `Bytes` storage after validation rather than copying it.
 
 ## [0.1.1]
 

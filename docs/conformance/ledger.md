@@ -12,7 +12,7 @@ This ledger reports repository-scoped evidence for named profiles. It does not s
 - Inventory date: `2026-08-23`
 - Review seed: Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency
 - Requirements: 70
-- Conformance test files: 49
+- Conformance test files: 50
 - Evidence in this seed records repository implementation and mappings; test-file existence does not prove execution.
 
 ## Evidence scale
@@ -65,9 +65,9 @@ Client requests and responses carried in MBAP frames over TCP.
 | [`APP-008`](#requirement-app-008) | Read/Write Multiple Registers limits writes to 1 through 121 and reads to 1 through 125 | `supported` | `implemented` | — |
 | [`APP-009`](#requirement-app-009) | Read FIFO Queue responses contain no more than 31 registers | `supported` | `implemented` | — |
 | [`APP-010`](#requirement-app-010) | Bit-read response values are packed least-significant bit first | `supported` | `implemented` | — |
-| [`APP-011`](#requirement-app-011) | Unused high bits in the final bit-response byte are zero | `compatibility-deviation` | `implemented` | The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding. |
-| [`APP-012`](#requirement-app-012) | Register-read response byte count is even and twice the returned quantity | `compatibility-deviation` | `implemented` | Implemented decoding checks byte shape but not every request-correlated quantity. |
-| [`APP-013`](#requirement-app-013) | A client accepts only the exact quantity requested in fixed-quantity responses | `compatibility-deviation` | `implemented` | Some client paths validate shape without retaining enough request context for an exact quantity check. |
+| [`APP-011`](#requirement-app-011) | Unused high bits in the final bit-response byte are zero | `supported` | `implemented` | — |
+| [`APP-012`](#requirement-app-012) | Register-read response byte count is even and twice the returned quantity | `supported` | `implemented` | — |
+| [`APP-013`](#requirement-app-013) | A client accepts only the exact quantity requested in fixed-quantity responses | `supported` | `implemented` | — |
 | [`APP-014`](#requirement-app-014) | Single-write success responses exactly echo the request | `supported` | `implemented` | — |
 | [`APP-015`](#requirement-app-015) | Multiple-write success responses echo the starting address and quantity | `supported` | `implemented` | — |
 | [`APP-016`](#requirement-app-016) | Exception responses set the function-code high bit and carry a defined exception code | `supported` | `implemented` | — |
@@ -168,9 +168,9 @@ Client operation over a serial line with RTU framing and timing.
 | [`APP-008`](#requirement-app-008) | Read/Write Multiple Registers limits writes to 1 through 121 and reads to 1 through 125 | `supported` | `implemented` | — |
 | [`APP-009`](#requirement-app-009) | Read FIFO Queue responses contain no more than 31 registers | `supported` | `implemented` | — |
 | [`APP-010`](#requirement-app-010) | Bit-read response values are packed least-significant bit first | `supported` | `implemented` | — |
-| [`APP-011`](#requirement-app-011) | Unused high bits in the final bit-response byte are zero | `compatibility-deviation` | `implemented` | The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding. |
-| [`APP-012`](#requirement-app-012) | Register-read response byte count is even and twice the returned quantity | `compatibility-deviation` | `implemented` | Implemented decoding checks byte shape but not every request-correlated quantity. |
-| [`APP-013`](#requirement-app-013) | A client accepts only the exact quantity requested in fixed-quantity responses | `compatibility-deviation` | `implemented` | Some client paths validate shape without retaining enough request context for an exact quantity check. |
+| [`APP-011`](#requirement-app-011) | Unused high bits in the final bit-response byte are zero | `supported` | `implemented` | — |
+| [`APP-012`](#requirement-app-012) | Register-read response byte count is even and twice the returned quantity | `supported` | `implemented` | — |
+| [`APP-013`](#requirement-app-013) | A client accepts only the exact quantity requested in fixed-quantity responses | `supported` | `implemented` | — |
 | [`APP-014`](#requirement-app-014) | Single-write success responses exactly echo the request | `supported` | `implemented` | — |
 | [`APP-015`](#requirement-app-015) | Multiple-write success responses echo the starting address and quantity | `supported` | `implemented` | — |
 | [`APP-016`](#requirement-app-016) | Exception responses set the function-code high bit and carry a defined exception code | `supported` | `implemented` | — |
@@ -277,9 +277,9 @@ TCP request routing to configured RTU-over-TCP backends; no physical serial gate
 | [`APP-008`](#requirement-app-008) | Read/Write Multiple Registers limits writes to 1 through 121 and reads to 1 through 125 | `supported` | `implemented` | — |
 | [`APP-009`](#requirement-app-009) | Read FIFO Queue responses contain no more than 31 registers | `supported` | `implemented` | — |
 | [`APP-010`](#requirement-app-010) | Bit-read response values are packed least-significant bit first | `supported` | `implemented` | — |
-| [`APP-011`](#requirement-app-011) | Unused high bits in the final bit-response byte are zero | `compatibility-deviation` | `implemented` | The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding. |
-| [`APP-012`](#requirement-app-012) | Register-read response byte count is even and twice the returned quantity | `compatibility-deviation` | `implemented` | Implemented decoding checks byte shape but not every request-correlated quantity. |
-| [`APP-013`](#requirement-app-013) | A client accepts only the exact quantity requested in fixed-quantity responses | `compatibility-deviation` | `implemented` | Some client paths validate shape without retaining enough request context for an exact quantity check. |
+| [`APP-011`](#requirement-app-011) | Unused high bits in the final bit-response byte are zero | `compatibility-deviation` | `implemented` | Gateway raw forwarding validates response envelope identity but does not invoke typed request-aware padding validation. |
+| [`APP-012`](#requirement-app-012) | Register-read response byte count is even and twice the returned quantity | `compatibility-deviation` | `implemented` | Gateway raw forwarding validates response envelope identity but does not invoke typed request-aware quantity validation. |
+| [`APP-013`](#requirement-app-013) | A client accepts only the exact quantity requested in fixed-quantity responses | `compatibility-deviation` | `implemented` | Gateway raw forwarding validates response envelope identity but does not invoke typed request-aware quantity validation. |
 | [`APP-014`](#requirement-app-014) | Single-write success responses exactly echo the request | `supported` | `implemented` | — |
 | [`APP-015`](#requirement-app-015) | Multiple-write success responses echo the starting address and quantity | `supported` | `implemented` | — |
 | [`APP-016`](#requirement-app-016) | Exception responses set the function-code high bit and carry a defined exception code | `supported` | `implemented` | — |
@@ -431,9 +431,9 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 | [`APP-008`](#requirement-app-008) | Read/Write Multiple Registers limits writes to 1 through 121 and reads to 1 through 125 | `supported` | `implemented` | — |
 | [`APP-009`](#requirement-app-009) | Read FIFO Queue responses contain no more than 31 registers | `supported` | `implemented` | — |
 | [`APP-010`](#requirement-app-010) | Bit-read response values are packed least-significant bit first | `supported` | `implemented` | — |
-| [`APP-011`](#requirement-app-011) | Unused high bits in the final bit-response byte are zero | `compatibility-deviation` | `implemented` | The client decoder accepts nonzero padding bits from a peer; server encoding emits zero padding. |
-| [`APP-012`](#requirement-app-012) | Register-read response byte count is even and twice the returned quantity | `compatibility-deviation` | `implemented` | Implemented decoding checks byte shape but not every request-correlated quantity. |
-| [`APP-013`](#requirement-app-013) | A client accepts only the exact quantity requested in fixed-quantity responses | `compatibility-deviation` | `implemented` | Some client paths validate shape without retaining enough request context for an exact quantity check. |
+| [`APP-011`](#requirement-app-011) | Unused high bits in the final bit-response byte are zero | `supported` | `implemented` | — |
+| [`APP-012`](#requirement-app-012) | Register-read response byte count is even and twice the returned quantity | `supported` | `implemented` | — |
+| [`APP-013`](#requirement-app-013) | A client accepts only the exact quantity requested in fixed-quantity responses | `supported` | `implemented` | — |
 | [`APP-014`](#requirement-app-014) | Single-write success responses exactly echo the request | `supported` | `implemented` | — |
 | [`APP-015`](#requirement-app-015) | Multiple-write success responses echo the starting address and quantity | `supported` | `implemented` | — |
 | [`APP-016`](#requirement-app-016) | Exception responses set the function-code high bit and carry a defined exception code | `supported` | `implemented` | — |
@@ -478,11 +478,11 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-app-010"></a>
 | `APP-010` — Bit-read response values are packed least-significant bit first | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.1 and §6.2, response bit order | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_fc01_read_coils`, `spec_fc02_read_discrete`, `spec_response_encode` |
 <a id="requirement-app-011"></a>
-| `APP-011` — Unused high bits in the final bit-response byte are zero | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.1 and §6.2, response padding | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_fc01_read_coils`, `spec_fc02_read_discrete`, `spec_response_encode`; Gap: Server encoding zeroes final-byte padding, but client decoding does not universally reject nonzero peer padding. (PR-202) |
+| `APP-011` — Unused high bits in the final bit-response byte are zero | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.1 and §6.2, response padding | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs`; `crates/rusty-modbus-client/src/methods/mod.rs`; `crates/rusty-modbus-client/src/methods/coils.rs` | `spec_client_response_shape`, `spec_fc01_read_coils`, `spec_fc02_read_discrete`, `spec_response_encode`; Gap: Gateway raw forwarding does not use typed client methods, so it does not validate response padding against the initiating request quantity. (PR-402) |
 <a id="requirement-app-012"></a>
-| `APP-012` — Register-read response byte count is even and twice the returned quantity | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.3 and §6.4, response byte count | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_byte_count_semantic`, `spec_fc03_read_holding`, `spec_fc04_read_input`, `spec_response_encode`; Gap: Fixed-length checks do not yet prove request-correlated register quantities on every client path. (PR-202) |
+| `APP-012` — Register-read response byte count is even and twice the returned quantity | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.3, §6.4, and §6.17, response byte count | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs`; `crates/rusty-modbus-codec/src/response/reg_read.rs`; `crates/rusty-modbus-codec/src/response/reg_write.rs`; `crates/rusty-modbus-frame/src/owned.rs`; `crates/rusty-modbus-client/src/methods/registers.rs` | `spec_byte_count_semantic`, `spec_client_response_shape`, `spec_fc03_read_holding`, `spec_fc04_read_input`, `spec_response_encode`; Gap: Gateway raw forwarding does not use typed client methods, so it does not correlate register response byte counts with initiating request quantities. (PR-402) |
 <a id="requirement-app-013"></a>
-| `APP-013` — A client accepts only the exact quantity requested in fixed-quantity responses | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.1 through §6.4, response quantity derived from request | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_byte_count_semantic`, `spec_fc03_read_holding`, `spec_fc04_read_input`, `spec_fixed_pdu_lengths`, `spec_owned_response`; Gap: Request-correlated quantity validation remains incomplete across client response variants. (PR-202) |
+| `APP-013` — A client accepts only the exact quantity requested in fixed-quantity responses | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.1 through §6.4 and §6.17, response quantity derived from request | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs`; `crates/rusty-modbus-client/src/methods/mod.rs`; `crates/rusty-modbus-client/src/methods/coils.rs`; `crates/rusty-modbus-client/src/methods/registers.rs` | `spec_byte_count_semantic`, `spec_client_response_shape`, `spec_fc03_read_holding`, `spec_fc04_read_input`, `spec_fixed_pdu_lengths`, `spec_owned_response`; Gap: Gateway raw forwarding does not use typed client methods, so exact request-correlated quantity validation remains a gateway-owned gap. (PR-402) |
 <a id="requirement-app-014"></a>
 | `APP-014` — Single-write success responses exactly echo the request | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §6.5, §6.6, and §6.16, normal response | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_fc05_write_coil`, `spec_fc06_write_register`, `spec_fc16_mask_write` |
 <a id="requirement-app-015"></a>
@@ -631,6 +631,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 |---|---|---|
 | `spec_broadcast` | `crates/rusty-modbus-conformance/tests/spec_broadcast.rs` | `APP-022`, `RTU-001`, `RTU-011` |
 | `spec_byte_count_semantic` | `crates/rusty-modbus-conformance/tests/spec_byte_count_semantic.rs` | `APP-006`, `APP-007`, `APP-012`, `APP-013`, `APP-020` |
+| `spec_client_response_shape` | `crates/rusty-modbus-conformance/tests/spec_client_response_shape.rs` | `APP-011`, `APP-012`, `APP-013` |
 | `spec_client_server` | `crates/rusty-modbus-conformance/tests/spec_client_server.rs` | `TCP-005`, `TCP-007`, `CONF-001`, `CONF-002` |
 | `spec_constants` | `crates/rusty-modbus-conformance/tests/spec_constants.rs` | `APP-001`, `APP-004`, `APP-005`, `APP-006`, `APP-007`, `APP-008`, `APP-009`, `TCP-009`, `RTU-002`, `SEC-001`, `SEC-005` |
 | `spec_crc16` | `crates/rusty-modbus-conformance/tests/spec_crc16.rs` | `RTU-003` |
@@ -688,7 +689,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `F-003` | `P1` | Verified source finding / normative gap | `open` | maintainers | `PR-102` | `RTU-005` | Receive-side t1.5 invalidation is absent | — |
 | `F-004` | `P1` | Verified source finding / evidence gap | `open` | maintainers | `PR-103` | `RTU-009`, `RTU-010`, `CONF-004` | RTU transmit turnaround is not modeled from true bus idle/wire completion; noise recovery can terminate the shared reader | — |
 | `F-005` | `P1` | Verified source finding | `closed` | maintainers | `PR-201` | `TCP-007` | Pending TCP transactions do not retain/validate expected Unit Identifier | Closed by retaining the expected Unit Identifier and function identity for each pending request, enforcing both before delivery, and covering mismatched Modbus/TCP response Unit Identifiers in spec_client_server. |
-| `F-006` | `P1` | Verified source finding / normative gap | `open` | maintainers | `PR-202` | `APP-011`, `APP-012`, `APP-013` | Read responses are not validated against exact requested quantity; odd register byte counts and non-zero bit padding are not universally rejected | — |
+| `F-006` | `P1` | Verified source finding / normative gap | `closed` | maintainers | `PR-202` | `APP-011`, `APP-012`, `APP-013` | Read responses are not validated against exact requested quantity; odd register byte counts and non-zero bit padding are not universally rejected | Closed for typed TCP and RTU client methods by exact request-aware response-shape validation and intrinsic even-byte register decoding. Gateway raw forwarding remains a gateway-owned gap assigned to PR-402. |
 | `F-007` | `P1` | Verified source finding / safety gap | `open` | maintainers | `PR-203` | `TCP-011`, `CONF-002` | Automatic timeout retry applies to writes and can duplicate side effects after an ambiguous response loss | — |
 | `F-008` | `P1` | Verified source finding / normative gap | `open` | maintainers | `PR-203` | `APP-018` | Exception `0x05` Acknowledge is treated as a normal retry signal | — |
 | `F-009` | `P2` | Verified source finding | `open` | maintainers | `PR-203` | `TCP-011` | A fixed 500 ms sweeper makes timeout precision coarse and wakes when idle | — |

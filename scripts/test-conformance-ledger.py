@@ -212,6 +212,7 @@ class ConformanceLedgerTests(unittest.TestCase):
         self.assertEqual(findings["F-023"]["status"], "closed")
         self.assertEqual(findings["F-024"]["status"], "closed")
         self.assertEqual(findings["F-027"]["status"], "mitigated")
+        self.assertEqual(findings["F-006"]["status"], "closed")
 
     def test_seeded_requirement_corrections_remain_distinct(self) -> None:
         requirements = {item["id"]: item for item in self.canonical["requirements"]}
@@ -226,17 +227,16 @@ class ConformanceLedgerTests(unittest.TestCase):
         )
 
         app_011 = requirements["APP-011"]
-        self.assertEqual(app_011["evidence_gap"]["follow_up"], "PR-202")
-        client_profiles = [
+        self.assertEqual(app_011["evidence_gap"]["follow_up"], "PR-402")
+        self.assertEqual(app_011["evidence_gap"]["profiles"], ["gateway"])
+        assessments = {item["profile"]: item for item in app_011["assessments"]}
+        for profile_id in (
             "tcp-client",
             "physical-rtu-client",
-            "gateway",
             "rtu-over-tcp-extension",
-        ]
-        self.assertEqual(app_011["evidence_gap"]["profiles"], client_profiles)
-        assessments = {item["profile"]: item for item in app_011["assessments"]}
-        for profile_id in client_profiles:
-            self.assertEqual(assessments[profile_id]["disposition"], "compatibility-deviation")
+        ):
+            self.assertEqual(assessments[profile_id]["disposition"], "supported")
+        self.assertEqual(assessments["gateway"]["disposition"], "compatibility-deviation")
 
         sec_004 = requirements["SEC-004"]
         self.assertEqual(sec_004["evidence_gap"]["follow_up"], "PR-501")
@@ -254,9 +254,9 @@ class ConformanceLedgerTests(unittest.TestCase):
     def test_gap_followups_match_review_work_packages(self) -> None:
         expected = {
             "APP-002": "PR-003",
-            "APP-011": "PR-202",
-            "APP-012": "PR-202",
-            "APP-013": "PR-202",
+            "APP-011": "PR-402",
+            "APP-012": "PR-402",
+            "APP-013": "PR-402",
             "APP-018": "PR-203",
             "APP-019": "PR-303",
             "TCP-006": "PR-201",

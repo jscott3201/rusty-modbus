@@ -14,7 +14,7 @@ use crate::client::ModbusClient;
 use crate::error::ClientError;
 use crate::methods::{
     MAX_READ_WRITE_MULTIPLE_WRITE_REGISTERS, MAX_WRITE_MULTIPLE_REGISTERS, checked_byte_count_len,
-    checked_quantity_len, encode_request,
+    checked_quantity_len, encode_request, validate_register_response_shape,
 };
 
 impl<S: TransportSink + Send + 'static> ModbusClient<S> {
@@ -46,14 +46,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         match response {
             OwnedResponsePdu::ReadHoldingRegisters(rhr) => {
-                let needed = quantity as usize * 2;
-                if usize::from(rhr.byte_count) < needed {
-                    return Err(ClientError::ShortResponse {
-                        expected: needed,
-                        actual: usize::from(rhr.byte_count),
-                    });
-                }
-                Ok(rhr.registers().take(quantity as usize).collect())
+                validate_register_response_shape(
+                    FunctionCode::ReadHoldingRegisters.code(),
+                    quantity,
+                    &rhr.register_data,
+                )?;
+                Ok(rhr.registers().collect())
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
@@ -90,14 +88,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         match response {
             OwnedResponsePdu::ReadHoldingRegisters(rhr) => {
-                let needed = quantity as usize * 2;
-                if usize::from(rhr.byte_count) < needed {
-                    return Err(ClientError::ShortResponse {
-                        expected: needed,
-                        actual: usize::from(rhr.byte_count),
-                    });
-                }
-                Ok(Bytes::copy_from_slice(rhr.raw()))
+                validate_register_response_shape(
+                    FunctionCode::ReadHoldingRegisters.code(),
+                    quantity,
+                    &rhr.register_data,
+                )?;
+                Ok(rhr.register_data)
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
@@ -134,14 +130,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         match response {
             OwnedResponsePdu::ReadInputRegisters(rir) => {
-                let needed = quantity as usize * 2;
-                if usize::from(rir.byte_count) < needed {
-                    return Err(ClientError::ShortResponse {
-                        expected: needed,
-                        actual: usize::from(rir.byte_count),
-                    });
-                }
-                Ok(rir.registers().take(quantity as usize).collect())
+                validate_register_response_shape(
+                    FunctionCode::ReadInputRegisters.code(),
+                    quantity,
+                    &rir.register_data,
+                )?;
+                Ok(rir.registers().collect())
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
@@ -326,14 +320,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         match response {
             OwnedResponsePdu::ReadWriteMultipleRegisters(rw) => {
-                let needed = read_quantity as usize * 2;
-                if usize::from(rw.byte_count) < needed {
-                    return Err(ClientError::ShortResponse {
-                        expected: needed,
-                        actual: usize::from(rw.byte_count),
-                    });
-                }
-                Ok(rw.registers().take(read_quantity as usize).collect())
+                validate_register_response_shape(
+                    FunctionCode::ReadWriteMultipleRegisters.code(),
+                    read_quantity,
+                    &rw.register_data,
+                )?;
+                Ok(rw.registers().collect())
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(

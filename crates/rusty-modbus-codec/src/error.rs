@@ -76,6 +76,11 @@ pub enum DecodeError {
         /// Invalid diagnostics data length.
         length: usize,
     },
+    /// Register response data is not an even number of bytes.
+    InvalidRegisterDataLength {
+        /// Invalid register data length.
+        length: usize,
+    },
     /// Device ID code byte is not recognized (FC 0x2B / MEI 0x0E).
     InvalidDeviceIdCode(u8),
     /// Device ID conformity level byte is not recognized (FC 0x2B / MEI 0x0E).
@@ -101,6 +106,14 @@ impl DecodeError {
                 expected,
                 actual: data.len(),
             }),
+        }
+    }
+
+    pub(crate) fn check_register_data_len(length: usize) -> Result<(), Self> {
+        if length.is_multiple_of(2) {
+            Ok(())
+        } else {
+            Err(Self::InvalidRegisterDataLength { length })
         }
     }
 }
@@ -160,6 +173,12 @@ impl core::fmt::Display for DecodeError {
                 write!(
                     f,
                     "invalid diagnostics data length: {length} (expected a multiple of 2)"
+                )
+            }
+            Self::InvalidRegisterDataLength { length } => {
+                write!(
+                    f,
+                    "invalid register data length: {length} (expected a multiple of 2)"
                 )
             }
             Self::InvalidDeviceIdCode(code) => write!(f, "invalid device ID code: {code:#04X}"),
@@ -242,6 +261,11 @@ pub enum EncodeError {
         /// Invalid diagnostics data length.
         length: usize,
     },
+    /// Register response data is not an even number of bytes.
+    InvalidRegisterDataLength {
+        /// Invalid register data length.
+        length: usize,
+    },
 }
 
 impl core::fmt::Display for EncodeError {
@@ -294,6 +318,12 @@ impl core::fmt::Display for EncodeError {
                     "invalid diagnostics data length: {length} (expected a multiple of 2)"
                 )
             }
+            Self::InvalidRegisterDataLength { length } => {
+                write!(
+                    f,
+                    "invalid register data length: {length} (expected a multiple of 2)"
+                )
+            }
         }
     }
 }
@@ -337,6 +367,14 @@ impl EncodeError {
                 minimum,
                 maximum,
             })
+        }
+    }
+
+    pub(crate) fn check_register_data_len(length: usize) -> Result<(), Self> {
+        if length.is_multiple_of(2) {
+            Ok(())
+        } else {
+            Err(Self::InvalidRegisterDataLength { length })
         }
     }
 }

@@ -124,6 +124,20 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
         ClientError::ShortResponse { expected, actual } => ModbusError::new_err(format!(
             "short response: need {expected} data bytes for the request, got {actual}"
         )),
+        ClientError::UnexpectedResponseLength {
+            function_code,
+            expected,
+            actual,
+        } => ModbusError::new_err(format!(
+            "unexpected response length for function 0x{function_code:02X}: expected {expected} data bytes, got {actual}"
+        )),
+        ClientError::UnexpectedResponsePadding {
+            function_code,
+            invalid_mask,
+            actual,
+        } => ModbusError::new_err(format!(
+            "unexpected response padding for function 0x{function_code:02X}: byte 0x{actual:02X} sets bits selected by 0x{invalid_mask:02X}"
+        )),
         ClientError::InvalidDeviceIdentificationContinuation {
             previous_object_id,
             next_object_id,

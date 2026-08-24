@@ -6,11 +6,12 @@ use rusty_modbus_codec::request::{
     WriteSingleCoilRequest, WriteSingleRegisterRequest,
 };
 use rusty_modbus_codec::response::{
-    ExceptionResponse, ReadHoldingRegistersResponse, WriteMultipleCoilsResponse,
-    WriteMultipleRegistersResponse, WriteSingleCoilResponse,
+    ExceptionResponse, ReadHoldingRegistersResponse, ReadInputRegistersResponse,
+    ReadWriteMultipleRegistersResponse, WriteMultipleCoilsResponse, WriteMultipleRegistersResponse,
+    WriteSingleCoilResponse,
 };
 use rusty_modbus_codec::{
-    DecodeError, Encode, RequestPdu, ResponsePdu, decode_request, decode_response,
+    DecodeError, Encode, EncodeError, RequestPdu, ResponsePdu, decode_request, decode_response,
 };
 use rusty_modbus_types::{Address, CoilValue, ExceptionCode, FunctionCode, Quantity};
 
@@ -387,6 +388,51 @@ fn wire_format_fc03_response_decode_from_bytes() {
         }
         other => panic!("expected ReadHoldingRegisters, got {other:?}"),
     }
+}
+
+#[test]
+fn register_read_responses_reject_odd_byte_counts_on_decode() {
+    for pdu in [
+        &[0x03, 0x03, 0x00, 0x01, 0x02][..],
+        &[0x04, 0x03, 0x00, 0x01, 0x02][..],
+        &[0x17, 0x03, 0x00, 0x01, 0x02][..],
+    ] {
+        assert!(matches!(
+            decode_response(pdu),
+            Err(DecodeError::InvalidRegisterDataLength { length: 3 })
+        ));
+    }
+}
+
+#[test]
+fn register_read_responses_reject_odd_byte_counts_on_encode() {
+    let register_data = [0x00, 0x01, 0x02];
+    let mut buf = [0u8; 8];
+
+    assert!(matches!(
+        ReadHoldingRegistersResponse {
+            byte_count: 3,
+            register_data: &register_data,
+        }
+        .encode_into(&mut buf),
+        Err(EncodeError::InvalidRegisterDataLength { length: 3 })
+    ));
+    assert!(matches!(
+        ReadInputRegistersResponse {
+            byte_count: 3,
+            register_data: &register_data,
+        }
+        .encode_into(&mut buf),
+        Err(EncodeError::InvalidRegisterDataLength { length: 3 })
+    ));
+    assert!(matches!(
+        ReadWriteMultipleRegistersResponse {
+            byte_count: 3,
+            register_data: &register_data,
+        }
+        .encode_into(&mut buf),
+        Err(EncodeError::InvalidRegisterDataLength { length: 3 })
+    ));
 }
 
 #[test]
