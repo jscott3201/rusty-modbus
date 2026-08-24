@@ -2207,14 +2207,18 @@
         },
         {
           "path": "crates/rusty-modbus-rtu/src/serial.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-rtu/src/unit_id.rs"
         }
       ],
       "test_ids": [
         "spec_broadcast",
-        "spec_rtu_client"
+        "spec_rtu_client",
+        "spec_rtu_transport"
       ],
       "evidence_gap": {
-        "detail": "Reserved serial Unit IDs are not rejected consistently.",
+        "detail": "The strict physical transport validates destination and source address classes, but legacy serial and RTU-over-TCP paths remain permissive.",
         "owner": "maintainers",
         "follow_up": "PR-101"
       },
@@ -2223,7 +2227,7 @@
           "profile": "physical-rtu-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Reserved serial Unit Identifier behavior is not consistently enforced."
+          "reason": "Strict physical serial validates address classes; the legacy serial path remains permissive."
         },
         {
           "profile": "physical-rtu-responder",
@@ -2235,7 +2239,7 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Reserved serial Unit Identifier behavior is not consistently enforced."
+          "reason": "The gateway uses RTU over TCP and does not apply the strict physical serial address policy."
         }
       ]
     },
@@ -2503,7 +2507,7 @@
         "spec_rtu_transport"
       ],
       "evidence_gap": {
-        "detail": "The current serial default is eight data bits, no parity, and one stop bit.",
+        "detail": "The strict physical path defaults to 19200/8E1 and rejects non-Modbus character formats, but the compatibility configuration retains its 9600/8N1 default and permissive public fields.",
         "owner": "maintainers",
         "follow_up": "PR-101"
       },
@@ -2512,7 +2516,7 @@
           "profile": "physical-rtu-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "The default serial format is 8N1 rather than even parity or no parity with two stop bits."
+          "reason": "The strict physical path enforces 8E1, 8O1, or 8N2; the legacy default remains 8N1 for compatibility."
         },
         {
           "profile": "physical-rtu-responder",
@@ -2524,7 +2528,7 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "The default serial format is 8N1 rather than even parity or no parity with two stop bits."
+          "reason": "The gateway does not use the strict physical serial configuration path."
         }
       ]
     },
@@ -4218,6 +4222,7 @@
       "path": "crates/rusty-modbus-conformance/tests/spec_rtu_transport.rs",
       "requirement_ids": [
         "EXT-002",
+        "RTU-001",
         "RTU-004",
         "RTU-006",
         "RTU-007",
@@ -4698,14 +4703,15 @@
       "title": "RTU config permits non-Modbus data-bit profiles and defaults to 8N1 while timing assumes an 11-bit character",
       "priority": "P1",
       "confidence": "Verified source finding / normative gap",
-      "status": "open",
+      "status": "mitigated",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-101"
       ],
       "requirement_ids": [
         "RTU-007"
-      ]
+      ],
+      "status_reason": "Mitigated by the validated strict physical RTU configuration and timing path; the public legacy configuration remains permissive for compatibility."
     },
     {
       "id": "F-003",

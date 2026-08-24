@@ -178,13 +178,13 @@ Client operation over a serial line with RTU framing and timing.
 | [`APP-020`](#requirement-app-020) | File Record subrequests use reference type 0x06 and internally consistent byte counts | `supported` | `implemented` | — |
 | [`APP-021`](#requirement-app-021) | Device Identification continuation uses the response's next-object identifier | `supported` | `implemented` | — |
 | [`APP-022`](#requirement-app-022) | A serial-line broadcast request does not receive a response | `supported` | `implemented` | — |
-| [`RTU-001`](#requirement-rtu-001) | Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit | `compatibility-deviation` | `implemented` | Reserved serial Unit Identifier behavior is not consistently enforced. |
+| [`RTU-001`](#requirement-rtu-001) | Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit | `compatibility-deviation` | `implemented` | Strict physical serial validates address classes; the legacy serial path remains permissive. |
 | [`RTU-002`](#requirement-rtu-002) | An RTU ADU does not exceed 256 bytes | `supported` | `implemented` | — |
 | [`RTU-003`](#requirement-rtu-003) | RTU CRC uses the specified polynomial and transmits the low-order byte first | `supported` | `implemented` | — |
 | [`RTU-004`](#requirement-rtu-004) | At least t3.5 of silence separates RTU frames | `compatibility-deviation` | `implemented` | Transmit delay and incremental decode do not fully implement receiver t3.5 boundary detection. |
 | [`RTU-005`](#requirement-rtu-005) | An inter-character gap greater than t1.5 invalidates a partial RTU frame | `compatibility-deviation` | `implemented` | There is no explicit t1.5 partial-frame invalidation path. |
 | [`RTU-006`](#requirement-rtu-006) | Above 19200 bit/s, 750 microseconds and 1.75 milliseconds are the recommended fixed timers | `supported` | `implemented` | — |
-| [`RTU-007`](#requirement-rtu-007) | RTU character timing uses 11 bits with compliant parity and stop-bit defaults | `compatibility-deviation` | `implemented` | The default serial format is 8N1 rather than even parity or no parity with two stop bits. |
+| [`RTU-007`](#requirement-rtu-007) | RTU character timing uses 11 bits with compliant parity and stop-bit defaults | `compatibility-deviation` | `implemented` | The strict physical path enforces 8E1, 8O1, or 8N2; the legacy default remains 8N1 for compatibility. |
 | [`RTU-008`](#requirement-rtu-008) | RTU receive framing is independent of operating-system read chunk boundaries | `compatibility-deviation` | `implemented` | The physical receive path treats each available buffer as a candidate frame without timing-aware assembly. |
 | [`RTU-009`](#requirement-rtu-009) | Noise, bad CRCs, and overlength frames are discarded without preventing later valid frames | `compatibility-deviation` | `implemented` | CRC errors are rejected, while broader noise and recovery behavior remains incomplete. |
 | [`RTU-010`](#requirement-rtu-010) | Client transmission and turnaround avoid overlap with the bus-silent interval | `compatibility-deviation` | `implemented` | Turnaround is delay-based and does not expose explicit bus-drain confirmation. |
@@ -303,13 +303,13 @@ TCP request routing to configured RTU-over-TCP backends; no physical serial gate
 | [`TCP-012`](#requirement-tcp-012) | A gateway maps path and target failures to exceptions 0x0A and 0x0B | `supported` | `implemented` | — |
 | [`TCP-013`](#requirement-tcp-013) | Connection management survives churn, idle peers, and half-open peers | `compatibility-deviation` | `implemented` | Connection reuse and eviction are implemented without complete health recovery policy. |
 | [`TCP-014`](#requirement-tcp-014) | Priority and non-priority connection pools preserve configured-device priority | `supported` | `implemented` | — |
-| [`RTU-001`](#requirement-rtu-001) | Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit | `compatibility-deviation` | `implemented` | Reserved serial Unit Identifier behavior is not consistently enforced. |
+| [`RTU-001`](#requirement-rtu-001) | Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit | `compatibility-deviation` | `implemented` | The gateway uses RTU over TCP and does not apply the strict physical serial address policy. |
 | [`RTU-002`](#requirement-rtu-002) | An RTU ADU does not exceed 256 bytes | `supported` | `implemented` | — |
 | [`RTU-003`](#requirement-rtu-003) | RTU CRC uses the specified polynomial and transmits the low-order byte first | `supported` | `implemented` | — |
 | [`RTU-004`](#requirement-rtu-004) | At least t3.5 of silence separates RTU frames | `compatibility-deviation` | `implemented` | Transmit delay and incremental decode do not fully implement receiver t3.5 boundary detection. |
 | [`RTU-005`](#requirement-rtu-005) | An inter-character gap greater than t1.5 invalidates a partial RTU frame | `compatibility-deviation` | `implemented` | There is no explicit t1.5 partial-frame invalidation path. |
 | [`RTU-006`](#requirement-rtu-006) | Above 19200 bit/s, 750 microseconds and 1.75 milliseconds are the recommended fixed timers | `supported` | `implemented` | — |
-| [`RTU-007`](#requirement-rtu-007) | RTU character timing uses 11 bits with compliant parity and stop-bit defaults | `compatibility-deviation` | `implemented` | The default serial format is 8N1 rather than even parity or no parity with two stop bits. |
+| [`RTU-007`](#requirement-rtu-007) | RTU character timing uses 11 bits with compliant parity and stop-bit defaults | `compatibility-deviation` | `implemented` | The gateway does not use the strict physical serial configuration path. |
 | [`RTU-008`](#requirement-rtu-008) | RTU receive framing is independent of operating-system read chunk boundaries | `compatibility-deviation` | `implemented` | The physical receive path treats each available buffer as a candidate frame without timing-aware assembly. |
 | [`RTU-009`](#requirement-rtu-009) | Noise, bad CRCs, and overlength frames are discarded without preventing later valid frames | `compatibility-deviation` | `implemented` | CRC errors are rejected, while broader noise and recovery behavior remains incomplete. |
 | [`RTU-010`](#requirement-rtu-010) | Client transmission and turnaround avoid overlap with the bus-silent interval | `compatibility-deviation` | `implemented` | Turnaround is delay-based and does not expose explicit bus-drain confirmation. |
@@ -540,7 +540,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 | ID | Strength | Source | Implementation | Tests / gap |
 |---|---|---|---|---|
 <a id="requirement-rtu-001"></a>
-| `RTU-001` — Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.2, MODBUS addressing rules | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_broadcast`, `spec_rtu_client`; Gap: Reserved serial Unit IDs are not rejected consistently. (PR-101) |
+| `RTU-001` — Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.2, MODBUS addressing rules | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs`; `crates/rusty-modbus-rtu/src/unit_id.rs` | `spec_broadcast`, `spec_rtu_client`, `spec_rtu_transport`; Gap: The strict physical transport validates destination and source address classes, but legacy serial and RTU-over-TCP paths remain permissive. (PR-101) |
 <a id="requirement-rtu-002"></a>
 | `RTU-002` — An RTU ADU does not exceed 256 bytes | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.5.1.1, RTU frame size | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_constants`, `spec_parser_resilience`, `spec_rtu_framing` |
 <a id="requirement-rtu-003"></a>
@@ -552,7 +552,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-rtu-006"></a>
 | `RTU-006` — Above 19200 bit/s, 750 microseconds and 1.75 milliseconds are the recommended fixed timers | `SHOULD` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.5.1.1, recommended high-speed timers | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_rtu_transport` |
 <a id="requirement-rtu-007"></a>
-| `RTU-007` — RTU character timing uses 11 bits with compliant parity and stop-bit defaults | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.5.1, RTU character format | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_rtu_transport`; Gap: The current serial default is eight data bits, no parity, and one stop bit. (PR-101) |
+| `RTU-007` — RTU character timing uses 11 bits with compliant parity and stop-bit defaults | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.5.1, RTU character format | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_rtu_transport`; Gap: The strict physical path defaults to 19200/8E1 and rejects non-Modbus character formats, but the compatibility configuration retains its 9600/8N1 default and permissive public fields. (PR-101) |
 <a id="requirement-rtu-008"></a>
 | `RTU-008` — RTU receive framing is independent of operating-system read chunk boundaries | `MUST` | [modbus-serial-line](https://www.modbus.org/file/secure/modbusoverserial.pdf) `V1.02`, §2.5.1.1, continuous stream frame detection | `crates/rusty-modbus-frame/src/rtu.rs`; `crates/rusty-modbus-rtu/src/config.rs`; `crates/rusty-modbus-rtu/src/serial.rs` | `spec_rtu_framing`; Gap: The physical receive path treats each available buffer as a candidate frame rather than using RTU timing as the boundary. (PR-102) |
 <a id="requirement-rtu-009"></a>
@@ -666,7 +666,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `spec_response_encode` | `crates/rusty-modbus-conformance/tests/spec_response_encode.rs` | `APP-001`, `APP-010`, `APP-011`, `APP-012`, `APP-016` |
 | `spec_rtu_client` | `crates/rusty-modbus-conformance/tests/spec_rtu_client.rs` | `RTU-001`, `RTU-010`, `RTU-011` |
 | `spec_rtu_framing` | `crates/rusty-modbus-conformance/tests/spec_rtu_framing.rs` | `CONF-003`, `EXT-002`, `EXT-003`, `EXT-004`, `RTU-002`, `RTU-003`, `RTU-008`, `RTU-009` |
-| `spec_rtu_transport` | `crates/rusty-modbus-conformance/tests/spec_rtu_transport.rs` | `EXT-002`, `RTU-004`, `RTU-006`, `RTU-007`, `RTU-010`, `RTU-011` |
+| `spec_rtu_transport` | `crates/rusty-modbus-conformance/tests/spec_rtu_transport.rs` | `EXT-002`, `RTU-001`, `RTU-004`, `RTU-006`, `RTU-007`, `RTU-010`, `RTU-011` |
 | `spec_server_device_id` | `crates/rusty-modbus-conformance/tests/spec_server_device_id.rs` | `APP-021` |
 | `spec_server_function_codes` | `crates/rusty-modbus-conformance/tests/spec_server_function_codes.rs` | `APP-017`, `CONF-001`, `CONF-002` |
 | `spec_server_handler` | `crates/rusty-modbus-conformance/tests/spec_server_handler.rs` | `APP-017`, `APP-019` |
@@ -683,7 +683,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | ID | Priority | Confidence | Status | Owner | Primary closure | Requirements | Finding | Resolution |
 |---|---|---|---|---|---|---|---|---|
 | `F-001` | `P0` | Verified source finding / normative gap | `open` | maintainers | `PR-102` | `RTU-004`, `RTU-008`, `RTU-009`, `CONF-004` | Physical RTU receive framing assumes the available serial buffer is one complete ADU instead of using timing boundaries | — |
-| `F-002` | `P1` | Verified source finding / normative gap | `open` | maintainers | `PR-101` | `RTU-007` | RTU config permits non-Modbus data-bit profiles and defaults to 8N1 while timing assumes an 11-bit character | — |
+| `F-002` | `P1` | Verified source finding / normative gap | `mitigated` | maintainers | `PR-101` | `RTU-007` | RTU config permits non-Modbus data-bit profiles and defaults to 8N1 while timing assumes an 11-bit character | Mitigated by the validated strict physical RTU configuration and timing path; the public legacy configuration remains permissive for compatibility. |
 | `F-003` | `P1` | Verified source finding / normative gap | `open` | maintainers | `PR-102` | `RTU-005` | Receive-side t1.5 invalidation is absent | — |
 | `F-004` | `P1` | Verified source finding / evidence gap | `open` | maintainers | `PR-103` | `RTU-009`, `RTU-010`, `CONF-004` | RTU transmit turnaround is not modeled from true bus idle/wire completion; noise recovery can terminate the shared reader | — |
 | `F-005` | `P1` | Verified source finding | `open` | maintainers | `PR-201` | `TCP-007` | Pending TCP transactions do not retain/validate expected Unit Identifier | — |
