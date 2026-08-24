@@ -58,6 +58,37 @@ async fn start_rtu_tcp_device(registers: Vec<u16>) -> SocketAddr {
     addr
 }
 
+async fn start_rtu_tcp_device_with_foreign_response() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut framed: Framed<_, RtuOverTcpCodec> = Framed::new(stream, RtuOverTcpCodec);
+        let request = framed.next().await.unwrap().unwrap();
+        let unit_id = request.unit_id();
+
+        framed
+            .send(Frame {
+                header: FrameHeader::Rtu {
+                    unit_id: unit_id + 1,
+                },
+                pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x11]),
+            })
+            .await
+            .unwrap();
+        framed
+            .send(Frame {
+                header: FrameHeader::Rtu { unit_id },
+                pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+            })
+            .await
+            .unwrap();
+    });
+
+    addr
+}
+
 #[tokio::test]
 async fn rtu_client_matches_sequential_requests() {
     let addr = start_rtu_tcp_device(vec![0x1234, 0x5678]).await;
@@ -110,4 +141,23 @@ async fn rtu_client_forces_single_in_flight() {
     for h in handles {
         assert_eq!(h.await.unwrap().unwrap(), vec![0x00AA]);
     }
+}
+
+#[tokio::test]
+async fn rtu_client_ignores_other_unit_before_matching_response() {
+    let addr = start_rtu_tcp_device_with_foreign_response().await;
+    let (sink, stream) = RtuOverTcpTransport::connect(addr, TcpConfig::default())
+        .await
+        .unwrap();
+    let config = ClientConfig {
+        timeout: Duration::from_secs(2),
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_rtu_transport(sink, stream, config);
+
+    let registers = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
+    assert_eq!(registers, vec![0x002A]);
 }

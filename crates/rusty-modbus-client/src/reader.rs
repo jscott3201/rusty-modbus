@@ -6,15 +6,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_frame::frame::FrameHeader;
 use rusty_modbus_tcp::transport::TransportStream;
+use rusty_modbus_types::{TransactionId, UnitId};
 use tokio::sync::watch;
 use tracing::{debug, trace, warn};
 
 use crate::error::ClientError;
-use crate::transaction::TransactionManager;
-use rusty_modbus_types::TransactionId;
+use crate::transaction::{CompletionOutcome, TransactionManager};
 
 /// Spawn the background reader task.
 ///
@@ -37,26 +36,28 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                             let header = frame.header;
                             let pdu_len = frame.pdu.len();
                             trace!(pdu_len, "received Modbus response frame");
-                            let result = OwnedResponsePdu::from_pdu(frame.pdu).map_err(|err| {
-                                warn!(error = %err, pdu_len, "failed to decode Modbus response PDU");
-                                ClientError::Codec(err)
-                            });
                             match header {
                                 FrameHeader::Mbap(h) => {
                                     let txn_id = h.transaction_id.get();
                                     trace!(txn_id, pdu_len, "matching Modbus/TCP response to transaction");
-                                    txn_mgr.complete(
+                                    let outcome = txn_mgr.complete_response(
                                         TransactionId(txn_id),
-                                        result,
+                                        UnitId(h.unit_id),
+                                        frame.pdu,
                                     );
+                                    trace_tcp_outcome(txn_id, pdu_len, outcome);
                                 }
-                                FrameHeader::Rtu { .. } => {
+                                FrameHeader::Rtu { unit_id } => {
                                     // RTU frames carry no transaction ID. The
                                     // client is single-in-flight for RTU (see
                                     // ModbusClient::from_rtu_transport), so match
                                     // the response to the one outstanding request.
                                     trace!(pdu_len, "matching RTU response to oldest transaction");
-                                    txn_mgr.complete_oldest(result);
+                                    let outcome = txn_mgr.complete_oldest_response(
+                                        UnitId(unit_id),
+                                        frame.pdu,
+                                    );
+                                    trace_rtu_outcome(unit_id, pdu_len, outcome);
                                 }
                             }
                         }
@@ -109,4 +110,72 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
             }
         }
     })
+}
+
+fn trace_tcp_outcome(txn_id: u16, pdu_len: usize, outcome: CompletionOutcome) {
+    match outcome {
+        CompletionOutcome::Delivered => {
+            trace!(txn_id, pdu_len, "delivered Modbus/TCP response");
+        }
+        CompletionOutcome::UnknownOrDuplicate => {
+            trace!(
+                txn_id,
+                pdu_len, "ignored unknown or duplicate Modbus/TCP response"
+            );
+        }
+        CompletionOutcome::UnitMismatch { expected, got } => {
+            warn!(
+                txn_id,
+                expected, got, "rejected Modbus/TCP response with unexpected unit ID"
+            );
+        }
+        CompletionOutcome::FunctionRejected { expected, got } => {
+            warn!(
+                txn_id,
+                expected, got, "rejected Modbus/TCP response with unexpected function code"
+            );
+        }
+        CompletionOutcome::CodecRejected(error) => {
+            warn!(
+                txn_id,
+                error = %error,
+                pdu_len,
+                "failed to decode matching Modbus/TCP response PDU"
+            );
+        }
+    }
+}
+
+fn trace_rtu_outcome(unit_id: u8, pdu_len: usize, outcome: CompletionOutcome) {
+    match outcome {
+        CompletionOutcome::Delivered => {
+            trace!(unit_id, pdu_len, "delivered RTU response");
+        }
+        CompletionOutcome::UnknownOrDuplicate => {
+            trace!(
+                unit_id,
+                pdu_len, "ignored RTU response with no active request"
+            );
+        }
+        CompletionOutcome::UnitMismatch { expected, got } => {
+            trace!(
+                expected,
+                got, pdu_len, "ignored RTU response for another unit"
+            );
+        }
+        CompletionOutcome::FunctionRejected { expected, got } => {
+            warn!(
+                unit_id,
+                expected, got, "rejected RTU response with unexpected function code"
+            );
+        }
+        CompletionOutcome::CodecRejected(error) => {
+            warn!(
+                unit_id,
+                error = %error,
+                pdu_len,
+                "failed to decode matching RTU response PDU"
+            );
+        }
+    }
 }

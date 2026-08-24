@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Added `ClientError::UnexpectedResponseUnitId { expected, got }`. Downstream
+  Rust code that exhaustively matches `ClientError` must handle this variant.
+
+### Fixed
+
+- Client responses now successfully complete a Modbus/TCP request only when the
+  transaction ID, Unit Identifier, and normal or exception function identity
+  match. RTU clients ignore responses for other units while retaining the active
+  request.
+
 ## [0.1.1]
 
 ### Added

@@ -487,6 +487,120 @@ async fn tcp_broadcast_uses_one_admission_slot_without_global_serialization() {
 }
 
 #[tokio::test]
+async fn tcp_response_with_wrong_unit_id_is_rejected() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    let txn_id = match sent.header {
+        FrameHeader::Mbap(header) => header.transaction_id.get(),
+        FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+    };
+
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(txn_id, 2, 4)),
+            pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        })
+        .unwrap();
+
+    let result = request.await;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::UnexpectedResponseUnitId {
+                expected: 1,
+                got: 2
+            })
+        ),
+        "expected a typed unit ID mismatch, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn rtu_response_with_wrong_unit_id_is_ignored() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_rtu_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    assert_eq!(sent.unit_id(), 1);
+
+    controls
+        .response_tx
+        .send(rtu_frame(2, vec![0x03, 0x02, 0x00, 0x11]))
+        .unwrap();
+    controls
+        .response_tx
+        .send(rtu_frame(1, vec![0x03, 0x02, 0x00, 0x2A]))
+        .unwrap();
+
+    assert_eq!(request.await.unwrap(), vec![0x002A]);
+}
+
+#[tokio::test]
+async fn unicast_send_failure_reclaims_only_its_transaction() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Failure).unwrap();
+    let result = client.read_holding_registers(UnitId(1), 0, 1).await;
+    assert!(matches!(result, Err(ClientError::Transport(_))));
+    let failed_request = controls.sent_rx.try_recv().unwrap();
+    assert_eq!(failed_request.unit_id(), 1);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    let txn_id = match sent.header {
+        FrameHeader::Mbap(header) => header.transaction_id.get(),
+        FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+    };
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(txn_id, 1, 4)),
+            pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        })
+        .unwrap();
+
+    assert_eq!(request.await.unwrap(), vec![0x002A]);
+}
+
+#[tokio::test]
+async fn unicast_send_failure_wins_over_early_response() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    let txn_id = match sent.header {
+        FrameHeader::Mbap(header) => header.transaction_id.get(),
+        FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+    };
+
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(txn_id, 1, 4)),
+            pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    controls.outcome_tx.send(SendOutcome::Failure).unwrap();
+
+    assert!(matches!(request.await, Err(ClientError::Transport(_))));
+}
+
+#[tokio::test]
 async fn device_identification_broadcast_read_is_rejected_before_transport() {
     let (sink, stream, mut controls) = controlled_transport();
     let client = ModbusClient::from_rtu_transport(sink, stream, default_config());

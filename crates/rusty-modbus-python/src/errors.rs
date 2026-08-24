@@ -108,6 +108,9 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
         ClientError::TransactionConflict(id) => {
             ModbusError::new_err(format!("transaction conflict: {:?}", id))
         }
+        ClientError::UnexpectedResponseUnitId { expected, got } => ModbusError::new_err(format!(
+            "unexpected response unit ID: expected 0x{expected:02X}, got 0x{got:02X}"
+        )),
         ClientError::UnexpectedResponse { expected, got } => ModbusError::new_err(format!(
             "unexpected response function code: expected 0x{expected:02X}, got 0x{got:02X}"
         )),

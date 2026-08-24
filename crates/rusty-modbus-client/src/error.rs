@@ -33,6 +33,16 @@ pub enum ClientError {
     #[error("transaction ID conflict: {0:?}")]
     TransactionConflict(TransactionId),
 
+    /// A Modbus/TCP response used the request's transaction ID but carried a
+    /// different Unit Identifier.
+    #[error("unexpected response unit ID: expected {expected:#04x}, got {got:#04x}")]
+    UnexpectedResponseUnitId {
+        /// Unit Identifier carried by the request.
+        expected: u8,
+        /// Unit Identifier carried by the response.
+        got: u8,
+    },
+
     /// Client is not connected.
     #[error("not connected")]
     NotConnected,

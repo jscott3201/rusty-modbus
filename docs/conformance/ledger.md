@@ -79,7 +79,7 @@ Client requests and responses carried in MBAP frames over TCP.
 | [`TCP-003`](#requirement-tcp-003) | The MBAP length counts Unit Identifier plus PDU and bounds the ADU to 260 bytes | `supported` | `implemented` | — |
 | [`TCP-004`](#requirement-tcp-004) | TCP fragmentation and coalescing do not change ADU boundaries | `supported` | `implemented` | — |
 | [`TCP-006`](#requirement-tcp-006) | Transaction identifiers are unique while in flight and are reclaimed | `supported` | `implemented` | Slot allocation is implemented, but hostile wraparound and cancellation reclaim evidence is incomplete. |
-| [`TCP-007`](#requirement-tcp-007) | A response matches the expected Unit Identifier and function | `compatibility-deviation` | `implemented` | Transaction identifiers are checked, but Unit Identifier correlation is not enforced on every response path. |
+| [`TCP-007`](#requirement-tcp-007) | A response matches the expected Unit Identifier and function | `supported` | `implemented` | — |
 | [`TCP-008`](#requirement-tcp-008) | Direct and gateway Unit Identifier behavior is explicit | `supported` | `implemented` | — |
 | [`TCP-009`](#requirement-tcp-009) | TCP port 502 is the configurable default | `supported` | `implemented` | — |
 | [`TCP-013`](#requirement-tcp-013) | Connection management survives churn, idle peers, and half-open peers | `compatibility-deviation` | `implemented` | Connection reuse and eviction are implemented without complete health recovery policy. |
@@ -295,7 +295,7 @@ TCP request routing to configured RTU-over-TCP backends; no physical serial gate
 | [`TCP-004`](#requirement-tcp-004) | TCP fragmentation and coalescing do not change ADU boundaries | `supported` | `implemented` | — |
 | [`TCP-005`](#requirement-tcp-005) | A server copies the request Transaction Identifier into its response | `supported` | `implemented` | — |
 | [`TCP-006`](#requirement-tcp-006) | Transaction identifiers are unique while in flight and are reclaimed | `supported` | `implemented` | Slot allocation is implemented, but hostile wraparound and cancellation reclaim evidence is incomplete. |
-| [`TCP-007`](#requirement-tcp-007) | A response matches the expected Unit Identifier and function | `compatibility-deviation` | `implemented` | Transaction identifiers are checked, but Unit Identifier correlation is not enforced on every response path. |
+| [`TCP-007`](#requirement-tcp-007) | A response matches the expected Unit Identifier and function | `supported` | `implemented` | — |
 | [`TCP-008`](#requirement-tcp-008) | Direct and gateway Unit Identifier behavior is explicit | `supported` | `implemented` | — |
 | [`TCP-009`](#requirement-tcp-009) | TCP port 502 is the configurable default | `supported` | `implemented` | — |
 | [`TCP-010`](#requirement-tcp-010) | A server processes multiple outstanding transactions within its advertised bound | `compatibility-deviation` | `implemented` | The configuration exposes a transaction bound, but each connection processes requests sequentially. |
@@ -519,7 +519,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-tcp-006"></a>
 | `TCP-006` — Transaction identifiers are unique while in flight and are reclaimed | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §4.4.1, client transaction management | `crates/rusty-modbus-client/src/transaction.rs` | Gap: Slot allocation is implemented, but hostile wraparound and cancellation reclaim evidence is incomplete. (PR-201) |
 <a id="requirement-tcp-007"></a>
-| `TCP-007` — A response matches the expected Unit Identifier and function | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3 and §4.4.1, response identity and transaction pairing | `crates/rusty-modbus-client/src/reader.rs`; `crates/rusty-modbus-client/src/transaction.rs` | Gap: The reader correlates transaction identifiers but does not enforce every response identity field. (PR-201) |
+| `TCP-007` — A response matches the expected Unit Identifier and function | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3 and §4.4.1, response identity and transaction pairing | `crates/rusty-modbus-client/src/error.rs`; `crates/rusty-modbus-client/src/reader.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_client_server` |
 <a id="requirement-tcp-008"></a>
 | `TCP-008` — Direct and gateway Unit Identifier behavior is explicit | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.2 and §4.4.4, Unit Identifier routing | `crates/rusty-modbus-gateway/src/gateway.rs` | `spec_gateway` |
 <a id="requirement-tcp-009"></a>
@@ -631,7 +631,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 |---|---|---|
 | `spec_broadcast` | `crates/rusty-modbus-conformance/tests/spec_broadcast.rs` | `APP-022`, `RTU-001`, `RTU-011` |
 | `spec_byte_count_semantic` | `crates/rusty-modbus-conformance/tests/spec_byte_count_semantic.rs` | `APP-006`, `APP-007`, `APP-012`, `APP-013`, `APP-020` |
-| `spec_client_server` | `crates/rusty-modbus-conformance/tests/spec_client_server.rs` | `TCP-005`, `CONF-001`, `CONF-002` |
+| `spec_client_server` | `crates/rusty-modbus-conformance/tests/spec_client_server.rs` | `TCP-005`, `TCP-007`, `CONF-001`, `CONF-002` |
 | `spec_constants` | `crates/rusty-modbus-conformance/tests/spec_constants.rs` | `APP-001`, `APP-004`, `APP-005`, `APP-006`, `APP-007`, `APP-008`, `APP-009`, `TCP-009`, `RTU-002`, `SEC-001`, `SEC-005` |
 | `spec_crc16` | `crates/rusty-modbus-conformance/tests/spec_crc16.rs` | `RTU-003` |
 | `spec_encode_validation` | `crates/rusty-modbus-conformance/tests/spec_encode_validation.rs` | `APP-001`, `APP-006`, `APP-007`, `APP-020`, `CONF-003` |
@@ -687,7 +687,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `F-002` | `P1` | Verified source finding / normative gap | `mitigated` | maintainers | `PR-101` | `RTU-007` | RTU config permits non-Modbus data-bit profiles and defaults to 8N1 while timing assumes an 11-bit character | Mitigated by the validated strict physical RTU configuration and timing path; the public legacy configuration remains permissive for compatibility. |
 | `F-003` | `P1` | Verified source finding / normative gap | `open` | maintainers | `PR-102` | `RTU-005` | Receive-side t1.5 invalidation is absent | — |
 | `F-004` | `P1` | Verified source finding / evidence gap | `open` | maintainers | `PR-103` | `RTU-009`, `RTU-010`, `CONF-004` | RTU transmit turnaround is not modeled from true bus idle/wire completion; noise recovery can terminate the shared reader | — |
-| `F-005` | `P1` | Verified source finding | `open` | maintainers | `PR-201` | `TCP-007` | Pending TCP transactions do not retain/validate expected Unit Identifier | — |
+| `F-005` | `P1` | Verified source finding | `closed` | maintainers | `PR-201` | `TCP-007` | Pending TCP transactions do not retain/validate expected Unit Identifier | Closed by retaining the expected Unit Identifier and function identity for each pending request, enforcing both before delivery, and covering mismatched Modbus/TCP response Unit Identifiers in spec_client_server. |
 | `F-006` | `P1` | Verified source finding / normative gap | `open` | maintainers | `PR-202` | `APP-011`, `APP-012`, `APP-013` | Read responses are not validated against exact requested quantity; odd register byte counts and non-zero bit padding are not universally rejected | — |
 | `F-007` | `P1` | Verified source finding / safety gap | `open` | maintainers | `PR-203` | `TCP-011`, `CONF-002` | Automatic timeout retry applies to writes and can duplicate side effects after an ambiguous response loss | — |
 | `F-008` | `P1` | Verified source finding / normative gap | `open` | maintainers | `PR-203` | `APP-018` | Exception `0x05` Acknowledge is treated as a normal retry signal | — |

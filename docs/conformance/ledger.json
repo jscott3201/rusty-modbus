@@ -1877,30 +1877,29 @@
       "owner": "maintainers",
       "implementation_refs": [
         {
+          "path": "crates/rusty-modbus-client/src/error.rs"
+        },
+        {
           "path": "crates/rusty-modbus-client/src/reader.rs"
         },
         {
           "path": "crates/rusty-modbus-client/src/transaction.rs"
         }
       ],
-      "test_ids": [],
-      "evidence_gap": {
-        "detail": "The reader correlates transaction identifiers but does not enforce every response identity field.",
-        "owner": "maintainers",
-        "follow_up": "PR-201"
-      },
+      "test_ids": [
+        "spec_client_server"
+      ],
+      "evidence_gap": null,
       "assessments": [
         {
           "profile": "tcp-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Transaction identifiers are checked, but Unit Identifier correlation is not enforced on every response path."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "gateway",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Transaction identifiers are checked, but Unit Identifier correlation is not enforced on every response path."
+          "disposition": "supported",
+          "evidence": "implemented"
         }
       ]
     },
@@ -3903,6 +3902,7 @@
       "path": "crates/rusty-modbus-conformance/tests/spec_client_server.rs",
       "requirement_ids": [
         "TCP-005",
+        "TCP-007",
         "CONF-001",
         "CONF-002"
       ],
@@ -4795,7 +4795,8 @@
       "title": "Pending TCP transactions do not retain/validate expected Unit Identifier",
       "priority": "P1",
       "confidence": "Verified source finding",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by retaining the expected Unit Identifier and function identity for each pending request, enforcing both before delivery, and covering mismatched Modbus/TCP response Unit Identifiers in spec_client_server.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-201"

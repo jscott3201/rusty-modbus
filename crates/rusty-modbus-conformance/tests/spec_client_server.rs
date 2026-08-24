@@ -10,16 +10,22 @@
 //! - §6.16: Mask write algorithm
 //! - §6.17: Write-before-read ordering
 //! - TCP Guide §4.4.1.3: Transaction ID echo
+//! - TCP Guide §§3.1.3, 4.4.1: response Unit Identifier correlation
 //! - V1.1b3 §4: Broadcast writes execute, no response
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient};
+use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_server::ModbusServer;
 use rusty_modbus_server::config::ServerConfig;
 use rusty_modbus_server::store::memory::{InMemoryStore, StoreConfig};
-use rusty_modbus_types::{ExceptionCode, UnitId};
+use rusty_modbus_tcp::config::TcpServerConfig;
+use rusty_modbus_tcp::listener::TcpServerListener;
+use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
+use rusty_modbus_types::{ExceptionCode, MbapHeader, UnitId};
 
 async fn start_server_with_store(
     store: Arc<InMemoryStore>,
@@ -253,6 +259,41 @@ async fn unit_id_mismatch_silently_discarded() {
         result.is_err(),
         "expected error for mismatched unit ID, got {result:?}"
     );
+}
+
+#[tokio::test]
+async fn tcp_007_client_rejects_response_with_wrong_unit_id() {
+    let listener =
+        TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
+            .await
+            .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (mut sink, mut stream, _, _guard) = listener.accept().await.unwrap();
+        let request = stream.recv().await.unwrap();
+        let txn_id = match request.header {
+            FrameHeader::Mbap(header) => header.transaction_id.get(),
+            FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+        };
+        let pdu = Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]);
+        sink.send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(txn_id, 2, pdu.len() as u16)),
+            pdu,
+        })
+        .await
+        .unwrap();
+    });
+
+    let client = ModbusClient::connect(addr, client_config()).await.unwrap();
+    let result = client.read_holding_registers(UnitId(1), 0, 1).await;
+    assert!(matches!(
+        result,
+        Err(ClientError::UnexpectedResponseUnitId {
+            expected: 1,
+            got: 2
+        })
+    ));
 }
 
 #[tokio::test]
