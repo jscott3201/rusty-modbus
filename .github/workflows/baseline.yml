@@ -1,0 +1,159 @@
+name: reproducible baseline
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - '.github/workflows/baseline.yml'
+      - 'benchmarks/**'
+      - 'benchmarks.md'
+      - 'scripts/baseline.py'
+      - 'scripts/test-baseline.py'
+      - 'scripts/ci-pr.sh'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/*/Cargo.toml'
+      - 'crates/rusty-modbus/**'
+      - 'crates/rusty-modbus-client/**'
+      - 'crates/rusty-modbus-codec/**'
+      - 'crates/rusty-modbus-frame/**'
+      - 'crates/rusty-modbus-pool/**'
+      - 'crates/rusty-modbus-rtu/**'
+      - 'crates/rusty-modbus-server/**'
+      - 'crates/rusty-modbus-sim/**'
+      - 'crates/rusty-modbus-tcp/**'
+      - 'crates/rusty-modbus-tls/**'
+      - 'crates/rusty-modbus-types/**'
+  push:
+    branches: [dev]
+    paths:
+      - '.github/workflows/baseline.yml'
+      - 'benchmarks/**'
+      - 'benchmarks.md'
+      - 'scripts/baseline.py'
+      - 'scripts/test-baseline.py'
+      - 'scripts/ci-pr.sh'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/*/Cargo.toml'
+      - 'crates/rusty-modbus/**'
+      - 'crates/rusty-modbus-client/**'
+      - 'crates/rusty-modbus-codec/**'
+      - 'crates/rusty-modbus-frame/**'
+      - 'crates/rusty-modbus-pool/**'
+      - 'crates/rusty-modbus-rtu/**'
+      - 'crates/rusty-modbus-server/**'
+      - 'crates/rusty-modbus-sim/**'
+      - 'crates/rusty-modbus-tcp/**'
+      - 'crates/rusty-modbus-tls/**'
+      - 'crates/rusty-modbus-types/**'
+  schedule:
+    - cron: '30 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Baseline mode
+        required: true
+        type: choice
+        options:
+          - correctness
+          - bench-smoke
+          - bench-full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baseline-${{ github.workflow }}-${{ github.ref }}-${{ inputs.mode || 'automatic' }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  smoke:
+    name: benchmark smoke
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'bench-smoke')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: test baseline harness
+        run: python3 scripts/test-baseline.py
+      - name: run smoke baseline
+        run: python3 scripts/baseline.py bench-smoke --runner-label github-actions-linux --run-id "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - name: upload baseline artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-smoke-${{ github.sha }}
+          path: bench-output/baseline-v1/${{ github.sha }}/
+          retention-days: 30
+          if-no-files-found: error
+
+  full:
+    name: full benchmark baseline
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'bench-full')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: test baseline harness
+        run: python3 scripts/test-baseline.py
+      - name: run full baseline
+        run: python3 scripts/baseline.py bench-full --runner-label github-actions-linux --run-id "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - name: upload baseline artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-full-${{ github.sha }}
+          path: bench-output/baseline-v1/${{ github.sha }}/
+          retention-days: 90
+          if-no-files-found: error
+
+  correctness:
+    name: correctness baseline
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'correctness'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt,clippy
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest,cargo-deny,cargo-audit
+      - name: install uv
+        run: python3 -m pip install uv
+      - name: test baseline harness
+        run: python3 scripts/test-baseline.py
+      - name: run correctness baseline
+        run: python3 scripts/baseline.py correctness --runner-label github-actions-linux --run-id "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - name: upload baseline artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-correctness-${{ github.sha }}
+          path: bench-output/baseline-v1/${{ github.sha }}/
+          retention-days: 90
+          if-no-files-found: error

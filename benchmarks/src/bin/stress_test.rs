@@ -62,17 +62,22 @@ struct Args {
 
 #[derive(Serialize)]
 struct StressResult {
+    schema_version: u32,
     transport: String,
     clients: usize,
     in_flight: usize,
     duration_secs: u64,
+    warmup_secs: u64,
     operation: String,
+    registers: u16,
     total_ops: u64,
     throughput_ops_sec: f64,
     per_client_ops_sec: f64,
     latency_ms: LatencyStats,
     errors: u64,
     error_rate: f64,
+    /// The TCP helper sets max retries to zero; the TLS and RTU loops have no retry layer.
+    retry_attempts: u64,
     memory: MemoryStats,
 }
 
@@ -192,11 +197,14 @@ async fn main() {
     let rss_after = current_rss_bytes();
 
     let result = StressResult {
+        schema_version: 1,
         transport: args.transport.clone(),
         clients: args.clients,
         in_flight: args.in_flight,
         duration_secs: args.duration,
+        warmup_secs: args.warmup,
         operation: args.operation.clone(),
+        registers: args.registers,
         total_ops,
         throughput_ops_sec: total_ops as f64 / args.duration as f64,
         per_client_ops_sec: total_ops as f64 / args.duration as f64 / args.clients as f64,
@@ -214,6 +222,7 @@ async fn main() {
         } else {
             0.0
         },
+        retry_attempts: 0,
         memory: MemoryStats {
             rss_before_mb: rss_before / (1024 * 1024),
             rss_after_mb: rss_after / (1024 * 1024),
@@ -434,7 +443,7 @@ fn parse_in_flight(raw: &str) -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_in_flight;
+    use super::{LatencyStats, MemoryStats, StressResult, parse_in_flight};
 
     #[test]
     fn in_flight_parser_accepts_transaction_ring_bounds() {
@@ -446,5 +455,43 @@ mod tests {
     fn in_flight_parser_rejects_out_of_range_values() {
         assert!(parse_in_flight("0").is_err());
         assert!(parse_in_flight("17").is_err());
+    }
+
+    #[test]
+    fn json_contract_records_schema_workload_and_no_retries() {
+        let result = StressResult {
+            schema_version: 1,
+            transport: String::from("tcp"),
+            clients: 1,
+            in_flight: 8,
+            duration_secs: 5,
+            warmup_secs: 1,
+            operation: String::from("read"),
+            registers: 10,
+            total_ops: 100,
+            throughput_ops_sec: 20.0,
+            per_client_ops_sec: 20.0,
+            latency_ms: LatencyStats {
+                p50: 0.1,
+                p95: 0.2,
+                p99: 0.3,
+                p999: 0.4,
+                min: 0.05,
+                max: 0.5,
+            },
+            errors: 0,
+            error_rate: 0.0,
+            retry_attempts: 0,
+            memory: MemoryStats {
+                rss_before_mb: 10,
+                rss_after_mb: 11,
+                delta_mb: 1,
+            },
+        };
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["warmup_secs"], 1);
+        assert_eq!(value["registers"], 10);
+        assert_eq!(value["retry_attempts"], 0);
     }
 }

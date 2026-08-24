@@ -1,0 +1,1499 @@
+#!/usr/bin/env python3
+"""Create and validate reproducible correctness and benchmark evidence."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import math
+import os
+import platform
+import re
+import statistics
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+from typing import Any, Sequence
+
+SCHEMA_VERSION = 1
+HARNESS_VERSION = "1"
+HARNESS_PATH = "scripts/baseline.py"
+DEFAULT_OUTPUT_ROOT = "bench-output"
+FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
+RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+RUNNER_LABEL = re.compile(r"[^\x00-\x1f\x7f]{1,128}\Z")
+MODES = ("correctness", "bench-smoke", "bench-full")
+GITHUB_ENV_ALLOWLIST = (
+    "GITHUB_ACTIONS",
+    "GITHUB_JOB",
+    "GITHUB_REF",
+    "GITHUB_REF_NAME",
+    "GITHUB_RUN_ATTEMPT",
+    "GITHUB_RUN_ID",
+    "GITHUB_SHA",
+    "GITHUB_WORKFLOW",
+    "RUNNER_ARCH",
+    "RUNNER_NAME",
+    "RUNNER_OS",
+)
+CSV_COLUMNS = (
+    "record_type",
+    "transport",
+    "operation",
+    "in_flight",
+    "clients",
+    "registers",
+    "repetitions",
+    "throughput_count",
+    "throughput_min",
+    "throughput_median",
+    "throughput_mean",
+    "throughput_max",
+    "throughput_sample_stddev",
+    "throughput_cv",
+    "p99_count",
+    "p99_min_ms",
+    "p99_median_ms",
+    "p99_mean_ms",
+    "p99_max_ms",
+    "p99_sample_stddev_ms",
+    "p99_cv",
+    "total_errors",
+    "retry_attempts",
+    "criterion_id",
+    "criterion_mean_lower_ns",
+    "criterion_mean_point_ns",
+    "criterion_mean_upper_ns",
+)
+STRESS_NUMERIC_FIELDS = (
+    "throughput_ops_sec",
+    "per_client_ops_sec",
+    "error_rate",
+)
+STRESS_INTEGER_FIELDS = (
+    "schema_version",
+    "clients",
+    "in_flight",
+    "duration_secs",
+    "warmup_secs",
+    "registers",
+    "total_ops",
+    "errors",
+    "retry_attempts",
+)
+LATENCY_FIELDS = ("p50", "p95", "p99", "p999", "min", "max")
+MEMORY_FIELDS = ("rss_before_mb", "rss_after_mb", "delta_mb")
+
+
+class BaselineError(Exception):
+    """Raised when evidence cannot be produced or validated."""
+
+
+class CommandFailure(BaselineError):
+    """Raised after a failed command has been recorded."""
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    label: str
+    argv: tuple[str, ...]
+    cwd: Path
+    env: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class BootstrapResult:
+    argv: tuple[str, ...]
+    cwd: Path
+    stdout: bytes
+    stderr: bytes
+    exit_code: int | None
+    started_utc: str
+    ended_utc: str
+    duration_seconds: float
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    command_id: str
+    argv: tuple[str, ...]
+    cwd: Path
+    stdout: bytes
+    stderr: bytes
+    exit_code: int | None
+    status: str
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def validate_full_sha(value: str) -> str:
+    if not FULL_SHA.fullmatch(value):
+        raise BaselineError(f"target SHA must be 40 lowercase hexadecimal characters: {value!r}")
+    return value
+
+
+def validate_run_id(value: str) -> str:
+    if value in {".", ".."} or not RUN_ID.fullmatch(value):
+        raise BaselineError(
+            "run ID must be 1-64 ASCII letters, digits, dots, underscores, or hyphens; "
+            "it must start with a letter or digit"
+        )
+    return value
+
+
+def validate_runner_label(value: str) -> str:
+    if not RUNNER_LABEL.fullmatch(value):
+        raise BaselineError("runner label must be 1-128 characters without control characters")
+    return value
+
+
+def enforce_clean_worktree(dirty: bool, allow_dirty: bool) -> None:
+    if dirty and not allow_dirty:
+        raise BaselineError(
+            "non-ignored worktree is dirty; use --allow-dirty only for invalid diagnostics"
+        )
+
+
+def resolve_output_root(repo_root: Path, value: str) -> Path:
+    raw = Path(value)
+    if not raw.is_absolute():
+        pure = PurePosixPath(value.replace(os.sep, "/"))
+        if ".." in pure.parts or pure.is_absolute():
+            raise BaselineError("relative output root must not contain path traversal")
+        raw = repo_root / raw
+    resolved = raw.resolve()
+    try:
+        relative = resolved.relative_to(repo_root.resolve())
+    except ValueError as error:
+        raise BaselineError("output root must be inside the repository") from error
+    if not relative.parts:
+        raise BaselineError("output root must not be the repository root")
+    return resolved
+
+
+def default_run_id() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + f"-{os.getpid()}"
+
+
+def _run_bootstrap(argv: Sequence[str], cwd: Path) -> BootstrapResult:
+    started = utc_now()
+    start = time.monotonic()
+    try:
+        completed = subprocess.run(
+            list(argv), cwd=cwd, capture_output=True, check=False, shell=False
+        )
+        exit_code: int | None = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+        error = None
+    except OSError as caught:
+        exit_code = None
+        stdout = b""
+        stderr = str(caught).encode("utf-8", errors="replace")
+        error = f"{type(caught).__name__}: {caught}"
+    return BootstrapResult(
+        argv=tuple(argv),
+        cwd=cwd.resolve(),
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=exit_code,
+        started_utc=started,
+        ended_utc=utc_now(),
+        duration_seconds=time.monotonic() - start,
+        error=error,
+    )
+
+
+def bootstrap_repository(repo_root: Path) -> tuple[dict[str, Any], list[BootstrapResult]]:
+    commands = [
+        _run_bootstrap(("git", "rev-parse", "HEAD"), repo_root),
+        _run_bootstrap(
+            ("git", "status", "--porcelain", "--untracked-files=all"), repo_root
+        ),
+        _run_bootstrap(("git", "symbolic-ref", "--short", "-q", "HEAD"), repo_root),
+    ]
+    if commands[0].exit_code != 0:
+        raise BaselineError("cannot resolve repository HEAD")
+    if commands[1].exit_code != 0:
+        raise BaselineError("cannot inspect non-ignored worktree state")
+    target_sha = validate_full_sha(commands[0].stdout.decode().strip())
+    dirty = bool(commands[1].stdout.strip())
+    branch = commands[2].stdout.decode("utf-8", errors="replace").strip() or None
+    return (
+        {
+            "target_sha": target_sha,
+            "branch": branch,
+            "detached": branch is None,
+            "dirty": dirty,
+        },
+        commands,
+    )
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+    return slug[:48] or "command"
+
+
+class ArtifactRun:
+    def __init__(
+        self,
+        *,
+        repo_root: Path,
+        output_root: Path,
+        target_sha: str,
+        run_id: str,
+        mode: str,
+        runner_label: str,
+        dirty: bool,
+        allow_dirty: bool,
+    ) -> None:
+        self.repo_root = repo_root.resolve()
+        self.output_root = output_root.resolve()
+        self.target_sha = validate_full_sha(target_sha)
+        self.run_id = validate_run_id(run_id)
+        self.mode = mode
+        self.runner_label = validate_runner_label(runner_label)
+        self.dirty = dirty
+        self.allow_dirty = allow_dirty
+        self.run_dir = (
+            self.output_root / f"baseline-v{SCHEMA_VERSION}" / self.target_sha / self.run_id
+        )
+        self.started_utc = utc_now()
+        self.command_count = 0
+        self.command_records: list[dict[str, Any]] = []
+        self.errors: list[str] = []
+        self.stress_samples: list[dict[str, Any]] = []
+        self.stress_aggregates: list[dict[str, Any]] = []
+        self.criterion_results: list[dict[str, Any]] = []
+        self.environment: dict[str, Any] = {}
+        self.provenance: dict[str, Any] = {}
+        self.finalized = False
+
+    def create(self) -> None:
+        self.run_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.run_dir.mkdir()
+        except FileExistsError as error:
+            raise BaselineError(f"run directory already exists: {self.run_dir}") from error
+        (self.run_dir / "commands").mkdir()
+        self.provenance = {
+            "schema_version": SCHEMA_VERSION,
+            "harness_version": HARNESS_VERSION,
+            "harness_path": HARNESS_PATH,
+            "target_sha": self.target_sha,
+            "mode": self.mode,
+            "run_id": self.run_id,
+            "started_utc": self.started_utc,
+            "ended_utc": None,
+            "dirty": self.dirty,
+            "dirty_override": self.allow_dirty,
+            "baseline_eligible": not self.dirty,
+        }
+        write_json(self.run_dir / "provenance.json", self.provenance)
+        write_json(
+            self.run_dir / "environment.json",
+            {"schema_version": SCHEMA_VERSION, "collection_status": "pending"},
+        )
+
+    def _record_result(
+        self,
+        *,
+        label: str,
+        argv: Sequence[str],
+        cwd: Path,
+        stdout: bytes,
+        stderr: bytes,
+        exit_code: int | None,
+        started_utc: str,
+        ended_utc: str,
+        duration_seconds: float,
+        env_overrides: dict[str, str] | None,
+        error: str | None,
+    ) -> CommandResult:
+        self.command_count += 1
+        command_id = f"{self.command_count:03d}-{_slug(label)}"
+        command_dir = self.run_dir / "commands" / command_id
+        command_dir.mkdir()
+        stdout_path = command_dir / "command.stdout"
+        stderr_path = command_dir / "command.stderr"
+        stdout_path.write_bytes(stdout)
+        stderr_path.write_bytes(stderr)
+        status = "passed" if exit_code == 0 and error is None else "failed"
+        record = {
+            "schema_version": SCHEMA_VERSION,
+            "command_id": command_id,
+            "label": label,
+            "argv": list(argv),
+            "cwd": str(cwd.resolve()),
+            "started_utc": started_utc,
+            "ended_utc": ended_utc,
+            "duration_seconds": duration_seconds,
+            "exit_code": exit_code,
+            "status": status,
+            "error": error,
+            "env_overrides": dict(sorted((env_overrides or {}).items())),
+            "stdout_path": self._repo_relative(stdout_path),
+            "stderr_path": self._repo_relative(stderr_path),
+        }
+        write_json(command_dir / "command.json", record)
+        self.command_records.append(record)
+        return CommandResult(
+            command_id=command_id,
+            argv=tuple(argv),
+            cwd=cwd.resolve(),
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            status=status,
+        )
+
+    def record_bootstrap(self, label: str, result: BootstrapResult) -> CommandResult:
+        return self._record_result(
+            label=label,
+            argv=result.argv,
+            cwd=result.cwd,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+            started_utc=result.started_utc,
+            ended_utc=result.ended_utc,
+            duration_seconds=result.duration_seconds,
+            env_overrides=None,
+            error=result.error,
+        )
+
+    def run_command(
+        self,
+        spec: CommandSpec,
+        *,
+        required: bool = True,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        started = utc_now()
+        start = time.monotonic()
+        overrides = dict(spec.env)
+        command_env = os.environ.copy()
+        command_env.update(overrides)
+        error: str | None = None
+        try:
+            completed = subprocess.run(
+                list(spec.argv),
+                cwd=spec.cwd,
+                env=command_env,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=timeout,
+            )
+            stdout = completed.stdout
+            stderr = completed.stderr
+            exit_code: int | None = completed.returncode
+        except subprocess.TimeoutExpired as caught:
+            stdout = caught.stdout or b""
+            stderr = caught.stderr or b""
+            exit_code = None
+            error = f"command timed out after {timeout} seconds"
+        except OSError as caught:
+            stdout = b""
+            stderr = str(caught).encode("utf-8", errors="replace")
+            exit_code = None
+            error = f"{type(caught).__name__}: {caught}"
+        result = self._record_result(
+            label=spec.label,
+            argv=spec.argv,
+            cwd=spec.cwd,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            started_utc=started,
+            ended_utc=utc_now(),
+            duration_seconds=time.monotonic() - start,
+            env_overrides=overrides,
+            error=error,
+        )
+        if required and result.status != "passed":
+            raise CommandFailure(
+                f"command {result.command_id} failed with exit code {result.exit_code}"
+            )
+        return result
+
+    def add_error(self, error: BaseException | str) -> None:
+        message = str(error)
+        if message not in self.errors:
+            self.errors.append(message)
+
+    def _repo_relative(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(self.repo_root).as_posix()
+        except ValueError as error:
+            raise BaselineError(f"artifact path is outside repository: {path}") from error
+
+    def finalize(self) -> None:
+        if self.finalized:
+            return
+        self.provenance["ended_utc"] = utc_now()
+        self.provenance["baseline_eligible"] = not self.dirty and not self.errors
+        write_json(self.run_dir / "provenance.json", self.provenance)
+        if not self.environment:
+            self.environment = {
+                "schema_version": SCHEMA_VERSION,
+                "collection_status": "incomplete",
+            }
+        write_json(self.run_dir / "environment.json", self.environment)
+        if self.errors:
+            status = "failed"
+        elif self.dirty:
+            status = "invalid"
+        else:
+            status = "passed"
+        summary = {
+            "schema_version": SCHEMA_VERSION,
+            "mode": self.mode,
+            "target_sha": self.target_sha,
+            "run_id": self.run_id,
+            "status": status,
+            "baseline_valid": not self.dirty and not self.errors,
+            "invalid_reasons": (["dirty non-ignored worktree"] if self.dirty else [])
+            + self.errors,
+            "command_count": len(self.command_records),
+            "commands": [record["command_id"] for record in self.command_records],
+            "stress_samples": self.stress_samples,
+            "stress_aggregates": self.stress_aggregates,
+            "criterion_results": self.criterion_results,
+        }
+        write_json(self.run_dir / "summary.json", summary)
+        write_summary_csv(
+            self.run_dir / "summary.csv", self.stress_aggregates, self.criterion_results
+        )
+        write_checksums(self.repo_root, self.run_dir)
+        self.finalized = True
+
+
+def allowlisted_runner_environment(environ: dict[str, str] | None = None) -> dict[str, str]:
+    source = environ if environ is not None else os.environ
+    return {key: source[key] for key in GITHUB_ENV_ALLOWLIST if key in source}
+
+
+def cpu_metadata() -> dict[str, Any]:
+    model: str | None = platform.processor() or None
+    source: str | None = "platform.processor" if model else None
+    if platform.system() == "Linux":
+        try:
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+                if line.casefold().startswith("model name"):
+                    model = line.split(":", 1)[1].strip()
+                    source = "/proc/cpuinfo"
+                    break
+        except OSError:
+            pass
+    return {
+        "model": model,
+        "model_source": source,
+        "logical_count": os.cpu_count(),
+    }
+
+
+def power_metadata() -> dict[str, Any]:
+    governor = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    try:
+        value = governor.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {"availability": "unavailable", "value": None, "source": None}
+    return {"availability": "available", "value": value, "source": str(governor)}
+
+
+def parse_rustc_verbose(text: str) -> dict[str, str | None]:
+    values: dict[str, str | None] = {"version": None, "host": None}
+    lines = text.splitlines()
+    if lines:
+        values["version"] = lines[0]
+    for line in lines:
+        if line.startswith("host: "):
+            values["host"] = line.removeprefix("host: ")
+    return values
+
+
+def summarize_cargo_metadata(payload: bytes) -> tuple[dict[str, Any], list[str], Path]:
+    try:
+        data = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BaselineError(f"cargo metadata output is malformed: {error}") from error
+    packages = data.get("packages")
+    if not isinstance(packages, list):
+        raise BaselineError("cargo metadata packages must be a list")
+    benchmark_targets: list[str] = []
+    package_summary: list[dict[str, Any]] = []
+    for package in packages:
+        targets = package.get("targets", [])
+        target_summary = []
+        for target in targets:
+            kinds = target.get("kind", [])
+            name = target.get("name")
+            if package.get("name") == "rusty-modbus-benchmarks" and "bench" in kinds:
+                benchmark_targets.append(name)
+            target_summary.append({"name": name, "kind": kinds})
+        package_summary.append(
+            {
+                "name": package.get("name"),
+                "version": package.get("version"),
+                "targets": sorted(target_summary, key=lambda item: str(item["name"])),
+            }
+        )
+    target_directory = Path(data.get("target_directory", ""))
+    if not target_directory.is_absolute():
+        raise BaselineError("cargo metadata target_directory must be absolute")
+    summary = {
+        "workspace_root": data.get("workspace_root"),
+        "target_directory": str(target_directory),
+        "workspace_member_count": len(data.get("workspace_members", [])),
+        "packages": sorted(package_summary, key=lambda item: str(item["name"])),
+    }
+    return summary, sorted(benchmark_targets), target_directory
+
+
+def collect_environment(run: ArtifactRun) -> tuple[list[str], Path]:
+    rustc = run.run_command(
+        CommandSpec("rustc-version", ("rustc", "-Vv"), run.repo_root)
+    )
+    cargo = run.run_command(CommandSpec("cargo-version", ("cargo", "-V"), run.repo_root))
+    metadata = run.run_command(
+        CommandSpec(
+            "cargo-metadata",
+            ("cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"),
+            run.repo_root,
+        )
+    )
+    metadata_summary, bench_targets, target_directory = summarize_cargo_metadata(
+        metadata.stdout
+    )
+    cpu = cpu_metadata()
+    power = power_metadata()
+    if platform.system() == "Darwin":
+        cpu_probe = run.run_command(
+            CommandSpec(
+                "cpu-model", ("sysctl", "-n", "machdep.cpu.brand_string"), run.repo_root
+            ),
+            required=False,
+        )
+        cpu_value = cpu_probe.stdout.decode("utf-8", errors="replace").strip()
+        if cpu_probe.status == "passed" and cpu_value:
+            cpu.update({"model": cpu_value, "model_source": "sysctl machdep.cpu.brand_string"})
+        power_probe = run.run_command(
+            CommandSpec("power-mode", ("pmset", "-g", "custom"), run.repo_root),
+            required=False,
+        )
+        if power_probe.status == "passed":
+            entries = [
+                line.strip()
+                for line in power_probe.stdout.decode("utf-8", errors="replace").splitlines()
+                if "lowpowermode" in line
+            ]
+            if entries:
+                power = {
+                    "availability": "available",
+                    "value": entries,
+                    "source": "pmset -g custom",
+                }
+    run.environment = {
+        "schema_version": SCHEMA_VERSION,
+        "collection_status": "complete",
+        "runner": {
+            "label": run.runner_label,
+            "github": allowlisted_runner_environment(),
+        },
+        "platform": {
+            "os": platform.system(),
+            "release": platform.release(),
+            "kernel": platform.version(),
+            "architecture": platform.machine(),
+        },
+        "cpu": cpu,
+        "power": power,
+        "tools": {
+            "rustc": parse_rustc_verbose(rustc.stdout.decode("utf-8", errors="replace")),
+            "cargo": cargo.stdout.decode("utf-8", errors="replace").strip(),
+            "python": {
+                "version": platform.python_version(),
+                "implementation": platform.python_implementation(),
+                "executable": sys.executable,
+            },
+        },
+        "cargo_metadata": metadata_summary,
+    }
+    write_json(run.run_dir / "environment.json", run.environment)
+    return bench_targets, target_directory
+
+
+def correctness_plan(repo_root: Path) -> list[CommandSpec]:
+    python_crate = repo_root / "crates/rusty-modbus-python"
+    return [
+        CommandSpec("cargo-fmt", ("cargo", "fmt", "--all", "--check"), repo_root),
+        CommandSpec(
+            "conformance-ledger-tests",
+            ("python3", "scripts/test-conformance-ledger.py"),
+            repo_root,
+        ),
+        CommandSpec(
+            "conformance-ledger-check",
+            ("python3", "scripts/check-conformance-ledger.py", "--check"),
+            repo_root,
+        ),
+        CommandSpec("baseline-tests", ("python3", "scripts/test-baseline.py"), repo_root),
+        CommandSpec(
+            "workspace-clippy",
+            (
+                "cargo",
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--locked",
+                "--",
+                "-D",
+                "warnings",
+            ),
+            repo_root,
+        ),
+        CommandSpec(
+            "workspace-nextest",
+            ("cargo", "nextest", "run", "--workspace", "--locked", "--profile", "ci"),
+            repo_root,
+        ),
+        CommandSpec(
+            "workspace-doctests",
+            ("cargo", "test", "--workspace", "--locked", "--doc"),
+            repo_root,
+        ),
+        CommandSpec(
+            "conformance-nextest",
+            (
+                "cargo",
+                "nextest",
+                "run",
+                "-p",
+                "rusty-modbus-conformance",
+                "--locked",
+                "--profile",
+                "ci",
+            ),
+            repo_root,
+        ),
+        CommandSpec(
+            "facade-no-default",
+            (
+                "cargo",
+                "check",
+                "-p",
+                "rusty-modbus",
+                "--no-default-features",
+                "--locked",
+            ),
+            repo_root,
+        ),
+        CommandSpec(
+            "facade-full",
+            ("cargo", "check", "-p", "rusty-modbus", "--features", "full", "--locked"),
+            repo_root,
+        ),
+        CommandSpec(
+            "facade-all-features",
+            ("cargo", "check", "-p", "rusty-modbus", "--all-features", "--locked"),
+            repo_root,
+        ),
+        CommandSpec(
+            "types-no-std",
+            (
+                "cargo",
+                "check",
+                "-p",
+                "rusty-modbus-types",
+                "--no-default-features",
+                "--locked",
+            ),
+            repo_root,
+        ),
+        CommandSpec(
+            "codec-no-std",
+            (
+                "cargo",
+                "check",
+                "-p",
+                "rusty-modbus-codec",
+                "--no-default-features",
+                "--locked",
+            ),
+            repo_root,
+        ),
+        CommandSpec(
+            "publish-version-check",
+            ("python3", "scripts/check-publish-versions.py"),
+            repo_root,
+        ),
+        CommandSpec(
+            "full-feature-examples",
+            (
+                "cargo",
+                "check",
+                "-p",
+                "rusty-modbus",
+                "--examples",
+                "--features",
+                "full",
+                "--locked",
+            ),
+            repo_root,
+        ),
+        CommandSpec(
+            "python-binding-clippy",
+            ("cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"),
+            python_crate,
+        ),
+        CommandSpec("python-binding-full", ("scripts/ci-python.sh",), repo_root),
+        CommandSpec(
+            "cargo-deny",
+            ("cargo", "deny", "check", "bans", "licenses", "sources"),
+            repo_root,
+        ),
+        CommandSpec(
+            "cargo-audit",
+            ("cargo", "audit", "--ignore", "RUSTSEC-2025-0134"),
+            repo_root,
+        ),
+    ]
+
+
+def stress_scenarios(mode: str, repetitions: int) -> list[dict[str, Any]]:
+    depths = (1, 8, 16) if mode == "bench-smoke" else (1, 2, 4, 8, 16)
+    return [
+        {
+            "transport": "tcp",
+            "operation": operation,
+            "in_flight": depth,
+            "clients": 1,
+            "registers": 10,
+            "repetition": repetition,
+        }
+        for operation in ("read", "mixed")
+        for depth in depths
+        for repetition in range(1, repetitions + 1)
+    ]
+
+
+def benchmark_criterion_specs(
+    mode: str, repo_root: Path, bench_targets: Sequence[str], run_dir: Path
+) -> list[CommandSpec]:
+    if mode == "bench-smoke":
+        definitions = (("tcp_throughput", "tcp_pipelined"),)
+    else:
+        definitions = tuple(
+            (target, None)
+            for target in sorted(bench_targets)
+            if target.startswith("tcp_")
+        )
+    specs = []
+    for index, (target, bench_filter) in enumerate(definitions, 1):
+        argv = [
+            "cargo",
+            "bench",
+            "-p",
+            "rusty-modbus-benchmarks",
+            "--bench",
+            target,
+            "--locked",
+        ]
+        if bench_filter:
+            argv.append(bench_filter)
+        argv.extend(("--", "--quick", "--noplot"))
+        criterion_home = run_dir / "criterion" / "raw" / f"{index:02d}-{target}"
+        specs.append(
+            CommandSpec(
+                f"criterion-{target}",
+                tuple(argv),
+                repo_root,
+                (("CRITERION_HOME", str(criterion_home)),),
+            )
+        )
+    return specs
+
+
+def _strict_int(value: Any, label: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise BaselineError(f"{label} must be an integer >= {minimum}")
+    return value
+
+
+def _strict_number(value: Any, label: str, *, minimum: float = 0.0) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BaselineError(f"{label} must be numeric")
+    result = float(value)
+    if not math.isfinite(result) or result < minimum:
+        raise BaselineError(f"{label} must be finite and >= {minimum}")
+    return result
+
+
+def parse_stress_json(payload: bytes | str, expected: dict[str, Any]) -> dict[str, Any]:
+    try:
+        value = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BaselineError(f"stress JSON is malformed: {error}") from error
+    if not isinstance(value, dict):
+        raise BaselineError("stress JSON root must be an object")
+    for field in STRESS_INTEGER_FIELDS:
+        minimum = (
+            1
+            if field in {"clients", "in_flight", "duration_secs", "registers", "total_ops"}
+            else 0
+        )
+        _strict_int(value.get(field), f"stress.{field}", minimum=minimum)
+    if value["schema_version"] != SCHEMA_VERSION:
+        raise BaselineError(f"stress.schema_version must be {SCHEMA_VERSION}")
+    for field in STRESS_NUMERIC_FIELDS:
+        _strict_number(value.get(field), f"stress.{field}")
+    if not isinstance(value.get("transport"), str) or not isinstance(
+        value.get("operation"), str
+    ):
+        raise BaselineError("stress transport and operation must be strings")
+    latency = value.get("latency_ms")
+    if not isinstance(latency, dict):
+        raise BaselineError("stress.latency_ms must be an object")
+    for field in LATENCY_FIELDS:
+        _strict_number(latency.get(field), f"stress.latency_ms.{field}")
+    memory = value.get("memory")
+    if not isinstance(memory, dict):
+        raise BaselineError("stress.memory must be an object")
+    for field in MEMORY_FIELDS:
+        minimum = -float("inf") if field == "delta_mb" else 0
+        number = memory.get(field)
+        if isinstance(number, bool) or not isinstance(number, int):
+            raise BaselineError(f"stress.memory.{field} must be an integer")
+        if number < minimum:
+            raise BaselineError(f"stress.memory.{field} is out of range")
+    for field in (
+        "transport",
+        "operation",
+        "in_flight",
+        "clients",
+        "registers",
+        "duration_secs",
+        "warmup_secs",
+    ):
+        if value.get(field) != expected[field]:
+            raise BaselineError(
+                f"stress scenario mismatch for {field}: expected {expected[field]!r}, "
+                f"got {value.get(field)!r}"
+            )
+    if value["errors"] != 0:
+        raise BaselineError("stress errors must be zero")
+    if value["error_rate"] != 0:
+        raise BaselineError("stress error_rate must be zero")
+    if value["retry_attempts"] != 0:
+        raise BaselineError("stress retry_attempts must be zero")
+    return value
+
+
+def sample_statistics(values: Sequence[float]) -> dict[str, float | int | None]:
+    if not values:
+        raise BaselineError("cannot aggregate an empty sample")
+    converted = [float(value) for value in values]
+    mean = statistics.fmean(converted)
+    standard_deviation = statistics.stdev(converted) if len(converted) > 1 else 0.0
+    return {
+        "count": len(converted),
+        "min": min(converted),
+        "median": statistics.median(converted),
+        "mean": mean,
+        "max": max(converted),
+        "sample_stddev": standard_deviation,
+        "coefficient_of_variation": None if mean == 0 else standard_deviation / mean,
+    }
+
+
+def aggregate_stress_samples(
+    samples: Sequence[dict[str, Any]], expected_scenarios: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    expected_keys = {
+        (
+            item["transport"],
+            item["operation"],
+            item["in_flight"],
+            item["clients"],
+            item["registers"],
+            item["repetition"],
+        )
+        for item in expected_scenarios
+    }
+    sample_keys = []
+    for item in samples:
+        sample_keys.append(
+            (
+                item["transport"],
+                item["operation"],
+                item["in_flight"],
+                item["clients"],
+                item["registers"],
+                item["repetition"],
+            )
+        )
+    duplicates = sorted({item for item in sample_keys if sample_keys.count(item) > 1})
+    if duplicates:
+        raise BaselineError(f"duplicate stress scenarios: {duplicates}")
+    missing = sorted(expected_keys - set(sample_keys))
+    extra = sorted(set(sample_keys) - expected_keys)
+    if missing or extra:
+        raise BaselineError(f"stress scenario completeness failure; missing={missing}, extra={extra}")
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for sample in samples:
+        key = (
+            sample["transport"],
+            sample["operation"],
+            sample["in_flight"],
+            sample["clients"],
+            sample["registers"],
+        )
+        groups.setdefault(key, []).append(sample)
+    aggregates = []
+    for key in sorted(groups):
+        group = groups[key]
+        aggregates.append(
+            {
+                "transport": key[0],
+                "operation": key[1],
+                "in_flight": key[2],
+                "clients": key[3],
+                "registers": key[4],
+                "repetitions": len(group),
+                "throughput_ops_sec": sample_statistics(
+                    [item["throughput_ops_sec"] for item in group]
+                ),
+                "p99_ms": sample_statistics([item["latency_ms"]["p99"] for item in group]),
+                "total_errors": sum(item["errors"] for item in group),
+                "retry_attempts": sum(item["retry_attempts"] for item in group),
+            }
+        )
+    return aggregates
+
+
+def parse_criterion_estimates(criterion_home: Path, repo_root: Path) -> list[dict[str, Any]]:
+    estimate_files = sorted(
+        criterion_home.rglob("new/estimates.json"),
+        key=lambda path: path.relative_to(criterion_home).as_posix().encode("utf-8"),
+    )
+    if not estimate_files:
+        raise BaselineError(f"no Criterion new/estimates.json files found under {criterion_home}")
+    results = []
+    for path in estimate_files:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise BaselineError(f"malformed Criterion estimates file {path}: {error}") from error
+        mean = value.get("mean") if isinstance(value, dict) else None
+        if not isinstance(mean, dict):
+            raise BaselineError(f"Criterion mean estimate missing in {path}")
+        interval = mean.get("confidence_interval")
+        if not isinstance(interval, dict):
+            raise BaselineError(f"Criterion mean confidence interval missing in {path}")
+        point = _strict_number(mean.get("point_estimate"), f"{path}.mean.point_estimate")
+        lower = _strict_number(interval.get("lower_bound"), f"{path}.mean.lower_bound")
+        upper = _strict_number(interval.get("upper_bound"), f"{path}.mean.upper_bound")
+        benchmark_path = path.relative_to(criterion_home).parents[1].as_posix()
+        results.append(
+            {
+                "benchmark_id": benchmark_path,
+                "source": path.resolve().relative_to(repo_root.resolve()).as_posix(),
+                "mean_ns": {"lower": lower, "point": point, "upper": upper},
+                "estimates": value,
+            }
+        )
+    return results
+
+
+def write_summary_csv(
+    path: Path,
+    stress_aggregates: Sequence[dict[str, Any]],
+    criterion_results: Sequence[dict[str, Any]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        columns: list[str] = list(CSV_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
+        writer.writeheader()
+        for item in stress_aggregates:
+            throughput = item["throughput_ops_sec"]
+            p99 = item["p99_ms"]
+            row = {column: "" for column in CSV_COLUMNS}
+            row.update(
+                {
+                    "record_type": "stress",
+                    "transport": item["transport"],
+                    "operation": item["operation"],
+                    "in_flight": item["in_flight"],
+                    "clients": item["clients"],
+                    "registers": item["registers"],
+                    "repetitions": item["repetitions"],
+                    "throughput_count": throughput["count"],
+                    "throughput_min": throughput["min"],
+                    "throughput_median": throughput["median"],
+                    "throughput_mean": throughput["mean"],
+                    "throughput_max": throughput["max"],
+                    "throughput_sample_stddev": throughput["sample_stddev"],
+                    "throughput_cv": throughput["coefficient_of_variation"],
+                    "p99_count": p99["count"],
+                    "p99_min_ms": p99["min"],
+                    "p99_median_ms": p99["median"],
+                    "p99_mean_ms": p99["mean"],
+                    "p99_max_ms": p99["max"],
+                    "p99_sample_stddev_ms": p99["sample_stddev"],
+                    "p99_cv": p99["coefficient_of_variation"],
+                    "total_errors": item["total_errors"],
+                    "retry_attempts": item["retry_attempts"],
+                }
+            )
+            writer.writerow(row)
+        for item in criterion_results:
+            row = {column: "" for column in CSV_COLUMNS}
+            row.update(
+                {
+                    "record_type": "criterion",
+                    "criterion_id": item["benchmark_id"],
+                    "criterion_mean_lower_ns": item["mean_ns"]["lower"],
+                    "criterion_mean_point_ns": item["mean_ns"]["point"],
+                    "criterion_mean_upper_ns": item["mean_ns"]["upper"],
+                }
+            )
+            writer.writerow(row)
+
+
+def _artifact_files(run_dir: Path) -> list[Path]:
+    return sorted(
+        (
+            path
+            for path in run_dir.rglob("*")
+            if path.is_file() and path.name != "checksums.sha256"
+        ),
+        key=lambda path: path.as_posix().encode("utf-8"),
+    )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_checksums(repo_root: Path, run_dir: Path) -> None:
+    lines = []
+    for path in _artifact_files(run_dir):
+        relative = path.resolve().relative_to(repo_root.resolve()).as_posix()
+        lines.append(f"{_sha256(path)}  {relative}")
+    lines.sort(key=lambda line: line.split("  ", 1)[1].encode("utf-8"))
+    (run_dir / "checksums.sha256").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8", newline="\n"
+    )
+
+
+def validate_artifact(repo_root: Path, run_dir: Path) -> list[str]:
+    errors: list[str] = []
+    repo_root = repo_root.resolve()
+    run_dir = run_dir.resolve()
+    try:
+        run_dir.relative_to(repo_root)
+    except ValueError:
+        return ["artifact directory must be inside the repository"]
+    if not run_dir.is_dir():
+        return [f"artifact directory does not exist: {run_dir}"]
+    if run_dir.parents[1].name != f"baseline-v{SCHEMA_VERSION}":
+        errors.append(f"artifact path must be under baseline-v{SCHEMA_VERSION}/<SHA>/<run-id>")
+    try:
+        path_sha = validate_full_sha(run_dir.parent.name)
+    except BaselineError as error:
+        errors.append(str(error))
+        path_sha = None
+    try:
+        validate_run_id(run_dir.name)
+    except BaselineError as error:
+        errors.append(str(error))
+    required = {"environment.json", "provenance.json", "summary.json", "summary.csv"}
+    present = {path.name for path in run_dir.iterdir() if path.is_file()}
+    missing_required = sorted(required - present)
+    if missing_required:
+        errors.append(f"missing required artifact files: {', '.join(missing_required)}")
+    checksum_path = run_dir / "checksums.sha256"
+    if not checksum_path.is_file():
+        errors.append("missing checksums.sha256")
+        return errors
+    try:
+        checksum_lines = checksum_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"cannot read checksums.sha256: {error}")
+        return errors
+    listed: dict[str, str] = {}
+    listed_order: list[str] = []
+    for line_number, line in enumerate(checksum_lines, 1):
+        parts = line.split("  ", 1)
+        if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+            errors.append(f"invalid checksum line {line_number}")
+            continue
+        digest, relative = parts
+        if relative in listed:
+            errors.append(f"duplicate checksum path: {relative}")
+            continue
+        path = (repo_root / relative).resolve()
+        try:
+            path.relative_to(run_dir)
+        except ValueError:
+            errors.append(f"checksum path escapes artifact directory: {relative}")
+            continue
+        listed[relative] = digest
+        listed_order.append(relative)
+        if not path.is_file():
+            errors.append(f"checksummed file is missing: {relative}")
+        elif _sha256(path) != digest:
+            errors.append(f"checksum mismatch: {relative}")
+    actual = {
+        path.resolve().relative_to(repo_root).as_posix() for path in _artifact_files(run_dir)
+    }
+    listed_paths = set(listed)
+    if listed_order != sorted(listed_order, key=lambda item: item.encode("utf-8")):
+        errors.append("checksum paths are not in bytewise order")
+    if listed_paths != actual:
+        errors.append(
+            f"checksum inventory mismatch; missing={sorted(actual - listed_paths)}, "
+            f"extra={sorted(listed_paths - actual)}"
+        )
+    documents: dict[str, dict[str, Any]] = {}
+    for name in ("environment.json", "provenance.json", "summary.json"):
+        try:
+            value = json.loads((run_dir / name).read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise BaselineError("root must be an object")
+            documents[name] = value
+            if value.get("schema_version") != SCHEMA_VERSION:
+                errors.append(f"{name} schema_version must be {SCHEMA_VERSION}")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, BaselineError) as error:
+            errors.append(f"cannot validate {name}: {error}")
+
+    provenance = documents.get("provenance.json")
+    summary = documents.get("summary.json")
+    if provenance is None or summary is None:
+        return errors
+
+    for name, value in (("provenance.json", provenance), ("summary.json", summary)):
+        target_sha = value.get("target_sha")
+        if not isinstance(target_sha, str) or not FULL_SHA.fullmatch(target_sha):
+            errors.append(f"{name} target_sha must be a full lowercase SHA")
+        elif path_sha is not None and target_sha != path_sha:
+            errors.append(f"{name} target_sha does not match artifact path")
+
+        run_id = value.get("run_id")
+        if run_id != run_dir.name:
+            errors.append(f"{name} run_id does not match artifact path")
+
+        mode = value.get("mode")
+        if mode not in MODES:
+            errors.append(f"{name} mode must be one of {', '.join(MODES)}")
+
+    if provenance.get("target_sha") != summary.get("target_sha"):
+        errors.append("provenance.json and summary.json target_sha do not match")
+    if provenance.get("run_id") != summary.get("run_id"):
+        errors.append("provenance.json and summary.json run_id do not match")
+    if provenance.get("mode") != summary.get("mode"):
+        errors.append("provenance.json and summary.json mode do not match")
+
+    dirty = provenance.get("dirty")
+    dirty_override = provenance.get("dirty_override")
+    baseline_eligible = provenance.get("baseline_eligible")
+    baseline_valid = summary.get("baseline_valid")
+    status = summary.get("status")
+    invalid_reasons = summary.get("invalid_reasons")
+
+    if not isinstance(dirty, bool):
+        errors.append("provenance.json dirty must be a boolean")
+    if not isinstance(dirty_override, bool):
+        errors.append("provenance.json dirty_override must be a boolean")
+    if not isinstance(baseline_eligible, bool):
+        errors.append("provenance.json baseline_eligible must be a boolean")
+    if not isinstance(baseline_valid, bool):
+        errors.append("summary.json baseline_valid must be a boolean")
+    if status not in {"passed", "failed", "invalid"}:
+        errors.append("summary.json status must be passed, failed, or invalid")
+    if not isinstance(invalid_reasons, list) or any(
+        not isinstance(reason, str) for reason in invalid_reasons
+    ):
+        errors.append("summary.json invalid_reasons must be a list of strings")
+
+    if dirty is True and dirty_override is not True:
+        errors.append("provenance.json dirty worktree requires dirty_override")
+    if isinstance(baseline_eligible, bool) and isinstance(baseline_valid, bool):
+        if baseline_eligible != baseline_valid:
+            errors.append("provenance eligibility and summary validity do not match")
+    if isinstance(baseline_valid, bool) and status in {"passed", "failed", "invalid"}:
+        if baseline_valid != (status == "passed"):
+            errors.append("summary.json status does not agree with baseline_valid")
+    if baseline_valid is True and invalid_reasons != []:
+        errors.append("valid summary.json must not contain invalid_reasons")
+    if baseline_valid is False and invalid_reasons == []:
+        errors.append("invalid summary.json must contain invalid_reasons")
+    if status == "invalid" and dirty is not True:
+        errors.append("summary.json invalid status requires a dirty worktree")
+
+    if dirty is True:
+        errors.append("provenance.json records a dirty worktree")
+    if baseline_eligible is False:
+        errors.append("provenance.json baseline_eligible must be true")
+    if baseline_valid is False:
+        errors.append("summary.json baseline_valid must be true")
+    return errors
+
+
+def run_correctness(run: ArtifactRun) -> None:
+    for spec in correctness_plan(run.repo_root):
+        run.run_command(spec)
+
+
+def _stress_binary(target_directory: Path) -> Path:
+    suffix = ".exe" if os.name == "nt" else ""
+    return target_directory / "release" / f"stress-test{suffix}"
+
+
+def run_benchmarks(
+    run: ArtifactRun,
+    *,
+    mode: str,
+    duration: int,
+    warmup: int,
+    repetitions: int,
+    benchmark_targets: Sequence[str],
+    target_directory: Path,
+) -> None:
+    run.run_command(
+        CommandSpec(
+            "build-stress",
+            (
+                "cargo",
+                "build",
+                "--release",
+                "-p",
+                "rusty-modbus-benchmarks",
+                "--bin",
+                "stress-test",
+                "--locked",
+            ),
+            run.repo_root,
+        )
+    )
+    binary = _stress_binary(target_directory)
+    if not binary.is_file():
+        raise BaselineError(f"stress binary is missing after build: {binary}")
+    scenarios = stress_scenarios(mode, repetitions)
+    seen: set[tuple[Any, ...]] = set()
+    stress_dir = run.run_dir / "stress" / "parsed"
+    stress_dir.mkdir(parents=True)
+    for scenario in scenarios:
+        key = (
+            scenario["transport"],
+            scenario["operation"],
+            scenario["in_flight"],
+            scenario["clients"],
+            scenario["registers"],
+            scenario["repetition"],
+        )
+        if key in seen:
+            raise BaselineError(f"duplicate planned stress scenario: {key}")
+        seen.add(key)
+        label = (
+            f"stress-{scenario['operation']}-d{scenario['in_flight']}-"
+            f"r{scenario['repetition']}"
+        )
+        result = run.run_command(
+            CommandSpec(
+                label,
+                (
+                    str(binary),
+                    "--transport",
+                    scenario["transport"],
+                    "--operation",
+                    scenario["operation"],
+                    "--in-flight",
+                    str(scenario["in_flight"]),
+                    "--clients",
+                    str(scenario["clients"]),
+                    "--registers",
+                    str(scenario["registers"]),
+                    "--duration",
+                    str(duration),
+                    "--warmup",
+                    str(warmup),
+                    "--json",
+                ),
+                run.repo_root,
+            ),
+            timeout=float(duration + warmup + 30),
+        )
+        expected = {
+            **scenario,
+            "duration_secs": duration,
+            "warmup_secs": warmup,
+        }
+        parsed = parse_stress_json(result.stdout, expected)
+        parsed["repetition"] = scenario["repetition"]
+        parsed["command_id"] = result.command_id
+        run.stress_samples.append(parsed)
+        write_json(stress_dir / f"{label}.json", parsed)
+    run.stress_aggregates = aggregate_stress_samples(run.stress_samples, scenarios)
+
+    criterion_results = []
+    for spec in benchmark_criterion_specs(mode, run.repo_root, benchmark_targets, run.run_dir):
+        criterion_home = Path(dict(spec.env)["CRITERION_HOME"])
+        criterion_home.parent.mkdir(parents=True, exist_ok=True)
+        run.run_command(spec)
+        criterion_results.extend(parse_criterion_estimates(criterion_home, run.repo_root))
+    if not criterion_results:
+        raise BaselineError("Criterion produced no parsed estimates")
+    run.criterion_results = sorted(
+        criterion_results, key=lambda item: item["source"].encode("utf-8")
+    )
+    write_json(run.run_dir / "criterion" / "parsed-estimates.json", run.criterion_results)
+
+
+def _bounded_int(value: str, *, minimum: int, maximum: int, label: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"{label} must be an integer") from error
+    if not minimum <= result <= maximum:
+        raise argparse.ArgumentTypeError(f"{label} must be between {minimum} and {maximum}")
+    return result
+
+
+def duration_arg(value: str) -> int:
+    return _bounded_int(value, minimum=1, maximum=300, label="duration")
+
+
+def warmup_arg(value: str) -> int:
+    return _bounded_int(value, minimum=0, maximum=300, label="warmup")
+
+
+def repetitions_arg(value: str) -> int:
+    return _bounded_int(value, minimum=1, maximum=20, label="repetitions")
+
+
+def add_common_run_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--run-id")
+    parser.add_argument("--runner-label", required=True)
+    parser.add_argument("--allow-dirty", action="store_true")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    correctness = subparsers.add_parser("correctness")
+    add_common_run_arguments(correctness)
+    smoke = subparsers.add_parser("bench-smoke")
+    add_common_run_arguments(smoke)
+    smoke.add_argument("--duration", type=duration_arg, default=1)
+    smoke.add_argument("--warmup", type=warmup_arg, default=1)
+    smoke.add_argument("--repetitions", type=repetitions_arg, default=1)
+    full = subparsers.add_parser("bench-full")
+    add_common_run_arguments(full)
+    full.add_argument("--duration", type=duration_arg, default=5)
+    full.add_argument("--warmup", type=warmup_arg, default=1)
+    full.add_argument("--repetitions", type=repetitions_arg, default=5)
+    validate = subparsers.add_parser("validate")
+    validate.add_argument("run_dir")
+    return parser
+
+
+def run_mode(args: argparse.Namespace, repo_root: Path) -> tuple[int, Path | None]:
+    repository, bootstrap = bootstrap_repository(repo_root)
+    enforce_clean_worktree(repository["dirty"], args.allow_dirty)
+    output_root = resolve_output_root(repo_root, args.output_root)
+    run = ArtifactRun(
+        repo_root=repo_root,
+        output_root=output_root,
+        target_sha=repository["target_sha"],
+        run_id=args.run_id or default_run_id(),
+        mode=args.command,
+        runner_label=args.runner_label,
+        dirty=repository["dirty"],
+        allow_dirty=args.allow_dirty,
+    )
+    run.create()
+    run.provenance.update(repository)
+    for label, result in zip(("git-head", "git-status", "git-branch"), bootstrap, strict=True):
+        run.record_bootstrap(label, result)
+    failure: BaseException | None = None
+    try:
+        benchmark_targets, target_directory = collect_environment(run)
+        if args.command == "correctness":
+            run_correctness(run)
+        else:
+            run_benchmarks(
+                run,
+                mode=args.command,
+                duration=args.duration,
+                warmup=args.warmup,
+                repetitions=args.repetitions,
+                benchmark_targets=benchmark_targets,
+                target_directory=target_directory,
+            )
+    except BaseException as caught:
+        failure = caught
+        run.add_error(caught)
+    finally:
+        try:
+            run.finalize()
+        except BaseException as finalize_error:
+            if failure is None:
+                failure = finalize_error
+            print(f"baseline finalization failed: {finalize_error}", file=sys.stderr)
+    print(f"artifact: {run._repo_relative(run.run_dir)}")
+    if failure is not None:
+        print(f"baseline failed: {failure}", file=sys.stderr)
+        return 1, run.run_dir
+    return 0, run.run_dir
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        if args.command == "validate":
+            run_dir = Path(args.run_dir)
+            if not run_dir.is_absolute():
+                run_dir = repo_root / run_dir
+            errors = validate_artifact(repo_root, run_dir)
+            if errors:
+                for error in errors:
+                    print(f"baseline artifact: {error}", file=sys.stderr)
+                return 1
+            print(f"baseline artifact valid: {run_dir.resolve().relative_to(repo_root)}")
+            return 0
+        status, _ = run_mode(args, repo_root)
+        return status
+    except BaselineError as error:
+        print(f"baseline: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

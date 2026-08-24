@@ -25,7 +25,89 @@ server backed by the in-memory store.
 | Client shape | 1 client connection, varied in-flight depth |
 | Register count | 10 registers per read operation |
 
-## Commands
+## Reproducible baseline harness
+
+`scripts/baseline.py` records and validates correctness commands and benchmark
+samples. It uses only the Python standard library. Its three run modes are:
+
+- `correctness`: runs the formatting, ledger, harness, lint, test, feature,
+  example, Python binding, supply-chain, and advisory checks as separate
+  recorded commands. This mode requires `cargo-nextest`, `cargo-deny`,
+  `cargo-audit`, Python 3.14, and `uv` in addition to the pinned Rust toolchain.
+- `bench-smoke`: runs one-second TCP `read` and `mixed` loopback samples at
+  in-flight depths 1, 8, and 16, followed by the pipelined TCP Criterion smoke
+  target.
+- `bench-full`: runs five TCP repetitions at depths 1, 2, 4, 8, and 16, then
+  runs the registered TCP Criterion targets. Stress measurements default to
+  five seconds with a one-second warmup. Codec, server-only, TLS, and RTU
+  targets are outside both benchmark modes.
+
+The benchmark samples measure TCP loopback performance and transport health;
+they are not protocol-conformance evidence. The recorded commands in
+`correctness` provide the correctness evidence. `.github/workflows/baseline.yml`
+runs on Ubuntu only: pull requests and pushes run `bench-smoke`, the Monday
+schedule runs `bench-full`, and manual runs select any mode.
+
+Run a mode from the repository root and identify the runner:
+
+```bash
+python3 scripts/baseline.py correctness --runner-label local-workstation
+python3 scripts/baseline.py bench-smoke --runner-label local-workstation
+python3 scripts/baseline.py bench-full --runner-label local-workstation
+```
+
+Benchmark modes accept bounded `--duration`, `--warmup`, and `--repetitions`
+overrides. All run modes accept `--output-root` and `--run-id`. The default
+artifact path is:
+
+```text
+bench-output/baseline-v1/<full-40-character-SHA>/<run-id>/
+├── environment.json
+├── provenance.json
+├── commands/<sequence>-<label>/{command.json,command.stdout,command.stderr}
+├── stress/parsed/*.json                         # benchmark modes
+├── criterion/{raw/**,parsed-estimates.json}     # benchmark modes
+├── summary.json
+├── summary.csv
+└── checksums.sha256
+```
+
+Schema version `1` is defined in `scripts/baseline.py`. JSON files use sorted
+keys and a trailing newline; the CSV has fixed columns. Command records contain
+the exact argument array, working directory, UTC timing, exit code, and only
+explicit environment overrides. Raw command output and Criterion data remain
+the source evidence. `summary.json` and `summary.csv` are parsed views, not a
+replacement for those files. Commands inherit the runner environment, so the
+artifact is not a hermetic-environment record and does not capture arbitrary
+inherited variables or secrets.
+
+The harness binds the artifact to the full SHA from `git rev-parse HEAD`. It
+refuses tracked changes and non-ignored untracked files, and it never overwrites
+a run directory. Ignored files under `bench-output/` and ignored `.DS_Store`
+files do not make the worktree dirty. `--allow-dirty` exists for local
+diagnosis; the resulting summary has `status: invalid`, and `validate` rejects
+it. A failed command or missing/malformed stress or Criterion output makes the
+run fail, but the harness still attempts to write the partial summary and
+checksums. TCP stress samples must report zero errors, zero error rate, and zero
+retry attempts; the TCP benchmark helper configures zero retries.
+
+`checksums.sha256` covers every retained artifact file except itself and stores
+repository-relative paths in bytewise order. Verify a copied or retained run
+with:
+
+```bash
+python3 scripts/baseline.py validate bench-output/baseline-v1/<SHA>/<run-id>
+```
+
+The checksums detect missing or corrupt retained files. They are not a signature
+or attestation: rewriting files and regenerating `checksums.sha256` defeats that
+check.
+
+No performance budget or regression threshold is attached to schema version 1.
+The measured report below remains the June 2026 baseline; the harness does not
+replace those numbers until a clean, committed-SHA run is recorded.
+
+## June 2026 report commands
 
 The comparable local + Docker matrix was run with:
 
