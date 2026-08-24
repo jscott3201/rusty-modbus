@@ -235,8 +235,31 @@ async fn server_command_serves_seeded_memory_store() {
     let coils = client.read_coils(UnitId(1), 5, 1).await.unwrap();
     client.shutdown().await;
 
-    child.kill().await.unwrap();
-    let _ = child.wait().await;
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .args(["-TERM", &child.id().unwrap().to_string()])
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+        let shutdown = time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("server exited before reporting shutdown");
+        assert!(
+            shutdown.starts_with("Modbus server shutdown drained:"),
+            "unexpected shutdown report: {shutdown}"
+        );
+        assert!(shutdown.contains("active_connections=0, active_requests=0"));
+        assert!(child.wait().await.unwrap().success());
+    }
+    #[cfg(not(unix))]
+    {
+        child.kill().await.unwrap();
+        let _ = child.wait().await;
+    }
 
     assert_eq!(regs, vec![0xBEEF]);
     assert_eq!(coils, vec![true]);

@@ -1,6 +1,7 @@
 //! Python exception types for Modbus errors.
 
 use pyo3::create_exception;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rusty_modbus_client::ClientError;
 use rusty_modbus_server::ServerError;
@@ -153,6 +154,7 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
 /// Convert a `ServerError` into the appropriate Python exception.
 pub fn server_error_to_pyerr(err: ServerError) -> PyErr {
     match err {
+        ServerError::InvalidConfig(e) => PyValueError::new_err(e.to_string()),
         ServerError::Bind(e) => ConnectionError::new_err(format!("bind failed: {e}")),
         ServerError::Transport(e) => ConnectionError::new_err(format!("transport error: {e}")),
         ServerError::AlreadyRunning => ModbusError::new_err("server is already running"),

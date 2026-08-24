@@ -217,6 +217,7 @@ class ConformanceLedgerTests(unittest.TestCase):
         self.assertEqual(findings["F-008"]["status"], "closed")
         self.assertEqual(findings["F-009"]["status"], "closed")
         self.assertEqual(findings["F-010"]["status"], "closed")
+        self.assertEqual(findings["F-011"]["status"], "mitigated")
 
         follow_ups = {item["id"]: item for item in self.canonical["follow_ups"]}
         self.assertEqual(follow_ups["ISSUE-90"]["status"], "closed")
@@ -270,8 +271,8 @@ class ConformanceLedgerTests(unittest.TestCase):
             "APP-013": "PR-402",
             "APP-019": "PR-303",
             "TCP-006": "PR-201",
-            "TCP-010": "PR-301, PR-302",
-            "TCP-011": "PR-301",
+            "TCP-010": "PR-302",
+            "TCP-011": "PR-401, PR-701",
             "TCP-013": "PR-403",
             "RTU-001": "PR-101",
             "RTU-004": "PR-102, PR-103",

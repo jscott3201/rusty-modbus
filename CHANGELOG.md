@@ -12,6 +12,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cancellation without a live Tokio runtime. The Python async and sync clients
   expose the same method, and Python `ClientConfig` now exposes the Rust client
   shutdown timeout as `shutdown_timeout_secs`.
+- Added immutable server metrics and `ShutdownOutcome::{Drained, Forced}`.
+  Python exposes the same counters through a read-only `ServerMetrics` class and
+  returns a typed `"drained" | "forced"` result from `ModbusServer.stop()`.
+- Added `modbus server --shutdown-timeout-secs`; the CLI reports the shutdown
+  outcome and connection, request, admission-rejection, and accept-error counters.
 
 ### Changed
 
@@ -49,6 +54,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   semaphore. Remaining work receives `ClientError::ShuttingDown`, and shutdown
   joins the reader and deadline tasks before returning. Final-owner `Drop` uses
   the non-waiting abort path.
+- Server configuration now rejects zero connection, transaction, and shutdown
+  limits before bind. Server shutdown drops the listener before drain, lets an
+  admitted sequential request finish, rejects the next frame, and aborts and
+  joins remaining connection tasks at one absolute deadline. Concurrent stop
+  callers share that deadline and outcome. Listener admission is atomic and
+  reports saturation, access-control rejection, and setup cleanup accurately.
+  `max_transactions` remains configuration-only pending per-connection
+  pipelining and runtime enforcement.
 
 ## [0.1.1]
 

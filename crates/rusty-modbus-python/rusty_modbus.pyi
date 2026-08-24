@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Sequence
-from typing import Protocol
+from typing import Literal, Protocol, final
 
 _ByteLike = bytes | bytearray | Sequence[int]
 
@@ -30,6 +30,7 @@ __all__ = [
     "ModbusClient",
     "SyncModbusClient",
     "ServerConfig",
+    "ServerMetrics",
     "StoreConfig",
     "InMemoryStore",
     "ModbusServer",
@@ -204,6 +205,25 @@ class StoreConfig:
     ) -> None: ...
     def __repr__(self) -> str: ...
 
+@final
+class ServerMetrics:
+    """Immutable server counter snapshot."""
+
+    @property
+    def active_connections(self) -> int: ...
+    @property
+    def active_requests(self) -> int: ...
+    @property
+    def accepted_connections(self) -> int: ...
+    @property
+    def access_denied_connections(self) -> int: ...
+    @property
+    def connection_limit_rejections(self) -> int: ...
+    @property
+    def accept_errors(self) -> int: ...
+
+    def __repr__(self) -> str: ...
+
 # -- Types --------------------------------------------------------------------
 
 class DeviceIdentification:
@@ -288,8 +308,12 @@ class ModbusServer:
         """Local address the server is bound to."""
         ...
 
-    def stop(self) -> None:
-        """Stop accepting new connections."""
+    def stop(self) -> Literal["drained", "forced"]:
+        """Stop admission and return the stable shutdown outcome."""
+        ...
+
+    def metrics(self) -> ServerMetrics:
+        """Return an immutable snapshot of server counters."""
         ...
 
     def __enter__(self) -> ModbusServer: ...

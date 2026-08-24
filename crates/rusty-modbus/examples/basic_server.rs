@@ -26,6 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Ctrl+C to stop.");
 
     tokio::signal::ctrl_c().await?;
-    server.stop().await;
+    let outcome = server.stop().await;
+    println!("Server shutdown {outcome}: {:?}", server.metrics());
     Ok(())
 }

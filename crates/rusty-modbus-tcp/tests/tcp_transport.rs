@@ -3,6 +3,7 @@
 //! Tests use localhost loopback — no external network required.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
@@ -219,6 +220,7 @@ async fn access_control_denies_connection() {
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
+    let metrics = listener.metrics();
 
     // Server: accept in a loop (denied connections are silently dropped internally).
     // We'll timeout after a bit since no valid connection will arrive.
@@ -233,4 +235,69 @@ async fn access_control_denies_connection() {
     // Server should timeout since the connection was denied.
     let server_result = server.await.unwrap();
     assert!(server_result.is_err(), "server should have timed out");
+    assert_eq!(metrics.snapshot().access_denied_connections, 1);
+}
+
+#[tokio::test]
+async fn concurrent_accepts_respect_connection_limit_atomically() {
+    const ATTEMPTS: usize = 8;
+
+    let listener = Arc::new(
+        TcpServerListener::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            TcpServerConfig {
+                max_connections: 1,
+                ..TcpServerConfig::default()
+            },
+        )
+        .await
+        .unwrap(),
+    );
+    let addr = listener.local_addr().unwrap();
+    let metrics = listener.metrics();
+
+    let mut accepts = Vec::new();
+    for _ in 0..ATTEMPTS {
+        let listener = Arc::clone(&listener);
+        accepts.push(tokio::spawn(async move { listener.accept().await }));
+    }
+
+    let mut clients = Vec::new();
+    for _ in 0..ATTEMPTS {
+        clients.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let snapshot = metrics.snapshot();
+            if snapshot.accepted_connections == 1
+                && snapshot.connection_limit_rejections >= ATTEMPTS - 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.active_connections, 1);
+    assert_eq!(snapshot.accepted_connections, 1);
+    assert_eq!(snapshot.connection_limit_rejections, ATTEMPTS - 1);
+    assert_eq!(
+        accepts.iter().filter(|handle| handle.is_finished()).count(),
+        1
+    );
+
+    for handle in accepts {
+        handle.abort();
+        if let Ok(Ok(connection)) = handle.await {
+            drop(connection);
+        }
+    }
+    drop(clients);
+    drop(listener);
+
+    assert_eq!(metrics.snapshot().active_connections, 0);
 }

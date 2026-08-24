@@ -13,12 +13,14 @@ mod device_id;
 pub mod error;
 mod file_record;
 pub mod handler;
+mod lifecycle;
 mod response_encode;
 pub mod server;
 pub mod store;
 
 pub use config::{DeviceIdentification, ServerConfig};
-pub use error::ServerError;
+pub use error::{ServerConfigError, ServerError};
+pub use lifecycle::{ServerMetrics, ShutdownOutcome};
 pub use server::ModbusServer;
 pub use store::memory::{InMemoryStore, StoreConfig, StoreError};
 pub use store::{CommEventLog, CommEventLogMeta, DataStore};
