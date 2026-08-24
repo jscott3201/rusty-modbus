@@ -209,11 +209,6 @@ async fn drain_connections(connections: &mut JoinSet<()>, deadline: Instant) -> 
     while !connections.is_empty() {
         tokio::select! {
             biased;
-            joined = connections.join_next() => {
-                if let Some(result) = joined {
-                    report_connection_result(result);
-                }
-            }
             () = tokio::time::sleep_until(deadline) => {
                 warn!(remaining = connections.len(), "Modbus server shutdown deadline elapsed");
                 connections.abort_all();
@@ -221,6 +216,11 @@ async fn drain_connections(connections: &mut JoinSet<()>, deadline: Instant) -> 
                     report_connection_result(result);
                 }
                 return ShutdownOutcome::Forced;
+            }
+            joined = connections.join_next() => {
+                if let Some(result) = joined {
+                    report_connection_result(result);
+                }
             }
         }
     }
@@ -447,5 +447,31 @@ mod tests {
         shutdown_tx.send_replace(Some(Instant::now()));
 
         assert!(wait.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn drain_deadline_wins_over_ready_last_connection() {
+        let mut connections = JoinSet::new();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_completed = Arc::clone(&completed);
+        connections.spawn(async move {
+            released.await.unwrap();
+            task_completed.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        tokio::task::yield_now().await;
+
+        let deadline = Instant::now();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        release.send(()).unwrap();
+        while !completed.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            drain_connections(&mut connections, deadline).await,
+            ShutdownOutcome::Forced
+        );
+        assert!(connections.is_empty());
     }
 }
