@@ -1717,7 +1717,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rusty-modbus"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "rusty-modbus-client",
@@ -1735,7 +1735,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-benchmarks"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "clap",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "crossterm",
@@ -1784,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "parking_lot",
@@ -1800,14 +1800,14 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-codec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusty-modbus-types",
 ]
 
 [[package]]
 name = "rusty-modbus-conformance"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1830,7 +1830,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-frame"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "rusty-modbus-codec",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-gateway"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-pool"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "parking_lot",
@@ -1873,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-rtu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1890,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "parking_lot",
@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-sim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusty-modbus-client",
  "rusty-modbus-server",
@@ -1919,7 +1919,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-tcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-tls"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "zerocopy",

@@ -74,7 +74,7 @@ Layer 0: codec (sans-IO, no_std) / types (newtypes, no_std)
 
 ### Python Bindings (`crates/rusty-modbus-python/`)
 
-PyO3 0.28 + maturin crate providing `rusty_modbus` Python package. Excluded from workspace via `Cargo.toml` `exclude` (requires Python headers to build cdylib).
+PyO3 0.29 + maturin crate providing `rusty_modbus` Python package. Excluded from workspace via `Cargo.toml` `exclude` (requires Python headers to build cdylib).
 
 - **`ModbusClient`** — async client, methods return awaitables via `pyo3_async_runtimes::tokio::future_into_py`
 - **`SyncModbusClient`** — blocking wrapper owning its own `tokio::runtime::Runtime`

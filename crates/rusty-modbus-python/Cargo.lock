@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "parking_lot",
@@ -603,14 +603,14 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-codec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusty-modbus-types",
 ]
 
 [[package]]
 name = "rusty-modbus-frame"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "rusty-modbus-codec",
@@ -622,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-python"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "pyo3",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "parking_lot",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-tcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-tls"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zerocopy",
 ]

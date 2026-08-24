@@ -45,7 +45,7 @@ fn default_product() -> String {
     String::from("SIM")
 }
 fn default_revision() -> String {
-    String::from("0.1.0")
+    String::from(env!("CARGO_PKG_VERSION"))
 }
 fn default_listen() -> String {
     String::from("127.0.0.1:0")
@@ -161,4 +161,21 @@ pub struct FaultTrigger {
     pub address: Option<u16>,
     /// Match a specific unit ID.
     pub unit_id: Option<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceConfig;
+
+    #[test]
+    fn omitted_revision_uses_package_version() {
+        let config: DeviceConfig = serde_yaml_ng::from_str("{}").unwrap();
+        assert_eq!(config.revision, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn configured_revision_is_preserved() {
+        let config: DeviceConfig = serde_yaml_ng::from_str("revision: device-firmware-7").unwrap();
+        assert_eq!(config.revision, "device-firmware-7");
+    }
 }

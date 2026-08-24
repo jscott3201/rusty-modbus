@@ -67,6 +67,8 @@ run cargo fmt --all --check
 run python3 scripts/test-conformance-ledger.py
 run python3 scripts/check-conformance-ledger.py --check
 run python3 scripts/test-baseline.py
+run python3 scripts/test-publish-versions.py
+run python3 scripts/check-publish-versions.py
 run rust-analyzer --version
 run cargo clippy --workspace --all-targets --locked -- -D warnings
 run env RUSTY_MODBUS_NEXTEST_PROFILE=ci scripts/test-local.sh
