@@ -1,4 +1,4 @@
-//! `rusty-modbus` — Complete Modbus protocol stack for Rust.
+//! `rusty-modbus` — Modular Modbus protocol stack for Rust.
 //!
 //! Unified facade crate that re-exports the modular subcrates behind feature flags.
 //! Add `rusty-modbus` as your single dependency and enable the features you need.

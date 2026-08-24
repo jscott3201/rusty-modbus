@@ -155,14 +155,14 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rusty-modbus-codec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusty-modbus-types",
 ]
 
 [[package]]
 name = "rusty-modbus-frame"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "rusty-modbus-codec",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-rtu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-tcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-modbus-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zerocopy",
 ]

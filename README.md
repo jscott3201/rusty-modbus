@@ -267,8 +267,8 @@ a blanket conformance claim.
 - [docs/api.md](docs/api.md) summarizes the current Rust and Python public API
   surfaces, including feature flags, server stores, typing contracts, and the
   release branch model.
-- Rust crates are documented with rustdoc and are configured for docs.rs with
-  all facade features enabled once the 0.1.0 crates are published.
+- Rust crates are documented with rustdoc and configured for docs.rs with all
+  facade features enabled.
 - Python typing is shipped through `py.typed` and `rusty_modbus.pyi`, with
   `stubtest`, `pyright --verifytypes`, and a strict pyright public-contract test
   in CI.
@@ -329,9 +329,9 @@ Release flow:
 
 1. Work lands on `dev` through ordinary PRs.
 2. Releases are cut by opening a `dev` -> `main` PR and passing `release.yml`.
-3. A `v0.1.0` tag on `main` triggers `publish.yml`, which publishes crates in
-   dependency order, publishes Python distributions to PyPI, and builds CLI
-   release binaries.
+3. A `v*` tag on `main` matching the workspace version triggers `publish.yml`,
+   which publishes crates in dependency order, publishes Python distributions
+   to PyPI, and builds CLI release binaries.
 
 Minimum Rust version: 1.95 (pinned in `rust-toolchain.toml`)
 

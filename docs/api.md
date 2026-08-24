@@ -1,8 +1,7 @@
 # API Surfaces
 
-This document summarizes the public Rust and Python surfaces for the current
-0.1.0 line. It is intended to be stable enough for users evaluating the public
-repository while still reflecting the current pre-release state.
+This document summarizes the public Rust and Python surfaces for the 0.1.1
+candidate. The project remains pre-1.0, and these APIs may change.
 
 ## Conformance evidence
 
@@ -248,9 +247,8 @@ Everyday work lands on `dev`. Release work is a PR from `dev` into `main`; that
 PR runs the broader `release.yml` gate across Linux, macOS, and Windows, plus
 feature checks, cargo-deny, cargo-audit, and the Python binding compile check.
 
-A `v*` tag on `main` triggers `publish.yml`. For the 0.1.0 line, the tag should
-match the workspace version exactly, for example `v0.1.0`. The publish workflow
-then:
+A `v*` tag on `main` triggers `publish.yml`. The tag must match the workspace
+version exactly. The publish workflow then:
 
 1. Validates tag version against `Cargo.toml`.
 2. Runs the inter-crate publish-version guard.
