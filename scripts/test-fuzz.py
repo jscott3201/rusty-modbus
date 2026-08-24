@@ -94,6 +94,94 @@ class FuzzToolTests(unittest.TestCase):
             destination = fuzz.copy_campaign_snapshot(corpus, output)
             self.assertEqual((destination / "seed").read_bytes(), b"retained")
 
+    def test_fresh_output_is_marked_and_marker_is_not_an_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "output"
+            prepared = fuzz._prepare_output(output)
+            self.assertEqual(prepared, output)
+            self.assertEqual(
+                (output / fuzz.OUTPUT_MARKER).read_text(encoding="utf-8"),
+                fuzz.OUTPUT_MARKER_CONTENT,
+            )
+            self.assertTrue((output / "artifacts").is_dir())
+            self.assertEqual(fuzz._artifact_paths(output), [])
+
+    def test_marked_output_can_be_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "output"
+            fuzz._prepare_output(output)
+            (output / "prior-run").write_bytes(b"replace me")
+            fuzz._prepare_output(output)
+            self.assertFalse((output / "prior-run").exists())
+            self.assertTrue((output / fuzz.OUTPUT_MARKER).is_file())
+            self.assertTrue((output / "artifacts").is_dir())
+
+    def test_unmarked_existing_output_is_untouched_and_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            output = root / "output"
+            output.mkdir()
+            sentinel = output / "keep"
+            sentinel.write_bytes(b"valuable")
+            with self.assertRaisesRegex(fuzz.FuzzError, "not owned by this tool"):
+                fuzz._prepare_output(output)
+            self.assertEqual(sentinel.read_bytes(), b"valuable")
+
+            file_output = root / "file-output"
+            file_output.write_bytes(b"valuable")
+            with self.assertRaisesRegex(fuzz.FuzzError, "must be a directory"):
+                fuzz._prepare_output(file_output)
+            self.assertEqual(file_output.read_bytes(), b"valuable")
+
+    def test_protected_repository_and_corpus_outputs_are_rejected(self) -> None:
+        protected = (
+            ROOT.parent,
+            ROOT,
+            ROOT / "fuzz",
+            ROOT / "fuzz/corpus",
+            ROOT / "fuzz/corpus/new-output",
+            ROOT / "docs/new-output",
+        )
+        for output in protected:
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(fuzz.FuzzError, "output path"):
+                    fuzz._prepare_output(output)
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory).resolve() / "repository"
+            protected_output = repository / "fuzz/corpus/owned-looking"
+            protected_output.mkdir(parents=True)
+            (protected_output / fuzz.OUTPUT_MARKER).write_text(
+                fuzz.OUTPUT_MARKER_CONTENT, encoding="utf-8"
+            )
+            sentinel = protected_output / "keep"
+            sentinel.write_bytes(b"valuable")
+            with self.assertRaisesRegex(fuzz.FuzzError, "output path"):
+                fuzz._prepare_output(protected_output, root=repository)
+            self.assertEqual(sentinel.read_bytes(), b"valuable")
+
+    def test_symlink_output_cannot_redirect_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            owned = root / "owned"
+            fuzz._prepare_output(owned)
+            sentinel = owned / "keep"
+            sentinel.write_bytes(b"valuable")
+            link = root / "link"
+            try:
+                link.symlink_to(owned, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"cannot create directory symlink: {error}")
+            with self.assertRaisesRegex(fuzz.FuzzError, "must not contain a symlink"):
+                fuzz._prepare_output(link)
+            self.assertEqual(sentinel.read_bytes(), b"valuable")
+
+            parent_link = root / "parent-link"
+            parent_link.symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(fuzz.FuzzError, "must not contain a symlink"):
+                fuzz._prepare_output(parent_link / "owned")
+            self.assertEqual(sentinel.read_bytes(), b"valuable")
+
     def test_validator_rejects_extra_and_hash_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.make_fixture(Path(directory))

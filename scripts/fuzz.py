@@ -57,6 +57,8 @@ RSS_LIMIT_MB = 2048
 MAX_CAMPAIGN_SECONDS = 3600
 TMIN_RUNS = 64
 TMIN_WALL_SECONDS = 45
+OUTPUT_MARKER = ".rusty-modbus-fuzz-output"
+OUTPUT_MARKER_CONTENT = "rusty-modbus-fuzz-output-v1\n"
 
 
 class FuzzError(Exception):
@@ -483,10 +485,11 @@ def _git_commit(root: Path) -> str:
 
 
 def _artifact_paths(output_dir: Path) -> list[str]:
+    excluded = {output_dir / OUTPUT_MARKER, output_dir / "metadata.json"}
     return sorted(
         path.relative_to(output_dir).as_posix()
         for path in output_dir.rglob("*")
-        if path.is_file() and path.name != "metadata.json"
+        if path.is_file() and path not in excluded
     )
 
 
@@ -522,12 +525,58 @@ def _write_metadata(
     )
 
 
-def _prepare_output(path: Path) -> Path:
-    if path.exists():
-        shutil.rmtree(path)
-    path.mkdir(parents=True)
-    (path / "artifacts").mkdir()
-    return path
+def _symlink_component(path: Path) -> Path | None:
+    absolute = Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            return current
+        if not current.exists():
+            break
+    return None
+
+
+def _prepare_output(path: Path, root: Path = ROOT) -> Path:
+    requested = path.expanduser()
+    symlink = _symlink_component(requested)
+    if symlink is not None:
+        raise FuzzError(f"output path must not contain a symlink: {symlink}")
+    resolved = requested.resolve(strict=False)
+    repository = root.resolve()
+    generated_root = (repository / "fuzz/artifacts").resolve()
+
+    if resolved == repository or repository.is_relative_to(resolved):
+        raise FuzzError(f"output path must not be the repository or its ancestor: {resolved}")
+    if resolved.is_relative_to(repository) and not resolved.is_relative_to(generated_root):
+        raise FuzzError(
+            f"output path inside the repository must be under fuzz/artifacts: {resolved}"
+        )
+
+    marker = resolved / OUTPUT_MARKER
+    if resolved.exists():
+        if not resolved.is_dir():
+            raise FuzzError(f"output path must be a directory: {resolved}")
+        if marker.is_symlink() or not marker.is_file():
+            raise FuzzError(f"existing output directory is not owned by this tool: {resolved}")
+        try:
+            marker_contents = marker.read_text(encoding="utf-8")
+        except OSError as error:
+            raise FuzzError(f"cannot read output ownership marker {marker}: {error}") from error
+        if marker_contents != OUTPUT_MARKER_CONTENT:
+            raise FuzzError(f"existing output directory has an invalid ownership marker: {resolved}")
+        try:
+            shutil.rmtree(resolved)
+        except OSError as error:
+            raise FuzzError(f"cannot replace owned output directory {resolved}: {error}") from error
+
+    try:
+        resolved.mkdir(parents=True)
+        (resolved / "artifacts").mkdir()
+        marker.write_text(OUTPUT_MARKER_CONTENT, encoding="utf-8", newline="\n")
+    except OSError as error:
+        raise FuzzError(f"cannot prepare output directory {resolved}: {error}") from error
+    return resolved
 
 
 def copy_campaign_snapshot(corpus: Path, output_dir: Path) -> Path:
@@ -546,7 +595,7 @@ def _run_one(
     seed: int | None = None,
     root: Path = ROOT,
 ) -> int:
-    output_dir = _prepare_output(output_dir)
+    output_dir = _prepare_output(output_dir, root)
     artifact_dir = output_dir / "artifacts"
     log_path = output_dir / "fuzz.log"
     selected = entries_for_target(entries, target)

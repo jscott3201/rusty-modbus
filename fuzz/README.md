@@ -69,6 +69,8 @@ python3 scripts/fuzz.py campaign rtu_tcp_stream \
 Generated logs, metadata, and crash artifacts are written below
 `fuzz/artifacts/` unless `--output` selects another directory. Metadata records
 the commit, command, pins, seed, requirement-ID union, and artifact paths.
+An output path must be new or carry the ownership marker from an earlier run;
+the tool rejects unmarked directories, symlinks, and protected repository paths.
 The final temporary campaign corpus is copied to `generated-corpus/` in that
 output for optional manual review; the committed corpus is not changed.
 After a failed run the script attempts a bounded `cargo fuzz tmin` for each new
