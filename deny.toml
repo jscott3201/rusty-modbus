@@ -33,7 +33,6 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "NCSA",
     "Unicode-3.0",
     "Zlib",
     "0BSD",
@@ -42,6 +41,7 @@ allow = [
     "Unlicense",
 ]
 exceptions = [
+    { allow = ["NCSA"], crate = "libfuzzer-sys" },
     { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
 ]
 

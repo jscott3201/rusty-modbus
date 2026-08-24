@@ -675,7 +675,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("check", help="validate pins, lock consistency, and retained corpus")
 
     replay = subparsers.add_parser("replay", help="replay explicit retained inputs once")
-    replay.add_argument("targets", nargs="*", choices=TARGETS, default=list(TARGETS))
+    replay.add_argument("targets", nargs="*", choices=TARGETS)
     replay.add_argument("--output", type=Path)
 
     campaign = subparsers.add_parser("campaign", help="run one time-bounded target campaign")

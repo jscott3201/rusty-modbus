@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -45,6 +46,32 @@ class FuzzToolTests(unittest.TestCase):
         self.assertNotIn("-j", command)
         self.assertIn("-print_final_stats=1", command)
         self.assertIn(f"-max_len={fuzz.MAX_INPUT_LENGTH}", command)
+
+    def test_replay_parser_accepts_default_and_explicit_targets(self) -> None:
+        default = fuzz._parser().parse_args(["replay"])
+        self.assertEqual(default.command, "replay")
+        self.assertEqual(default.targets, [])
+
+        explicit = fuzz._parser().parse_args(["replay", "pdu_decode", "rtu_frame"])
+        self.assertEqual(explicit.targets, ["pdu_decode", "rtu_frame"])
+
+        with mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                fuzz._parser().parse_args(["replay", "not-a-target"])
+
+    def test_ncsa_license_exception_is_scoped_to_libfuzzer(self) -> None:
+        policy = tomllib.loads((ROOT / "deny.toml").read_text(encoding="utf-8"))
+        licenses = policy["licenses"]
+        self.assertNotIn("NCSA", licenses["allow"])
+        ncsa_exceptions = [
+            exception
+            for exception in licenses["exceptions"]
+            if "NCSA" in exception["allow"]
+        ]
+        self.assertEqual(
+            ncsa_exceptions,
+            [{"allow": ["NCSA"], "crate": "libfuzzer-sys"}],
+        )
 
     def test_pdu_replay_disables_default_features(self) -> None:
         entries = fuzz.validate_manifest(ROOT)
