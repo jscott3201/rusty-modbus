@@ -3,6 +3,7 @@
   "targets": [
     "pdu_decode",
     "mbap_stream",
+    "rtu_assembler",
     "rtu_frame",
     "rtu_tcp_stream"
   ],
@@ -108,6 +109,52 @@
       "source": "Two repository FC03 and FC06 MBAP examples concatenated as one TCP stream.",
       "contract": "One append can emit two frames; each emission strictly reduces the retained buffer.",
       "sha256": "72491a36b140c858cbc5c1e86a9021d5a4b605a54cbc014cfb71b17653423e60"
+    },
+    {
+      "target": "rtu_assembler",
+      "path": "rtu_assembler/RTU-002_RTU-003_RTU-004__rtu_assembler__valid-deadline.bin",
+      "requirement_ids": [
+        "RTU-002",
+        "RTU-003",
+        "RTU-004"
+      ],
+      "class": "valid",
+      "source": "Minimal CRC-valid RTU ADU with an exact active t3.5 deadline.",
+      "contract": "The deadline emits the whole four-byte ADU with bounded inline output.",
+      "sha256": "06d348683182e489dc04451bfdfc4bd1bf4745770450c7eefb6339cc2ea08f6b"
+    },
+    {
+      "target": "rtu_assembler",
+      "path": "rtu_assembler/RTU-004__rtu_assembler__exact-t3-boundary.bin",
+      "requirement_ids": [
+        "RTU-004"
+      ],
+      "class": "boundary",
+      "source": "Exact t3.5 byte boundary followed by the obsolete prior deadline token.",
+      "contract": "The byte closes the valid candidate, starts another, and makes the old callback harmlessly stale.",
+      "sha256": "b3aea1b750585bbca87be0a0165b3e7388ca02a094509440219839d6c5104f9e"
+    },
+    {
+      "target": "rtu_assembler",
+      "path": "rtu_assembler/RTU-005__rtu_assembler__intercharacter-quarantine.bin",
+      "requirement_ids": [
+        "RTU-005"
+      ],
+      "class": "boundary",
+      "source": "A second byte arrives one nanosecond beyond the retained t1.5 interval.",
+      "contract": "The violating byte is noise, the candidate is discarded, and the active recovery deadline returns to idle.",
+      "sha256": "ca40d596b0a69749ae6e886c82ba70dc8c1777b3425852557fec23a6a052d9bd"
+    },
+    {
+      "target": "rtu_assembler",
+      "path": "rtu_assembler/RTU-009__rtu_assembler__quarantine-recovery.bin",
+      "requirement_ids": [
+        "RTU-009"
+      ],
+      "class": "regression",
+      "source": "Inter-character invalidation, another noise byte, and exact t3.5 recovery.",
+      "contract": "Noise extends quarantine and only a clean gap from the latest noise starts a new candidate.",
+      "sha256": "ed6084caeb8b6d63721db2802037979486d15570760fe2705407ccc9ecd46a60"
     },
     {
       "target": "rtu_frame",

@@ -33,7 +33,7 @@ smaller API when they only need codec, transport, server, or simulator pieces.
 | `rusty-modbus-codec` | Sans-IO PDU request/response encode and decode. |
 | `rusty-modbus-frame` | MBAP/RTU framing, CRC-16, Tokio codecs, and owned `Bytes` response types. |
 | `rusty-modbus-tcp` | TCP transport traits and Modbus/TCP transport implementation. |
-| `rusty-modbus-rtu` | Serial RTU and RTU-over-TCP transport support. |
+| `rusty-modbus-rtu` | Serial RTU and RTU-over-TCP transports, plus timestamp-driven RTU assembly. |
 | `rusty-modbus-tls` | Modbus/TCP Security TLS transport and role primitives using rustls; not a composed secured server. |
 | `rusty-modbus-client` | Pipelined async client with typed function-code methods. |
 | `rusty-modbus-server` | Async server and pluggable `DataStore` trait. |
@@ -82,6 +82,22 @@ preserving address zero for broadcast. Strict receives accept responder sources
 1 through 247. This is address-class validation only: expected-peer correlation,
 broadcast operation policy, and physical RTU responder support are not part of
 this API.
+
+## RTU frame assembler
+
+`rusty_modbus_rtu::RtuFrameAssembler` accepts explicit byte timestamps and
+tokenized t3.5 deadline events. `RtuTiming` validates `0 < t1.5 < t3.5` and can
+be constructed from `ResolvedRtuConfig`. The assembler keeps one fixed
+`MAX_RTU_ADU_SIZE` candidate, enters quarantine after an inter-character gap or
+overlength input, and returns `OwnedRtuAdu` only when a t3.5 boundary closes a
+4-through-256-byte candidate with a valid whole-buffer CRC. Diagnostic counters
+are fixed and saturating.
+
+Callers are responsible for monotonic per-byte timestamps that preserve wire
+timing. This API is not wired to `SerialTransport` or `AsyncRead`; it cannot
+derive timing concealed within one OS/USB read. The assembler tests and fuzz
+target therefore do not prove physical interoperability or read-chunk
+invariance. PDU function semantics remain the codec's responsibility.
 
 ## Rust Client
 

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::all, clippy::pedantic)]
 
+pub mod assembler;
 pub mod config;
 pub mod error;
 pub mod rtu_tcp;
@@ -14,6 +15,11 @@ pub mod rtu_tcp;
 pub mod serial;
 pub mod unit_id;
 
+pub use assembler::{
+    AssemblerDeadline, AssemblerDiagnostics, AssemblerDiscardReason, AssemblerError,
+    AssemblerOutcome, AssemblerRecovery, AssemblerState, OwnedRtuAdu, RtuFrameAssembler,
+    RtuTimestamp, RtuTiming, RtuTimingError,
+};
 pub use config::{ResolvedRtuConfig, RtuConfig, RtuSerialFormat, RtuTimingMode, StrictRtuConfig};
 pub use error::{RtuConfigError, RtuError};
 pub use rtu_tcp::{RtuOverTcpTransport, RtuTcpRecvStream, RtuTcpSink};
