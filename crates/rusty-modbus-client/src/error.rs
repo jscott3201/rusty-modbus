@@ -8,15 +8,24 @@ use rusty_modbus_types::TransactionId;
 /// Errors that can occur during client operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    /// Request timed out waiting for response.
+    /// One request attempt reached its deadline.
+    ///
+    /// For a mutating request, this error does not prove that the server did
+    /// not execute the write.
     #[error("request timed out")]
     Timeout,
 
     /// Server returned a Modbus exception.
+    ///
+    /// `Acknowledge` (`0x05`) means the server accepted the request and is still
+    /// processing it. The client returns that code here without treating it as
+    /// completed success or replaying the request.
     #[error("Modbus exception: {0:?}")]
     Exception(ExceptionResponse),
 
     /// Transport-level error (disconnect, I/O, framing).
+    ///
+    /// A send error does not prove that the transport wrote zero request bytes.
     #[error("transport error: {0}")]
     Transport(#[from] TransportError),
 

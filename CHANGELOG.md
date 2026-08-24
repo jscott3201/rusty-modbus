@@ -18,6 +18,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Typed writes are no longer replayed after ambiguous response or transport
+  timeouts. Replay-safe reads retain bounded timeout retries, and configured
+  Server Device Busy (`0x06`) responses remain retryable for reads and writes.
+- Acknowledge (`0x05`) is now a terminal typed exception even when manually
+  included in `retryable_exceptions`; it no longer triggers automatic replay.
+- Client attempt timeouts now use the nearest deadline in the fixed 16-slot
+  transaction ring instead of a periodic 500 ms sweep. One logical request holds
+  its admission permit across its bounded attempts and backoff. Its operation
+  envelope starts after admission; waiting for a permit is not timed.
 - Client responses now successfully complete a Modbus/TCP request only when the
   transaction ID, Unit Identifier, and normal or exception function identity
   match. RTU clients ignore responses for other units while retaining the active

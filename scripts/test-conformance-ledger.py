@@ -213,6 +213,9 @@ class ConformanceLedgerTests(unittest.TestCase):
         self.assertEqual(findings["F-024"]["status"], "closed")
         self.assertEqual(findings["F-027"]["status"], "mitigated")
         self.assertEqual(findings["F-006"]["status"], "closed")
+        self.assertEqual(findings["F-007"]["status"], "closed")
+        self.assertEqual(findings["F-008"]["status"], "closed")
+        self.assertEqual(findings["F-009"]["status"], "closed")
 
     def test_seeded_requirement_corrections_remain_distinct(self) -> None:
         requirements = {item["id"]: item for item in self.canonical["requirements"]}
@@ -257,11 +260,10 @@ class ConformanceLedgerTests(unittest.TestCase):
             "APP-011": "PR-402",
             "APP-012": "PR-402",
             "APP-013": "PR-402",
-            "APP-018": "PR-203",
             "APP-019": "PR-303",
             "TCP-006": "PR-201",
             "TCP-010": "PR-301, PR-302",
-            "TCP-011": "PR-301",
+            "TCP-011": "PR-204, PR-301",
             "TCP-013": "PR-403",
             "RTU-001": "PR-101",
             "RTU-004": "PR-102, PR-103",

@@ -13,6 +13,9 @@ use crate::error::TransportError;
 /// Write half of a transport — sends framed PDUs.
 pub trait TransportSink: Send {
     /// Send a complete frame to the remote peer.
+    ///
+    /// An error or cancellation may occur after part or all of the frame was
+    /// written. Callers must not infer zero transmitted bytes from the result.
     fn send(&mut self, frame: Frame) -> impl Future<Output = Result<(), TransportError>> + Send;
 }
 

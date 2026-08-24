@@ -1,5 +1,6 @@
 //! `ModbusClient` — high-level async Modbus client.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +11,7 @@ use rusty_modbus_frame::OwnedResponsePdu;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::transport::{TransportConnect, TransportSink, TransportStream};
 use rusty_modbus_tcp::{TcpConfig, TcpSink, TcpTransport, TransportError};
-use rusty_modbus_types::{FunctionCode, MAX_PDU_SIZE, MbapHeader, UnitId};
+use rusty_modbus_types::{ExceptionCode, FunctionCode, MAX_PDU_SIZE, MbapHeader, UnitId};
 use tokio::sync::{Semaphore, watch};
 use tokio::time::{self, Duration};
 use tracing::{debug, trace, warn};
@@ -19,6 +20,30 @@ use crate::config::ClientConfig;
 use crate::error::ClientError;
 use crate::reader;
 use crate::transaction::{self, TransactionManager};
+
+/// Whether replaying a request after an ambiguous local failure is safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestKind {
+    ReplaySafe,
+    Mutating,
+}
+
+impl RequestKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReplaySafe => "replay_safe",
+            Self::Mutating => "mutating",
+        }
+    }
+}
+
+enum AttemptDisposition {
+    Complete(Result<OwnedResponsePdu, ClientError>),
+    Retry {
+        reason: &'static str,
+        error: ClientError,
+    },
+}
 
 /// High-level async Modbus client with transaction pipelining.
 pub struct ModbusClient<S: TransportSink + Send + 'static = TcpSink> {
@@ -29,7 +54,7 @@ pub struct ModbusClient<S: TransportSink + Send + 'static = TcpSink> {
     semaphore: Arc<Semaphore>,
     shutdown_tx: watch::Sender<bool>,
     reader_handle: Option<tokio::task::JoinHandle<()>>,
-    sweep_handle: Option<tokio::task::JoinHandle<()>>,
+    deadline_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 fn checked_pdu_length(pdu_len: usize) -> Result<u16, ClientError> {
@@ -53,11 +78,47 @@ fn checked_pdu_length(pdu_len: usize) -> Result<u16, ClientError> {
     Ok(u16::try_from(pdu_len).expect("MAX_PDU_SIZE fits in u16"))
 }
 
+fn operation_budget(timeout: Duration, retry_delay: Duration, max_retries: u32) -> Duration {
+    timeout
+        .saturating_mul(max_retries)
+        .saturating_add(timeout)
+        .saturating_add(retry_delay.saturating_mul(max_retries))
+}
+
+fn saturating_instant_add(start: time::Instant, duration: Duration) -> time::Instant {
+    if let Some(deadline) = start.checked_add(duration) {
+        return deadline;
+    }
+
+    let mut lower = Duration::ZERO;
+    let mut upper = duration;
+    while upper.saturating_sub(lower) > Duration::from_nanos(1) {
+        let midpoint = lower.saturating_add(upper.saturating_sub(lower) / 2);
+        if start.checked_add(midpoint).is_some() {
+            lower = midpoint;
+        } else {
+            upper = midpoint;
+        }
+    }
+    start.checked_add(lower).unwrap_or(start)
+}
+
+async fn poll_before_deadline<F: Future>(deadline: time::Instant, future: F) -> Option<F::Output> {
+    let sleep = time::sleep_until(deadline);
+    tokio::pin!(sleep);
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        () = &mut sleep => None,
+        output = &mut future => Some(output),
+    }
+}
+
 impl ModbusClient {
     /// Connect to a Modbus/TCP server.
     ///
     /// Establishes the TCP connection, spawns the background reader task
-    /// and the timeout sweep task.
+    /// and the request-deadline task.
     ///
     /// # Errors
     ///
@@ -112,15 +173,9 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             shutdown_rx,
         );
 
-        // Spawn timeout sweep task.
-        let sweep_txn_mgr = Arc::clone(&txn_mgr);
-        let sweep_timeout = config.timeout;
-        let sweep_handle = tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(500));
-            loop {
-                interval.tick().await;
-                sweep_txn_mgr.sweep_timeouts(sweep_timeout);
-            }
+        let deadline_txn_mgr = Arc::clone(&txn_mgr);
+        let deadline_handle = tokio::spawn(async move {
+            deadline_txn_mgr.run_deadline_scheduler().await;
         });
 
         Self {
@@ -131,7 +186,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             semaphore,
             shutdown_tx,
             reader_handle: Some(reader_handle),
-            sweep_handle: Some(sweep_handle),
+            deadline_handle: Some(deadline_handle),
         }
     }
 
@@ -161,7 +216,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// read timeout does not flip this to `false`, so a silently half-open
     /// socket (e.g. a peer crash without RST) may report connected until TCP
     /// keepalive probes fail. In-flight requests still fail with
-    /// [`ClientError::Timeout`] via the transaction sweep regardless.
+    /// [`ClientError::Timeout`] via the transaction deadline regardless.
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
@@ -218,22 +273,25 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         unit_id: UnitId,
         function_code: FunctionCode,
         pdu_data: &[u8],
+        pdu_len: u16,
+        attempt_deadline: time::Instant,
     ) -> Result<OwnedResponsePdu, ClientError> {
         if !self.is_connected() {
             warn!("request rejected because client is disconnected");
             return Err(ClientError::NotConnected);
         }
-        let pdu_len = checked_pdu_length(pdu_data.len())?;
 
-        // Acquire semaphore permit (limits concurrency).
-        let _permit = self
-            .semaphore
-            .acquire()
-            .await
-            .map_err(|_| ClientError::ShuttingDown)?;
+        // Lock before registration so a request cannot expire while queued for
+        // the sink and then be transmitted as an orphan.
+        let Some(mut sink) = poll_before_deadline(attempt_deadline, self.sink.lock()).await else {
+            warn!("request deadline elapsed while waiting for the transport sink");
+            return Err(ClientError::Timeout);
+        };
 
         // Register transaction.
-        let (txn_id, rx) = self.txn_mgr.register(unit_id, function_code)?;
+        let (txn_id, rx) = self
+            .txn_mgr
+            .register(unit_id, function_code, attempt_deadline)?;
         tracing::Span::current().record("txn_id", txn_id.0);
         trace!(txn_id = txn_id.0, "registered Modbus transaction");
 
@@ -244,16 +302,25 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             pdu: Bytes::copy_from_slice(pdu_data),
         };
 
-        // Send frame. If send fails, cancel the registered transaction to
-        // prevent the slot from being leaked until the sweep timeout.
-        {
-            let mut sink = self.sink.lock().await;
-            if let Err(e) = sink.send(frame).await {
+        // If sending fails or reaches the deadline, remove the registration so
+        // the slot is not retained until a later scheduler pass.
+        match poll_before_deadline(attempt_deadline, sink.send(frame)).await {
+            Some(Ok(())) => {}
+            Some(Err(e)) => {
                 warn!(txn_id = txn_id.0, error = %e, "failed to send Modbus request");
                 self.txn_mgr.remove(txn_id);
                 return Err(ClientError::Transport(e));
             }
+            None => {
+                warn!(
+                    txn_id = txn_id.0,
+                    "Modbus request send reached its deadline"
+                );
+                self.txn_mgr.remove(txn_id);
+                return Err(ClientError::Timeout);
+            }
         }
+        drop(sink);
         trace!(txn_id = txn_id.0, "sent Modbus request frame");
 
         // Await response via oneshot channel.
@@ -312,6 +379,69 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         Ok(())
     }
 
+    fn classify_attempt(
+        &self,
+        request_kind: RequestKind,
+        attempt: u32,
+        result: Result<OwnedResponsePdu, ClientError>,
+    ) -> AttemptDisposition {
+        match result {
+            Ok(OwnedResponsePdu::Exception(exc))
+                if exc.exception_code == ExceptionCode::Acknowledge =>
+            {
+                warn!(
+                    attempt,
+                    retry_suppression = "acknowledge_is_terminal",
+                    "returning terminal Modbus Acknowledge exception"
+                );
+                AttemptDisposition::Complete(Ok(OwnedResponsePdu::Exception(exc)))
+            }
+            Ok(OwnedResponsePdu::Exception(exc))
+                if exc.exception_code == ExceptionCode::ServerDeviceBusy
+                    && self.config.retry.is_retryable(exc.exception_code) =>
+            {
+                AttemptDisposition::Retry {
+                    reason: "server_device_busy",
+                    error: ClientError::Exception(exc),
+                }
+            }
+            Ok(response) => AttemptDisposition::Complete(Ok(response)),
+            Err(ClientError::Timeout) if request_kind == RequestKind::ReplaySafe => {
+                AttemptDisposition::Retry {
+                    reason: "attempt_timeout",
+                    error: ClientError::Timeout,
+                }
+            }
+            Err(ClientError::Transport(TransportError::Timeout))
+                if request_kind == RequestKind::ReplaySafe =>
+            {
+                AttemptDisposition::Retry {
+                    reason: "transport_timeout",
+                    error: ClientError::Transport(TransportError::Timeout),
+                }
+            }
+            Err(error @ ClientError::Timeout) => {
+                warn!(
+                    attempt,
+                    request_kind = request_kind.as_str(),
+                    retry_suppression = "ambiguous_mutation",
+                    "not retrying timed-out Modbus mutation"
+                );
+                AttemptDisposition::Complete(Err(error))
+            }
+            Err(error @ ClientError::Transport(TransportError::Timeout)) => {
+                warn!(
+                    attempt,
+                    request_kind = request_kind.as_str(),
+                    retry_suppression = "ambiguous_mutation",
+                    "not retrying transport timeout for Modbus mutation"
+                );
+                AttemptDisposition::Complete(Err(error))
+            }
+            Err(error) => AttemptDisposition::Complete(Err(error)),
+        }
+    }
+
     /// Send a request with retry logic.
     #[tracing::instrument(
         level = "debug",
@@ -319,6 +449,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         fields(
             unit_id = unit_id.0,
             function_code = function_code.code(),
+            request_kind = request_kind.as_str(),
             max_retries = self.config.retry.max_retries
         )
     )]
@@ -327,46 +458,93 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         unit_id: UnitId,
         function_code: FunctionCode,
         pdu_data: &[u8],
+        request_kind: RequestKind,
     ) -> Result<OwnedResponsePdu, ClientError> {
-        let mut last_error = None;
-
-        for attempt in 0..=self.config.retry.max_retries {
-            if attempt > 0 {
-                debug!(attempt, "retrying Modbus request");
-                time::sleep(self.config.retry.retry_delay).await;
-            }
-
-            match self.send_request(unit_id, function_code, pdu_data).await {
-                Ok(response) => {
-                    // Check if it's an exception response we should retry.
-                    if let OwnedResponsePdu::Exception(exc) = response {
-                        if self.config.retry.is_retryable(exc.exception_code) {
-                            warn!(
-                                attempt,
-                                exception_code = exc.exception_code.code(),
-                                "received retryable Modbus exception"
-                            );
-                            last_error = Some(ClientError::Exception(exc));
-                            continue;
-                        }
-                        return Ok(OwnedResponsePdu::Exception(exc));
-                    }
-                    return Ok(response);
-                }
-                Err(ClientError::Timeout) if attempt < self.config.retry.max_retries => {
-                    warn!(attempt, "Modbus request timed out; retrying");
-                    last_error = Some(ClientError::Timeout);
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            }
+        if !self.is_connected() {
+            warn!("request rejected because client is disconnected");
+            return Err(ClientError::NotConnected);
         }
+        let pdu_len = checked_pdu_length(pdu_data.len())?;
 
-        Err(ClientError::RetriesExhausted {
-            attempts: self.config.retry.max_retries + 1,
-            last_error: Box::new(last_error.unwrap_or(ClientError::Timeout)),
-        })
+        // Admit one logical operation and retain the permit across all attempts
+        // and backoff sleeps.
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| ClientError::ShuttingDown)?;
+
+        let operation_start = time::Instant::now();
+        let budget = operation_budget(
+            self.config.timeout,
+            self.config.retry.retry_delay,
+            self.config.retry.max_retries,
+        );
+        let operation_deadline = saturating_instant_add(operation_start, budget);
+        debug!(
+            request_kind = request_kind.as_str(),
+            operation_budget = ?budget,
+            operation_deadline = ?operation_deadline,
+            "admitted Modbus operation"
+        );
+
+        let mut attempts_made = 0u32;
+        let mut last_error = None;
+        loop {
+            if time::Instant::now() >= operation_deadline {
+                return Err(ClientError::RetriesExhausted {
+                    attempts: attempts_made,
+                    last_error: Box::new(last_error.unwrap_or(ClientError::Timeout)),
+                });
+            }
+
+            let attempt_start = time::Instant::now();
+            let attempt_deadline =
+                saturating_instant_add(attempt_start, self.config.timeout).min(operation_deadline);
+            attempts_made = attempts_made.saturating_add(1);
+            debug!(
+                attempt = attempts_made,
+                request_kind = request_kind.as_str(),
+                attempt_deadline = ?attempt_deadline,
+                "starting Modbus request attempt"
+            );
+
+            let result = self
+                .send_request(unit_id, function_code, pdu_data, pdu_len, attempt_deadline)
+                .await;
+
+            let (retry_reason, error) =
+                match self.classify_attempt(request_kind, attempts_made, result) {
+                    AttemptDisposition::Complete(result) => return result,
+                    AttemptDisposition::Retry { reason, error } => (reason, error),
+                };
+
+            warn!(
+                attempt = attempts_made,
+                request_kind = request_kind.as_str(),
+                retry_reason,
+                "Modbus request attempt is retryable"
+            );
+            last_error = Some(error);
+
+            if attempts_made > self.config.retry.max_retries || attempts_made == u32::MAX {
+                return Err(ClientError::RetriesExhausted {
+                    attempts: attempts_made,
+                    last_error: Box::new(last_error.expect("retryable attempt recorded an error")),
+                });
+            }
+
+            let backoff_deadline =
+                saturating_instant_add(time::Instant::now(), self.config.retry.retry_delay)
+                    .min(operation_deadline);
+            debug!(
+                attempt = attempts_made,
+                retry_reason,
+                backoff_deadline = ?backoff_deadline,
+                "waiting before Modbus request retry"
+            );
+            time::sleep_until(backoff_deadline).await;
+        }
     }
 }
 
@@ -376,7 +554,7 @@ impl<S: TransportSink + Send + 'static> Drop for ModbusClient<S> {
         if let Some(h) = self.reader_handle.take() {
             h.abort();
         }
-        if let Some(h) = self.sweep_handle.take() {
+        if let Some(h) = self.deadline_handle.take() {
             h.abort();
         }
     }
@@ -426,5 +604,16 @@ mod tests {
                 }
             ))) if length == MAX_PDU_SIZE + 1
         ));
+    }
+
+    #[test]
+    fn operation_budget_and_deadline_arithmetic_saturate_without_panicking() {
+        assert_eq!(
+            operation_budget(Duration::MAX, Duration::MAX, u32::MAX),
+            Duration::MAX
+        );
+
+        let start = time::Instant::now();
+        assert!(saturating_instant_add(start, Duration::MAX) >= start);
     }
 }

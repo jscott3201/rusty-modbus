@@ -7,7 +7,7 @@ use rusty_modbus_types::{FunctionCode, UnitId};
 
 use rusty_modbus_tcp::transport::TransportSink;
 
-use crate::client::ModbusClient;
+use crate::client::{ModbusClient, RequestKind};
 use crate::error::ClientError;
 use crate::methods::{checked_file_record_byte_count, encode_request};
 
@@ -39,7 +39,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let len = encode_request(&req, &mut buf)?;
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::ReadFileRecord, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::ReadFileRecord,
+                &buf[..len],
+                RequestKind::ReplaySafe,
+            )
             .await?;
 
         match response {
@@ -78,7 +83,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let len = encode_request(&req, &mut buf)?;
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::WriteFileRecord, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::WriteFileRecord,
+                &buf[..len],
+                RequestKind::Mutating,
+            )
             .await?;
 
         match response {

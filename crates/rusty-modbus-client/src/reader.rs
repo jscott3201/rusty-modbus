@@ -66,7 +66,7 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                             // failure for a long-lived pipelined reader: the
                             // socket simply had no frame within `read_timeout`.
                             // Per-request deadlines are enforced by the
-                            // transaction manager's timeout sweep; a genuinely
+                            // transaction manager's attempt deadlines; a genuinely
                             // dead peer eventually surfaces as a transport error
                             // once TCP keepalive probes fail (bounded by the
                             // keepalive time + interval set in the transport).
@@ -117,6 +117,12 @@ fn trace_tcp_outcome(txn_id: u16, pdu_len: usize, outcome: CompletionOutcome) {
         CompletionOutcome::Delivered => {
             trace!(txn_id, pdu_len, "delivered Modbus/TCP response");
         }
+        CompletionOutcome::Expired => {
+            trace!(
+                txn_id,
+                pdu_len, "discarded Modbus/TCP response at or after request deadline"
+            );
+        }
         CompletionOutcome::UnknownOrDuplicate => {
             trace!(
                 txn_id,
@@ -150,6 +156,12 @@ fn trace_rtu_outcome(unit_id: u8, pdu_len: usize, outcome: CompletionOutcome) {
     match outcome {
         CompletionOutcome::Delivered => {
             trace!(unit_id, pdu_len, "delivered RTU response");
+        }
+        CompletionOutcome::Expired => {
+            trace!(
+                unit_id,
+                pdu_len, "discarded RTU response at or after request deadline"
+            );
         }
         CompletionOutcome::UnknownOrDuplicate => {
             trace!(

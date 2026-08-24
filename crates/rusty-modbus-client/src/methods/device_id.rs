@@ -8,7 +8,7 @@ use rusty_modbus_types::{DeviceIdCode, FunctionCode, UnitId};
 
 use rusty_modbus_tcp::transport::TransportSink;
 
-use crate::client::ModbusClient;
+use crate::client::{ModbusClient, RequestKind};
 use crate::error::ClientError;
 use crate::methods::encode_request;
 
@@ -49,6 +49,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                     unit_id,
                     FunctionCode::EncapsulatedInterfaceTransport,
                     &buf[..len],
+                    RequestKind::ReplaySafe,
                 )
                 .await?;
 

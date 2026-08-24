@@ -10,7 +10,7 @@ use rusty_modbus_types::{Address, FunctionCode, Quantity, UnitId};
 
 use rusty_modbus_tcp::transport::TransportSink;
 
-use crate::client::ModbusClient;
+use crate::client::{ModbusClient, RequestKind};
 use crate::error::ClientError;
 use crate::methods::{
     MAX_READ_WRITE_MULTIPLE_WRITE_REGISTERS, MAX_WRITE_MULTIPLE_REGISTERS, checked_byte_count_len,
@@ -41,7 +41,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let len = encode_request(&req, &mut buf)?;
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::ReadHoldingRegisters, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::ReadHoldingRegisters,
+                &buf[..len],
+                RequestKind::ReplaySafe,
+            )
             .await?;
 
         match response {
@@ -83,7 +88,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let len = encode_request(&req, &mut buf)?;
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::ReadHoldingRegisters, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::ReadHoldingRegisters,
+                &buf[..len],
+                RequestKind::ReplaySafe,
+            )
             .await?;
 
         match response {
@@ -125,7 +135,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let len = encode_request(&req, &mut buf)?;
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::ReadInputRegisters, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::ReadInputRegisters,
+                &buf[..len],
+                RequestKind::ReplaySafe,
+            )
             .await?;
 
         match response {
@@ -167,7 +182,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::WriteSingleRegister, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::WriteSingleRegister,
+                &buf[..len],
+                RequestKind::Mutating,
+            )
             .await?;
 
         match response {
@@ -215,7 +235,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::WriteMultipleRegisters, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::WriteMultipleRegisters,
+                &buf[..len],
+                RequestKind::Mutating,
+            )
             .await?;
 
         match response {
@@ -255,7 +280,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
 
         let response = self
-            .send_with_retry(unit_id, FunctionCode::MaskWriteRegister, &buf[..len])
+            .send_with_retry(
+                unit_id,
+                FunctionCode::MaskWriteRegister,
+                &buf[..len],
+                RequestKind::Mutating,
+            )
             .await?;
 
         match response {
@@ -315,6 +345,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 unit_id,
                 FunctionCode::ReadWriteMultipleRegisters,
                 &buf[..len],
+                RequestKind::Mutating,
             )
             .await?;
 
