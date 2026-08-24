@@ -1,5 +1,7 @@
 //! In-memory server store write-path benchmarks.
 
+use std::sync::Arc;
+
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rusty_modbus_server::{DataStore, InMemoryStore, StoreConfig};
 use rusty_modbus_types::{MAX_FIFO_VALUES, MAX_READ_COILS, MAX_READ_REGISTERS};
@@ -290,6 +292,105 @@ fn bench_in_memory_store_file_record_writes(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_in_memory_store_atomic_compound(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let store = InMemoryStore::new(StoreConfig::default());
+    let write_values = register_value_bytes(121);
+
+    let mut group = c.benchmark_group("in_memory_store_atomic_compound");
+    group.bench_function("fc16_mask_write", |b| {
+        b.to_async(&rt).iter(|| async {
+            store
+                .atomic_mask_write_register(0, black_box(0xFFFE), black_box(0x0001))
+                .await
+                .unwrap();
+        });
+    });
+    group.bench_function("fc17_wire_be_max", |b| {
+        b.to_async(&rt).iter(|| async {
+            let mut out = [0u8; MAX_READ_REGISTER_BYTES];
+            store
+                .atomic_read_write_registers_be(
+                    0,
+                    MAX_READ_REGISTERS,
+                    0,
+                    121,
+                    black_box(&write_values),
+                    black_box(&mut out),
+                )
+                .await
+                .unwrap();
+            black_box(out);
+        });
+    });
+    group.finish();
+}
+
+fn bench_in_memory_store_atomic_contention(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
+    let write_values = Arc::new(register_value_bytes(121));
+    let mut group = c.benchmark_group("in_memory_store_atomic_contention");
+
+    for workers in [1usize, 8, 64] {
+        group.bench_with_input(
+            BenchmarkId::new("fc16_mask_write", workers),
+            &workers,
+            |b, &workers| {
+                b.to_async(&rt).iter(|| async {
+                    let mut tasks = tokio::task::JoinSet::new();
+                    for worker in 0..workers {
+                        let store = Arc::clone(&store);
+                        tasks.spawn(async move {
+                            let bit = 1u16 << (worker % u16::BITS as usize);
+                            store
+                                .atomic_mask_write_register(0, !bit, bit)
+                                .await
+                                .unwrap();
+                        });
+                    }
+                    while let Some(result) = tasks.join_next().await {
+                        result.unwrap();
+                    }
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("fc17_read_write", workers),
+            &workers,
+            |b, &workers| {
+                b.to_async(&rt).iter(|| async {
+                    let mut tasks = tokio::task::JoinSet::new();
+                    for _ in 0..workers {
+                        let store = Arc::clone(&store);
+                        let write_values = Arc::clone(&write_values);
+                        tasks.spawn(async move {
+                            let mut out = [0u8; MAX_READ_REGISTER_BYTES];
+                            store
+                                .atomic_read_write_registers_be(
+                                    0,
+                                    MAX_READ_REGISTERS,
+                                    0,
+                                    121,
+                                    &write_values,
+                                    &mut out,
+                                )
+                                .await
+                                .unwrap();
+                            black_box(out);
+                        });
+                    }
+                    while let Some(result) = tasks.join_next().await {
+                        result.unwrap();
+                    }
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn register_value_bytes(register_count: usize) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(register_count * 2);
@@ -366,6 +467,8 @@ criterion_group!(
     bench_in_memory_store_coil_reads,
     bench_in_memory_store_fifo_reads,
     bench_in_memory_store_file_record_reads,
-    bench_in_memory_store_file_record_writes
+    bench_in_memory_store_file_record_writes,
+    bench_in_memory_store_atomic_compound,
+    bench_in_memory_store_atomic_contention
 );
 criterion_main!(benches);

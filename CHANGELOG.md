@@ -17,6 +17,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   returns a typed `"drained" | "forced"` result from `ModbusServer.stop()`.
 - Added `modbus server --shutdown-timeout-secs`; the CLI reports the shutdown
   outcome and connection, request, admission-rejection, and accept-error counters.
+- Added defaulted atomic FC 0x16/0x17 `DataStore` hooks and matching optional
+  Python store callbacks. Existing custom stores still compile and return Illegal
+  Function for these operations until they implement the new capability.
 
 ### Changed
 
@@ -62,6 +65,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reports saturation, access-control rejection, and setup cleanup accurately.
   `max_transactions` remains configuration-only pending per-connection
   pipelining and runtime enforcement.
+- FC 0x16 and FC 0x17 now execute through one atomic store callback. The built-in
+  `InMemoryStore` holds one write guard across each compound operation, including
+  the FC 0x17 post-write read.
 
 ## [0.1.1]
 

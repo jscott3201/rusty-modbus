@@ -1,5 +1,6 @@
 //! Data store abstraction for the four Modbus data tables, plus optional
-//! file-record, FIFO-queue, and serial-line-diagnostic capabilities.
+//! compound-register, file-record, FIFO-queue, and serial-line-diagnostic
+//! capabilities.
 
 mod bits;
 pub mod memory;
@@ -151,11 +152,10 @@ pub(crate) fn pack_registers_be(registers: &[u16], out: &mut [u8]) -> Result<(),
 /// Read methods take `&mut [T]` buffers to avoid heap allocation per request.
 ///
 /// The eight methods covering the four core data tables (coils, discrete inputs,
-/// holding/input registers) are **required**. The remaining methods — file
-/// records, FIFO queues, and the serial-line diagnostics family — are
-/// **optional**: each has a default body returning the spec-correct exception
-/// for an unsupported capability, so existing implementations keep compiling and
-/// only override the capabilities they actually serve.
+/// holding/input registers) are **required**. Atomic compound operations, file
+/// records, FIFO queues, and the serial-line diagnostics family are **optional**.
+/// Existing implementations keep compiling and opt into only the capabilities
+/// they can implement with the documented semantics.
 pub trait DataStore: Send + Sync {
     // ── Coils (read-write bits) ────────────────────────────────────
 
@@ -326,6 +326,64 @@ pub trait DataStore: Send + Sync {
         }
     }
 
+    // ── Atomic compound register operations (FC 0x16 / 0x17) ───────
+
+    /// Apply an FC 0x16 mask to one holding register as one atomic operation.
+    ///
+    /// Implementations must read the current value, apply
+    /// `(current & and_mask) | (or_mask & !and_mask)`, and commit the result in
+    /// one linearized operation. The default returns
+    /// [`ExceptionCode::IllegalFunction`] without calling any ordinary
+    /// holding-register method.
+    ///
+    /// The store owns cancellation and transaction semantics. A successful
+    /// commit is not rolled back if response delivery later fails.
+    fn atomic_mask_write_register(
+        &self,
+        address: u16,
+        and_mask: u16,
+        or_mask: u16,
+    ) -> impl Future<Output = Result<(), ExceptionCode>> + Send {
+        async move {
+            let _ = (address, and_mask, or_mask);
+            Err(ExceptionCode::IllegalFunction)
+        }
+    }
+
+    /// Apply the FC 0x17 write and encode its post-write read as one atomic operation.
+    ///
+    /// `write_values` and `out` use big-endian Modbus wire order. On success,
+    /// the method returns the number of registers encoded in `out`; it must equal
+    /// `read_quantity`. Implementations must validate both ranges and all buffer
+    /// sizes before mutation so output packing cannot fail after commit. Overlap
+    /// is valid, and the read must observe the write from this operation.
+    ///
+    /// The default returns [`ExceptionCode::IllegalFunction`] without calling
+    /// ordinary read or write methods. The store owns cancellation and transaction
+    /// semantics; a successful commit is not rolled back if response delivery
+    /// later fails.
+    fn atomic_read_write_registers_be(
+        &self,
+        read_address: u16,
+        read_quantity: u16,
+        write_address: u16,
+        write_quantity: u16,
+        write_values: &[u8],
+        out: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let _ = (
+                read_address,
+                read_quantity,
+                write_address,
+                write_quantity,
+                write_values,
+                out,
+            );
+            Err(ExceptionCode::IllegalFunction)
+        }
+    }
+
     // ── Input Registers (read-only words) ──────────────────────────
 
     /// Read input registers into `buf`.
@@ -408,6 +466,11 @@ pub trait DataStore: Send + Sync {
     }
 
     /// Write `values` to `record_number` in file `file_number` (Spec V1.1b3 §6.15).
+    ///
+    /// The handler validates every subrequest before the first call, then calls
+    /// this method once per group. Backend failure, cancellation, or concurrent
+    /// access can leave earlier groups committed; the handler does not provide
+    /// rollback or a transaction spanning groups.
     ///
     /// The default returns [`ExceptionCode::IllegalFunction`].
     fn write_file_record(

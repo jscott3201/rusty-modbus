@@ -7,6 +7,7 @@ import rusty_modbus
 
 if TYPE_CHECKING:
     from rusty_modbus import (
+        AtomicCompoundDataStore,
         DataStore,
         FifoDataStore,
         FileRecordDataStore,
@@ -36,6 +37,20 @@ class CompleteStore:
 
     def write_registers(self, address: int, values: Sequence[int]) -> None:
         return None
+
+    def atomic_mask_write_register(
+        self, address: int, and_mask: int, or_mask: int
+    ) -> None:
+        return None
+
+    def atomic_read_write_registers(
+        self,
+        read_address: int,
+        read_quantity: int,
+        write_address: int,
+        write_values: Sequence[int],
+    ) -> Sequence[int]:
+        return [0] * read_quantity
 
     def read_input_registers(self, address: int, quantity: int) -> Sequence[int]:
         return [0] * quantity
@@ -67,6 +82,32 @@ class CompleteStore:
 
     def report_server_id(self) -> bytes:
         return b"rusty-modbus"
+
+
+class RequiredOnlyStore:
+    def read_coils(self, address: int, quantity: int) -> Sequence[bool]:
+        return [False] * quantity
+
+    def write_coil(self, address: int, value: bool) -> None:
+        return None
+
+    def write_coils(self, address: int, values: Sequence[bool]) -> None:
+        return None
+
+    def read_discrete_inputs(self, address: int, quantity: int) -> Sequence[bool]:
+        return [False] * quantity
+
+    def read_holding_registers(self, address: int, quantity: int) -> Sequence[int]:
+        return [0] * quantity
+
+    def write_register(self, address: int, value: int) -> None:
+        return None
+
+    def write_registers(self, address: int, values: Sequence[int]) -> None:
+        return None
+
+    def read_input_registers(self, address: int, quantity: int) -> Sequence[int]:
+        return [0] * quantity
 
 
 def _config_properties_are_read_only() -> None:
@@ -120,6 +161,10 @@ def _server_contracts(store: DataStore) -> None:
     assert_type(rusty_modbus.ModbusServer.start(store=store), rusty_modbus.ModbusServer)
 
 
+def _atomic_store_contracts(store: AtomicCompoundDataStore) -> None:
+    assert_type(store, AtomicCompoundDataStore)
+
+
 def _server_lifecycle_contracts(server: rusty_modbus.ModbusServer) -> None:
     assert_type(server.stop(), Literal["drained", "forced"])
     metrics = server.metrics()
@@ -130,12 +175,14 @@ def _server_lifecycle_contracts(server: rusty_modbus.ModbusServer) -> None:
 
 def _protocol_contracts(
     required: DataStore,
+    compound: AtomicCompoundDataStore,
     file_records: FileRecordDataStore,
     fifo: FifoDataStore,
     serial: SerialDiagnosticsDataStore,
     server_id: ServerIdentificationDataStore,
 ) -> None:
     assert_type(required, DataStore)
+    assert_type(compound, AtomicCompoundDataStore)
     assert_type(file_records, FileRecordDataStore)
     assert_type(fifo, FifoDataStore)
     assert_type(serial, SerialDiagnosticsDataStore)
@@ -144,3 +191,5 @@ def _protocol_contracts(
     complete = CompleteStore()
     assert_type(complete, CompleteStore)
     _server_contracts(complete)
+    _atomic_store_contracts(complete)
+    _server_contracts(RequiredOnlyStore())

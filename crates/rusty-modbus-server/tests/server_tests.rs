@@ -508,6 +508,213 @@ async fn mask_write_register() {
     assert_eq!(regs, vec![0x00F7]);
 }
 
+#[tokio::test]
+async fn direct_atomic_mask_write_uses_current_value_and_spec_formula() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_holding_register(4, 0x0012).unwrap();
+
+    store
+        .atomic_mask_write_register(4, 0x00F2, 0x0025)
+        .await
+        .unwrap();
+
+    let mut values = [0u16; 1];
+    store
+        .read_holding_registers(4, 1, &mut values)
+        .await
+        .unwrap();
+    assert_eq!(values, [0x0017]);
+}
+
+#[tokio::test]
+async fn direct_atomic_mask_write_bad_address_does_not_mutate() {
+    let store = InMemoryStore::new(StoreConfig {
+        holding_register_count: 1,
+        ..StoreConfig::default()
+    });
+    store.set_holding_register(0, 0x1234).unwrap();
+
+    assert_eq!(
+        store.atomic_mask_write_register(1, 0x0000, 0xFFFF).await,
+        Err(ExceptionCode::IllegalDataAddress)
+    );
+
+    let mut values = [0u16; 1];
+    store
+        .read_holding_registers(0, 1, &mut values)
+        .await
+        .unwrap();
+    assert_eq!(values, [0x1234]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_atomic_mask_writes_preserve_each_update() {
+    const WORKERS: usize = u16::BITS as usize;
+    let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
+    let start = Arc::new(tokio::sync::Barrier::new(WORKERS + 1));
+    let mut tasks = Vec::with_capacity(WORKERS);
+
+    for bit in 0..WORKERS {
+        let store = Arc::clone(&store);
+        let start = Arc::clone(&start);
+        tasks.push(tokio::spawn(async move {
+            start.wait().await;
+            let bit = 1u16 << bit;
+            store
+                .atomic_mask_write_register(0, !bit, bit)
+                .await
+                .unwrap();
+        }));
+    }
+
+    start.wait().await;
+    for task in tasks {
+        task.await.unwrap();
+    }
+
+    let mut values = [0u16; 1];
+    store
+        .read_holding_registers(0, 1, &mut values)
+        .await
+        .unwrap();
+    assert_eq!(values, [u16::MAX]);
+}
+
+#[tokio::test]
+async fn direct_atomic_read_write_supports_same_and_overlapping_ranges() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_holding_register(0, 0xAAAA).unwrap();
+    store.set_holding_register(1, 0xBBBB).unwrap();
+    store.set_holding_register(2, 0xCCCC).unwrap();
+
+    let mut same = [0u8; 4];
+    let count = store
+        .atomic_read_write_registers_be(0, 2, 0, 2, &[0x11, 0x11, 0x22, 0x22], &mut same)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(same, [0x11, 0x11, 0x22, 0x22]);
+
+    let mut overlapping = [0u8; 6];
+    let count = store
+        .atomic_read_write_registers_be(0, 3, 1, 2, &[0x33, 0x33, 0x44, 0x44], &mut overlapping)
+        .await
+        .unwrap();
+    assert_eq!(count, 3);
+    assert_eq!(overlapping, [0x11, 0x11, 0x33, 0x33, 0x44, 0x44]);
+}
+
+#[tokio::test]
+async fn direct_atomic_read_write_supports_non_overlapping_ranges() {
+    let store = InMemoryStore::new(StoreConfig::default());
+    store.set_holding_register(0, 0x1234).unwrap();
+    store.set_holding_register(1, 0x5678).unwrap();
+
+    let mut read = [0u8; 4];
+    let count = store
+        .atomic_read_write_registers_be(0, 2, 10, 2, &[0xCA, 0xFE, 0xBA, 0xBE], &mut read)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(read, [0x12, 0x34, 0x56, 0x78]);
+
+    let mut written = [0u16; 2];
+    store
+        .read_holding_registers(10, 2, &mut written)
+        .await
+        .unwrap();
+    assert_eq!(written, [0xCAFE, 0xBABE]);
+}
+
+#[tokio::test]
+async fn direct_atomic_read_write_rejects_invalid_inputs_before_mutation() {
+    async fn assert_register_zero_is_unchanged(store: &InMemoryStore) {
+        let mut value = [0u16; 1];
+        store
+            .read_holding_registers(0, 1, &mut value)
+            .await
+            .unwrap();
+        assert_eq!(value, [0x1234]);
+    }
+
+    let store = InMemoryStore::new(StoreConfig {
+        holding_register_count: 4,
+        ..StoreConfig::default()
+    });
+    store.set_holding_register(0, 0x1234).unwrap();
+
+    let mut out = [0u8; 4];
+    assert_eq!(
+        store
+            .atomic_read_write_registers_be(3, 2, 0, 1, &[0xBE, 0xEF], &mut out)
+            .await,
+        Err(ExceptionCode::IllegalDataAddress)
+    );
+    assert_register_zero_is_unchanged(&store).await;
+
+    assert_eq!(
+        store
+            .atomic_read_write_registers_be(0, 1, 3, 2, &[0xBE, 0xEF, 0xCA, 0xFE], &mut out)
+            .await,
+        Err(ExceptionCode::IllegalDataAddress)
+    );
+    assert_register_zero_is_unchanged(&store).await;
+
+    assert_eq!(
+        store
+            .atomic_read_write_registers_be(0, 1, 0, 1, &[0xBE], &mut out)
+            .await,
+        Err(ExceptionCode::IllegalDataValue)
+    );
+    assert_register_zero_is_unchanged(&store).await;
+
+    assert_eq!(
+        store
+            .atomic_read_write_registers_be(0, 2, 0, 1, &[0xBE, 0xEF], &mut out[..3])
+            .await,
+        Err(ExceptionCode::IllegalDataValue)
+    );
+    assert_register_zero_is_unchanged(&store).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_atomic_read_write_results_are_linearizable() {
+    const WORKERS: usize = 64;
+    let store = Arc::new(InMemoryStore::new(StoreConfig::default()));
+    let start = Arc::new(tokio::sync::Barrier::new(WORKERS + 1));
+    let mut tasks = Vec::with_capacity(WORKERS);
+
+    for worker in 0..WORKERS {
+        let store = Arc::clone(&store);
+        let start = Arc::clone(&start);
+        tasks.push(tokio::spawn(async move {
+            let value = if worker % 2 == 0 { 0xAAAAu16 } else { 0x5555 };
+            let [hi, lo] = value.to_be_bytes();
+            let write = [hi, lo, hi, lo];
+            let mut read = [0u8; 4];
+            start.wait().await;
+            store
+                .atomic_read_write_registers_be(0, 2, 0, 2, &write, &mut read)
+                .await
+                .unwrap();
+            (write, read)
+        }));
+    }
+
+    start.wait().await;
+    for task in tasks {
+        let (write, read) = task.await.unwrap();
+        assert_eq!(read, write);
+    }
+
+    let mut final_values = [0u16; 2];
+    store
+        .read_holding_registers(0, 2, &mut final_values)
+        .await
+        .unwrap();
+    assert!(matches!(final_values, [0xAAAA, 0xAAAA] | [0x5555, 0x5555]));
+}
+
 #[test]
 fn oversized_store_config_is_rejected_before_allocation() {
     let config = StoreConfig {

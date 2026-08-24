@@ -72,6 +72,22 @@ impl DataStore for BadCountStore {
         Ok(())
     }
 
+    async fn atomic_read_write_registers_be(
+        &self,
+        _: u16,
+        _: u16,
+        _: u16,
+        _: u16,
+        _: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, ExceptionCode> {
+        let limit = self.count.min(out.len() / 2);
+        for chunk in out.chunks_exact_mut(2).take(limit) {
+            chunk.copy_from_slice(&0x1234u16.to_be_bytes());
+        }
+        Ok(self.count)
+    }
+
     async fn read_input_registers(
         &self,
         _: u16,

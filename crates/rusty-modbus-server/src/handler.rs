@@ -537,11 +537,9 @@ async fn handle_mask_write<S: DataStore>(
     store: &S,
 ) -> Result<(), ExceptionCode> {
     validate::validate_mask_write_address(address.0)?;
-
-    let mut buf = [0u16; 1];
-    store.read_holding_registers(address.0, 1, &mut buf).await?;
-    let result = (buf[0] & and_mask) | (or_mask & !and_mask);
-    store.write_register(address.0, result).await
+    store
+        .atomic_mask_write_register(address.0, and_mask, or_mask)
+        .await
 }
 
 async fn handle_read_write_multiple<S: DataStore>(
@@ -561,21 +559,6 @@ async fn handle_read_write_multiple<S: DataStore>(
         );
     }
 
-    // Write executes before read per spec §6.17.
-    if let Err(ec) = store
-        .write_registers_be(
-            req.write_address.0,
-            req.write_quantity.0,
-            req.write_register_values,
-        )
-        .await
-    {
-        return encode_exception(
-            FunctionCode::ReadWriteMultipleRegisters.exception_code(),
-            ec,
-        );
-    }
-
     let byte_count = match checked_response_u8(
         usize::from(req.read_quantity.0) * 2,
         FunctionCode::ReadWriteMultipleRegisters,
@@ -588,7 +571,14 @@ async fn handle_read_write_multiple<S: DataStore>(
     response[1] = byte_count;
 
     match store
-        .read_holding_registers_be(req.read_address.0, req.read_quantity.0, &mut response[2..])
+        .atomic_read_write_registers_be(
+            req.read_address.0,
+            req.read_quantity.0,
+            req.write_address.0,
+            req.write_quantity.0,
+            req.write_register_values,
+            &mut response[2..],
+        )
         .await
     {
         Ok(count) => {
@@ -716,9 +706,8 @@ async fn apply_write_file_record<S: DataStore>(
     if !(0x09..=0xFB).contains(&req.byte_count) {
         return Err(ExceptionCode::IllegalDataValue);
     }
-    // Pass 1: validate framing and collect every sub-request *before* writing, so
-    // a malformed later sub-request rejects the whole request without committing
-    // the earlier ones (write is atomic with respect to framing errors).
+    // Validate every group before the first store call. This prevents a malformed
+    // later group from causing an earlier group to be submitted.
     let mut subs = req.sub_requests;
     let mut groups = [WriteFileRecordGroup {
         file: 0,

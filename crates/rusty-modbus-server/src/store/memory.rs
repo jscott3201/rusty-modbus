@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use parking_lot::RwLock;
-use rusty_modbus_types::{DiagnosticSubFunction, ExceptionCode};
+use rusty_modbus_types::{
+    DiagnosticSubFunction, ExceptionCode, MAX_RW_READ_REGISTERS, MAX_RW_WRITE_REGISTERS,
+};
 
 use crate::file_record::{self, MAX_RECORD_NUMBER, MIN_FILE_NUMBER, RECORD_COUNT};
 
@@ -255,6 +257,28 @@ fn check_range(address: u16, quantity: usize, max: usize) -> Result<(), Exceptio
     Ok(())
 }
 
+fn validate_atomic_read_write_buffers(
+    read_quantity: u16,
+    write_quantity: u16,
+    write_values: &[u8],
+    out: &[u8],
+) -> Result<(usize, usize), ExceptionCode> {
+    if read_quantity == 0
+        || read_quantity > MAX_RW_READ_REGISTERS
+        || write_quantity == 0
+        || write_quantity > MAX_RW_WRITE_REGISTERS
+    {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+
+    let read_count = usize::from(read_quantity);
+    let write_count = usize::from(write_quantity);
+    if write_values.len() != write_count * 2 || out.len() < read_count * 2 {
+        return Err(ExceptionCode::IllegalDataValue);
+    }
+    Ok((read_count, write_count))
+}
+
 fn validate_table_size(table: &'static str, count: usize) -> Result<(), StoreError> {
     if count > MAX_TABLE_SIZE {
         return Err(StoreError::TableTooLarge {
@@ -418,6 +442,48 @@ impl DataStore for InMemoryStore {
             *slot = u16::from_be_bytes([chunk[0], chunk[1]]);
         }
         Ok(())
+    }
+
+    async fn atomic_mask_write_register(
+        &self,
+        address: u16,
+        and_mask: u16,
+        or_mask: u16,
+    ) -> Result<(), ExceptionCode> {
+        let mut regs = self.holding_registers.write();
+        check_range(address, 1, regs.len())?;
+        let current = regs[usize::from(address)];
+        regs[usize::from(address)] = (current & and_mask) | (or_mask & !and_mask);
+        Ok(())
+    }
+
+    async fn atomic_read_write_registers_be(
+        &self,
+        read_address: u16,
+        read_quantity: u16,
+        write_address: u16,
+        write_quantity: u16,
+        write_values: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, ExceptionCode> {
+        let (read_count, write_count) =
+            validate_atomic_read_write_buffers(read_quantity, write_quantity, write_values, out)?;
+
+        let mut regs = self.holding_registers.write();
+        check_range(write_address, write_count, regs.len())?;
+        check_range(read_address, read_count, regs.len())?;
+
+        let write_start = usize::from(write_address);
+        for (slot, chunk) in regs[write_start..write_start + write_count]
+            .iter_mut()
+            .zip(write_values.chunks_exact(2))
+        {
+            *slot = u16::from_be_bytes([chunk[0], chunk[1]]);
+        }
+
+        let read_start = usize::from(read_address);
+        pack_registers_be(&regs[read_start..read_start + read_count], out)?;
+        Ok(read_count)
     }
 
     async fn read_input_registers(
