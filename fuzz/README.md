@@ -1,9 +1,10 @@
-# Codec and frame fuzzing
+# Codec, frame, and RTU assembler fuzzing
 
-This directory is an isolated Cargo workspace for byte-oriented fuzz targets.
+This directory is an isolated Cargo workspace for bounded parser and event targets.
 Its lockfile and target directory are separate from the repository workspace;
 `rusty-modbus-codec` remains a no-default-features dependency. The `frame`
-feature is required only by targets that use `rusty-modbus-frame`.
+feature selects codec targets that use `rusty-modbus-frame`; the `assembler`
+feature selects the RTU timing target without enabling physical serial support.
 
 ## Toolchain
 
@@ -30,6 +31,7 @@ metadata, and every retained corpus hash before a run.
 |---|---|---|
 | `pdu_decode` | `decode_pdu_ref`, `decode_request`, `decode_response` | Calls all public dispatchers on at most 254 bytes. Empty, malformed, unknown, and oversized inputs are expected errors. File Record and Device Identification are reached through retained inputs. |
 | `mbap_stream` | `MbapCodec::decode` | Appends bounded chunks, drops each decoded frame, and requires every emitted frame to reduce the retained buffer. A decoder error ends that input. Decoded frames are encoded and decoded once for consistency. |
+| `rtu_assembler` | `RtuFrameAssembler` byte and deadline events | Runs at most 512 four-byte events with explicit timestamps. It covers exact t1.5/t3.5 boundaries, quarantine, stale and early deadlines, timestamp errors, overflow, whole-candidate CRC, and fixed ADU bounds. Emitted ADUs must contain 4 through 256 bytes and pass CRC validation. |
 | `rtu_frame` | `RtuCodec::decode` | Treats at most 257 bytes as one complete candidate ADU. It checks CRC/frame behavior only; it does not model serial reads, t1.5, or t3.5. |
 | `rtu_tcp_stream` | `RtuOverTcpCodec::decode` | Uses the incremental bounds from `mbap_stream` while preserving the current first-valid-CRC-prefix and exact-256-byte CRC-miss behavior. It does not define a stricter extension boundary policy. |
 
@@ -38,6 +40,12 @@ first byte selects one through sixteen schedule bytes. Each schedule byte maps
 to an append width of one through 64 bytes; the remaining bytes are the stream.
 Target input is capped at 2,048 bytes. After `Ok(None)` the target waits for the
 next append, and after `Err` it discards the decoder.
+
+The assembler target uses a ten-byte header for validated nanosecond timing and
+an initial epoch, followed by four-byte operations. Timestamp modes select exact
+boundaries, nearby values, regressions, and values near `u64::MAX`; deadline
+operations choose the active token or a retained stale token. The harness keeps
+only one stale token and caps processing at 512 events.
 
 These harnesses bound input copies, decoder calls per append, retained buffers,
 and encoded round-trip buffers. They do not retain decoded frame sequences.
@@ -62,8 +70,8 @@ retained inputs into a temporary corpus, so libFuzzer does not add files to the
 reviewed corpus:
 
 ```console
-python3 scripts/fuzz.py campaign rtu_tcp_stream \
-  --seconds 60 --seed 3230003004
+python3 scripts/fuzz.py campaign rtu_assembler \
+  --seconds 60 --seed 3230003003
 ```
 
 Generated logs, metadata, and crash artifacts are written below
@@ -91,9 +99,10 @@ and state whether it is a valid, malformed, boundary, or regression case.
 
 ## Exclusions
 
-This package does not fuzz physical RTU timing/event state, transport recovery
-policy, clients, servers, network I/O, gateways, TLS, or Python bindings.
-Physical timing remains assigned to PR-102, and RTU-over-TCP boundary/recovery
-policy remains assigned to PR-104. Fuzz execution is internal repository
-evidence; it does not establish protocol semantics, interoperability, or formal
-conformance status.
+The assembler target accepts synthetic trustworthy timestamps; it does not
+obtain timestamps from `SerialTransport`, reconstruct timing hidden in reads, or
+verify OS/USB chunk behavior. This package also excludes transport recovery
+policy, clients, servers, network I/O, gateways, TLS, and Python bindings.
+RTU-over-TCP boundary/recovery policy remains assigned to PR-104. Fuzz execution
+is internal repository evidence; it does not establish physical interoperability
+or formal conformance status.

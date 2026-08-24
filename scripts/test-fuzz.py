@@ -52,8 +52,8 @@ class FuzzToolTests(unittest.TestCase):
         self.assertEqual(default.command, "replay")
         self.assertEqual(default.targets, [])
 
-        explicit = fuzz._parser().parse_args(["replay", "pdu_decode", "rtu_frame"])
-        self.assertEqual(explicit.targets, ["pdu_decode", "rtu_frame"])
+        explicit = fuzz._parser().parse_args(["replay", "pdu_decode", "rtu_assembler"])
+        self.assertEqual(explicit.targets, ["pdu_decode", "rtu_assembler"])
 
         with mock.patch("sys.stderr"):
             with self.assertRaises(SystemExit):
@@ -80,6 +80,15 @@ class FuzzToolTests(unittest.TestCase):
         )
         self.assertIn("--no-default-features", command)
         self.assertNotIn("--features", command)
+
+    def test_assembler_replay_uses_only_assembler_feature(self) -> None:
+        entries = fuzz.validate_manifest(ROOT)
+        command = fuzz.construct_replay_command(
+            "rtu_assembler", entries, ROOT / "fuzz/artifacts/unit", ROOT
+        )
+        feature_index = command.index("--features")
+        self.assertEqual(command[feature_index + 1], "assembler")
+        self.assertNotIn("frame", command)
 
     def test_campaign_requires_positive_bounds_and_temp_corpus(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

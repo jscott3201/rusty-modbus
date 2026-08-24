@@ -27,8 +27,14 @@ NIGHTLY = "nightly-2026-08-15"
 CARGO_FUZZ_VERSION = "0.13.2"
 EXPECTED_NIGHTLY_RELEASE = "1.99.0-nightly"
 EXPECTED_NIGHTLY_COMMIT_DATE = "2026-08-14"
-TARGETS = ("pdu_decode", "mbap_stream", "rtu_frame", "rtu_tcp_stream")
-FRAME_TARGETS = frozenset(TARGETS[1:])
+TARGETS = ("pdu_decode", "mbap_stream", "rtu_assembler", "rtu_frame", "rtu_tcp_stream")
+TARGET_FEATURES = {
+    "pdu_decode": None,
+    "mbap_stream": "frame",
+    "rtu_assembler": "assembler",
+    "rtu_frame": "frame",
+    "rtu_tcp_stream": "frame",
+}
 CLASSES = frozenset({"valid", "malformed", "boundary", "regression"})
 ENTRY_KEYS = (
     "target",
@@ -42,14 +48,16 @@ ENTRY_KEYS = (
 TARGET_MAX_FILE_SIZE = {
     "pdu_decode": 254,
     "mbap_stream": 2048,
+    "rtu_assembler": 2048,
     "rtu_frame": 257,
     "rtu_tcp_stream": 2048,
 }
 REPLAY_SEEDS = {
     "pdu_decode": 3_230_003_001,
     "mbap_stream": 3_230_003_002,
-    "rtu_frame": 3_230_003_003,
-    "rtu_tcp_stream": 3_230_003_004,
+    "rtu_assembler": 3_230_003_003,
+    "rtu_frame": 3_230_003_004,
+    "rtu_tcp_stream": 3_230_003_005,
 }
 MAX_INPUT_LENGTH = 2048
 INPUT_TIMEOUT_SECONDS = 2
@@ -246,11 +254,12 @@ def entries_for_target(entries: Sequence[CorpusEntry], target: str) -> list[Corp
 
 
 def _feature_arguments(target: str) -> list[str]:
-    if target == "pdu_decode":
+    if target not in TARGET_FEATURES:
+        raise FuzzError(f"unknown fuzz target {target}")
+    feature = TARGET_FEATURES[target]
+    if feature is None:
         return ["--no-default-features"]
-    if target in FRAME_TARGETS:
-        return ["--features", "frame"]
-    raise FuzzError(f"unknown fuzz target {target}")
+    return ["--features", feature]
 
 
 def _common_run_prefix(target: str, root: Path) -> list[str]:

@@ -12,6 +12,7 @@ on:
       - 'deny.toml'
       - 'crates/rusty-modbus-codec/**'
       - 'crates/rusty-modbus-frame/**'
+      - 'crates/rusty-modbus-rtu/**'
       - 'crates/rusty-modbus-types/**'
       - 'docs/conformance/**'
   schedule:
@@ -86,6 +87,7 @@ jobs:
         run: |
           cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --no-default-features pdu_decode
           cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features frame mbap_stream
+          cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features assembler rtu_assembler
           cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features frame rtu_frame
           cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features frame rtu_tcp_stream
       - name: Replay explicit retained files
@@ -107,12 +109,19 @@ jobs:
         include:
           - target: pdu_decode
             seed_offset: 3001
+            feature: none
           - target: mbap_stream
             seed_offset: 3002
-          - target: rtu_frame
+            feature: frame
+          - target: rtu_assembler
             seed_offset: 3003
-          - target: rtu_tcp_stream
+            feature: assembler
+          - target: rtu_frame
             seed_offset: 3004
+            feature: frame
+          - target: rtu_tcp_stream
+            seed_offset: 3005
+            feature: frame
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -133,10 +142,10 @@ jobs:
           cargo +"$FUZZ_NIGHTLY" fmt --manifest-path fuzz/Cargo.toml --all --check
       - name: Build campaign target
         run: |
-          if [ "${{ matrix.target }}" = pdu_decode ]; then
+          if [ "${{ matrix.feature }}" = none ]; then
             cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --no-default-features "${{ matrix.target }}"
           else
-            cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features frame "${{ matrix.target }}"
+            cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features "${{ matrix.feature }}" "${{ matrix.target }}"
           fi
       - name: Derive recorded campaign seed
         id: campaign-seed

@@ -14,11 +14,13 @@ bytes = { version = "1", optional = true }
 libfuzzer-sys = "0.4"
 rusty-modbus-codec = { path = "../crates/rusty-modbus-codec", default-features = false }
 rusty-modbus-frame = { path = "../crates/rusty-modbus-frame", default-features = false, features = ["rtu", "std"], optional = true }
+rusty-modbus-rtu = { path = "../crates/rusty-modbus-rtu", default-features = false, optional = true }
 rusty-modbus-types = { path = "../crates/rusty-modbus-types", default-features = false }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 
 [features]
 default = []
+assembler = ["dep:rusty-modbus-frame", "dep:rusty-modbus-rtu"]
 frame = ["dep:bytes", "dep:rusty-modbus-frame", "dep:tokio-util"]
 
 [[bin]]
@@ -35,6 +37,14 @@ test = false
 doc = false
 bench = false
 required-features = ["frame"]
+
+[[bin]]
+name = "rtu_assembler"
+path = "fuzz_targets/rtu_assembler.rs"
+test = false
+doc = false
+bench = false
+required-features = ["assembler"]
 
 [[bin]]
 name = "rtu_frame"

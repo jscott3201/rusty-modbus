@@ -7,7 +7,7 @@
     "as_of": "2026-08-23",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 48
+    "test_count": 49
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -2259,6 +2259,9 @@
           "path": "crates/rusty-modbus-frame/src/rtu.rs"
         },
         {
+          "path": "crates/rusty-modbus-rtu/src/assembler.rs"
+        },
+        {
           "path": "crates/rusty-modbus-rtu/src/config.rs"
         },
         {
@@ -2268,6 +2271,7 @@
       "test_ids": [
         "spec_constants",
         "spec_parser_resilience",
+        "spec_rtu_assembler",
         "spec_rtu_framing"
       ],
       "evidence_gap": null,
@@ -2306,6 +2310,9 @@
           "path": "crates/rusty-modbus-frame/src/rtu.rs"
         },
         {
+          "path": "crates/rusty-modbus-rtu/src/assembler.rs"
+        },
+        {
           "path": "crates/rusty-modbus-rtu/src/config.rs"
         },
         {
@@ -2314,6 +2321,7 @@
       ],
       "test_ids": [
         "spec_crc16",
+        "spec_rtu_assembler",
         "spec_rtu_framing"
       ],
       "evidence_gap": null,
@@ -2352,6 +2360,9 @@
           "path": "crates/rusty-modbus-frame/src/rtu.rs"
         },
         {
+          "path": "crates/rusty-modbus-rtu/src/assembler.rs"
+        },
+        {
           "path": "crates/rusty-modbus-rtu/src/config.rs"
         },
         {
@@ -2359,10 +2370,11 @@
         }
       ],
       "test_ids": [
+        "spec_rtu_assembler",
         "spec_rtu_transport"
       ],
       "evidence_gap": {
-        "detail": "Silence handling relies on client delays and does not provide complete receiver-boundary proof.",
+        "detail": "The timestamp-driven core enforces t3.5 boundaries, but the physical receive path has no trustworthy per-byte timestamp adapter and remains timing-unaware.",
         "owner": "maintainers",
         "follow_up": "PR-102, PR-103"
       },
@@ -2371,7 +2383,7 @@
           "profile": "physical-rtu-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Transmit delay and incremental decode do not fully implement receiver t3.5 boundary detection."
+          "reason": "The core handles supplied timestamps, but physical receive is not wired to it and cannot provide receiver t3.5 boundary evidence."
         },
         {
           "profile": "physical-rtu-responder",
@@ -2383,7 +2395,7 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Transmit delay and incremental decode do not fully implement receiver t3.5 boundary detection."
+          "reason": "The gateway has no physical timestamp adapter and does not use the assembler for receiver t3.5 boundaries."
         }
       ]
     },
@@ -2403,15 +2415,20 @@
           "path": "crates/rusty-modbus-frame/src/rtu.rs"
         },
         {
+          "path": "crates/rusty-modbus-rtu/src/assembler.rs"
+        },
+        {
           "path": "crates/rusty-modbus-rtu/src/config.rs"
         },
         {
           "path": "crates/rusty-modbus-rtu/src/serial.rs"
         }
       ],
-      "test_ids": [],
+      "test_ids": [
+        "spec_rtu_assembler"
+      ],
       "evidence_gap": {
-        "detail": "The receive path does not invalidate partial frames specifically at t1.5.",
+        "detail": "The timestamp-driven core invalidates candidates after t1.5, but the physical receive path has no trustworthy per-byte timestamp adapter and is not connected to the core.",
         "owner": "maintainers",
         "follow_up": "PR-102"
       },
@@ -2420,7 +2437,7 @@
           "profile": "physical-rtu-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "There is no explicit t1.5 partial-frame invalidation path."
+          "reason": "The core implements t1.5 invalidation for supplied timestamps; physical receive does not supply those timestamps or call it."
         },
         {
           "profile": "physical-rtu-responder",
@@ -2432,7 +2449,7 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "There is no explicit t1.5 partial-frame invalidation path."
+          "reason": "The gateway does not use a physical timestamp source or the assembler's t1.5 invalidation path."
         }
       ]
     },
@@ -2599,6 +2616,9 @@
           "path": "crates/rusty-modbus-frame/src/rtu.rs"
         },
         {
+          "path": "crates/rusty-modbus-rtu/src/assembler.rs"
+        },
+        {
           "path": "crates/rusty-modbus-rtu/src/config.rs"
         },
         {
@@ -2606,10 +2626,11 @@
         }
       ],
       "test_ids": [
+        "spec_rtu_assembler",
         "spec_rtu_framing"
       ],
       "evidence_gap": {
-        "detail": "Bad-CRC recovery exists; noise, overlength, and post-error recovery need broader evidence.",
+        "detail": "The timestamp-driven core has bounded noise, CRC, overlength, and recovery evidence, but physical serial recovery is not connected to it.",
         "owner": "maintainers",
         "follow_up": "PR-103"
       },
@@ -2618,7 +2639,7 @@
           "profile": "physical-rtu-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "CRC errors are rejected, while broader noise and recovery behavior remains incomplete."
+          "reason": "Core recovery is deterministic for supplied timestamps; physical serial recovery remains on the existing receive path."
         },
         {
           "profile": "physical-rtu-responder",
@@ -2630,7 +2651,7 @@
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "CRC errors are rejected, while broader noise and recovery behavior remains incomplete."
+          "reason": "The gateway does not use the timestamp-driven core for physical noise and recovery behavior."
         }
       ]
     },
@@ -3435,6 +3456,9 @@
           "path": "crates/rusty-modbus-frame/src/rtu.rs"
         },
         {
+          "path": "crates/rusty-modbus-rtu/src/assembler.rs"
+        },
+        {
           "path": "fuzz/fuzz_targets/pdu_decode.rs"
         },
         {
@@ -3442,6 +3466,9 @@
         },
         {
           "path": "fuzz/fuzz_targets/rtu_frame.rs"
+        },
+        {
+          "path": "fuzz/fuzz_targets/rtu_assembler.rs"
         },
         {
           "path": "fuzz/fuzz_targets/rtu_tcp_stream.rs"
@@ -3463,10 +3490,11 @@
         "spec_encode_validation",
         "spec_mbap_framing",
         "spec_parser_resilience",
+        "spec_rtu_assembler",
         "spec_rtu_framing"
       ],
       "evidence_gap": {
-        "detail": "The byte-parser and stream-framer fuzz foundation is present; physical RTU timing/event-state fuzzing and RTU-over-TCP boundary/recovery policy remain assigned to separate packages.",
+        "detail": "The timestamp-driven RTU core has bounded event-sequence fuzzing, but physical timestamp-source integration and RTU-over-TCP boundary/recovery policy remain separate work.",
         "owner": "maintainers",
         "follow_up": "PR-102, PR-104",
         "profiles": [
@@ -3490,7 +3518,7 @@
           "profile": "physical-rtu-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Complete-candidate RTU byte fuzzing is present; physical timing/event-state fuzzing remains assigned to PR-102."
+          "reason": "The timing core has event-sequence fuzzing, but physical receive does not supply trustworthy per-byte timestamps or call it."
         },
         {
           "profile": "physical-rtu-responder",
@@ -3538,12 +3566,17 @@
           "path": "crates/rusty-modbus-frame/src/rtu.rs"
         },
         {
+          "path": "crates/rusty-modbus-rtu/src/assembler.rs"
+        },
+        {
           "path": "crates/rusty-modbus-rtu/src/serial.rs"
         }
       ],
-      "test_ids": [],
+      "test_ids": [
+        "spec_rtu_assembler"
+      ],
       "evidence_gap": {
-        "detail": "Physical serial timing, noise, and turnaround verification is incomplete.",
+        "detail": "Synthetic timestamps cover the assembler's timing and noise contracts; physical timestamp fidelity, read-chunk behavior, and turnaround remain unverified.",
         "owner": "maintainers",
         "follow_up": "PR-102, PR-103, PR-702"
       },
@@ -3552,7 +3585,7 @@
           "profile": "physical-rtu-client",
           "disposition": "unsupported",
           "evidence": "not-implemented",
-          "reason": "Physical serial timing, noise, and turnaround verification is incomplete."
+          "reason": "No physical adapter supplies trustworthy per-byte timestamps, and read-chunk and turnaround behavior remain unverified."
         },
         {
           "profile": "physical-rtu-responder",
@@ -3564,7 +3597,7 @@
           "profile": "gateway",
           "disposition": "unsupported",
           "evidence": "not-implemented",
-          "reason": "Physical serial timing, noise, and turnaround verification is incomplete."
+          "reason": "The gateway has no physical serial timestamp adapter or timing, noise, and turnaround verification."
         }
       ]
     },
@@ -4189,6 +4222,20 @@
         "APP-011",
         "APP-012",
         "APP-016"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_rtu_assembler",
+      "path": "crates/rusty-modbus-conformance/tests/spec_rtu_assembler.rs",
+      "requirement_ids": [
+        "CONF-003",
+        "CONF-004",
+        "RTU-002",
+        "RTU-003",
+        "RTU-004",
+        "RTU-005",
+        "RTU-009"
       ],
       "category": null
     },
@@ -5041,7 +5088,7 @@
       "requirement_ids": [
         "CONF-003"
       ],
-      "status_reason": "Closed for the byte-parser and stream-framer foundation by fixed-seed properties, four pinned cargo-fuzz targets, a retained manifest corpus, deterministic replay, and bounded scheduling. Physical RTU timing/event state remains assigned to PR-102, and RTU-over-TCP boundary/recovery policy remains assigned to PR-104."
+      "status_reason": "Closed for the parser and frame-assembly foundation by fixed-seed properties, five pinned cargo-fuzz targets, a retained manifest corpus, deterministic replay, and bounded scheduling. Physical timestamp-source integration remains outside this evidence, and RTU-over-TCP boundary/recovery policy remains assigned to PR-104."
     },
     {
       "id": "F-025",

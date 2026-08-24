@@ -17,6 +17,20 @@ driver settings, response timeout, character time, t1.5, t3.5, and whether the
 timers were character-calculated or use the fixed recommendation above 19,200
 bit/s.
 
+## Timestamp-driven frame assembly
+
+`RtuFrameAssembler` is a runtime-independent receive core for callers that
+already have trustworthy monotonic timestamps for each byte. It retains one
+fixed 256-byte candidate, treats gaps above t1.5 and below t3.5 as corruption,
+uses tokenized t3.5 deadlines, and emits an inline owned ADU only after checking
+the complete candidate's length and CRC. Timing comes from `RtuTiming` or
+directly from `ResolvedRtuConfig`.
+
+The core is not connected to `SerialTransport`, `tokio-serial`, or an async read
+adapter. Serial read-completion timestamps cannot recover byte timing hidden by
+an OS or USB buffer, so this API does not establish physical receive framing or
+read-chunk invariance. Timestamp-source and adapter integration remain open.
+
 Enable the crate's `serial` feature for physical ports. Through the
 `rusty-modbus` facade, use `rtu-serial`; the smaller `rtu` feature does not pull
 in `tokio-serial`.
