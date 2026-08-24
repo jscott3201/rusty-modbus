@@ -12,12 +12,12 @@ use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::transport::{TransportConnect, TransportSink, TransportStream};
 use rusty_modbus_tcp::{TcpConfig, TcpSink, TcpTransport, TransportError};
 use rusty_modbus_types::{ExceptionCode, FunctionCode, MAX_PDU_SIZE, MbapHeader, UnitId};
-use tokio::sync::{Semaphore, watch};
 use tokio::time::{self, Duration};
 use tracing::{debug, trace, warn};
 
 use crate::config::ClientConfig;
 use crate::error::ClientError;
+use crate::lifecycle::{ClientLifecycle, OperationGuard};
 use crate::reader;
 use crate::transaction::{self, TransactionManager};
 
@@ -45,16 +45,30 @@ enum AttemptDisposition {
     },
 }
 
+enum PollOutcome<T> {
+    Ready(T),
+    Deadline,
+    Cancelled,
+}
+
 /// High-level async Modbus client with transaction pipelining.
+///
+/// [`shutdown`](Self::shutdown) seals admission, drains admitted operations up
+/// to [`ClientConfig::shutdown_timeout`], and joins the client-owned tasks.
+/// [`abort`](Self::abort) requests immediate cancellation without waiting.
+/// Dropping the final owner uses the same immediate cancellation path; dropping
+/// another `Arc<ModbusClient<_>>` handle does not affect the shared client.
+///
+/// Lifecycle completion is logical. [`TransportSink`] has no close operation,
+/// so shutdown does not promise a transport flush or physical socket close
+/// while the sink remains owned. Cancellation of a send may occur after the
+/// transport accepted some or all frame bytes.
 pub struct ModbusClient<S: TransportSink + Send + 'static = TcpSink> {
     sink: tokio::sync::Mutex<S>,
     txn_mgr: Arc<TransactionManager>,
     config: ClientConfig,
     connected: Arc<AtomicBool>,
-    semaphore: Arc<Semaphore>,
-    shutdown_tx: watch::Sender<bool>,
-    reader_handle: Option<tokio::task::JoinHandle<()>>,
-    deadline_handle: Option<tokio::task::JoinHandle<()>>,
+    lifecycle: Arc<ClientLifecycle>,
 }
 
 fn checked_pdu_length(pdu_len: usize) -> Result<u16, ClientError> {
@@ -103,14 +117,19 @@ fn saturating_instant_add(start: time::Instant, duration: Duration) -> time::Ins
     start.checked_add(lower).unwrap_or(start)
 }
 
-async fn poll_before_deadline<F: Future>(deadline: time::Instant, future: F) -> Option<F::Output> {
+async fn poll_before_deadline_or_cancel<F: Future>(
+    deadline: time::Instant,
+    operation: &mut OperationGuard,
+    future: F,
+) -> PollOutcome<F::Output> {
     let sleep = time::sleep_until(deadline);
     tokio::pin!(sleep);
     tokio::pin!(future);
     tokio::select! {
         biased;
-        () = &mut sleep => None,
-        output = &mut future => Some(output),
+        () = operation.cancelled() => PollOutcome::Cancelled,
+        () = &mut sleep => PollOutcome::Deadline,
+        output = &mut future => PollOutcome::Ready(output),
     }
 }
 
@@ -155,9 +174,9 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     ) -> Self {
         let txn_mgr = Arc::new(TransactionManager::new());
         let max_in_flight = config.max_in_flight.clamp(1, transaction::MAX_SLOTS);
-        let semaphore = Arc::new(Semaphore::new(max_in_flight));
         let connected = Arc::new(AtomicBool::new(true));
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let lifecycle =
+            ClientLifecycle::new(max_in_flight, Arc::clone(&txn_mgr), Arc::clone(&connected));
 
         debug!(
             max_in_flight,
@@ -170,23 +189,21 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             stream,
             Arc::clone(&txn_mgr),
             Arc::clone(&connected),
-            shutdown_rx,
+            lifecycle.task_stop_receiver(),
         );
 
         let deadline_txn_mgr = Arc::clone(&txn_mgr);
         let deadline_handle = tokio::spawn(async move {
             deadline_txn_mgr.run_deadline_scheduler().await;
         });
+        lifecycle.install_tasks(reader_handle, deadline_handle);
 
         Self {
             sink: tokio::sync::Mutex::new(sink),
             txn_mgr,
             config,
             connected,
-            semaphore,
-            shutdown_tx,
-            reader_handle: Some(reader_handle),
-            deadline_handle: Some(deadline_handle),
+            lifecycle,
         }
     }
 
@@ -219,7 +236,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// [`ClientError::Timeout`] via the transaction deadline regardless.
     #[must_use]
     pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
+        self.lifecycle.is_running() && self.connected.load(Ordering::Acquire)
     }
 
     /// The default unit ID for this client.
@@ -228,31 +245,34 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         self.config.unit_id
     }
 
-    /// Graceful shutdown: stop new requests, drain in-flight, cancel remaining.
+    /// Gracefully seal admission and drain already-admitted operations.
+    ///
+    /// The configured [`ClientConfig::shutdown_timeout`] starts when admission
+    /// is sealed. If the deadline expires, remaining operations receive
+    /// [`ClientError::ShuttingDown`]. This method returns only after the
+    /// client-owned reader and deadline tasks have terminated.
     pub async fn shutdown(&self) {
         debug!(
-            pending = self.txn_mgr.pending_count(),
+            active = self.lifecycle.active_count(),
             "shutting down Modbus client"
         );
-        // Signal reader to stop.
-        let _ = self.shutdown_tx.send(true);
-        self.connected.store(false, Ordering::Relaxed);
+        let deadline = saturating_instant_add(time::Instant::now(), self.config.shutdown_timeout);
+        self.lifecycle.shutdown(deadline).await;
+    }
 
-        // Wait for in-flight transactions up to shutdown_timeout.
-        let deadline = time::Instant::now() + self.config.shutdown_timeout;
-        while time::Instant::now() < deadline && self.txn_mgr.pending_count() > 0 {
-            time::sleep(Duration::from_millis(50)).await;
-        }
-
-        // Cancel any remaining.
-        let remaining = self.txn_mgr.pending_count();
-        if remaining > 0 {
-            warn!(
-                pending = remaining,
-                "cancelling pending Modbus transactions"
-            );
-        }
-        self.txn_mgr.cancel_all(|| ClientError::ShuttingDown);
+    /// Immediately cancel client work without waiting for task termination.
+    ///
+    /// This operation is synchronous, idempotent, and does not require an
+    /// active Tokio runtime. A later [`shutdown`](Self::shutdown) call may be
+    /// used to join the client-owned tasks. It does not flush or close the
+    /// generic transport sink, and a cancelled send may already have written
+    /// some or all request bytes.
+    pub fn abort(&self) {
+        debug!(
+            active = self.lifecycle.active_count(),
+            "aborting Modbus client"
+        );
+        self.lifecycle.abort();
     }
 
     /// Send a raw request PDU and await the owned response.
@@ -260,7 +280,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
     /// This is the core method used by all typed request methods.
     #[tracing::instrument(
         level = "debug",
-        skip(self, pdu_data),
+        skip(self, pdu_data, operation),
         fields(
             unit_id = unit_id.0,
             function_code = function_code.code(),
@@ -275,23 +295,32 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         pdu_data: &[u8],
         pdu_len: u16,
         attempt_deadline: time::Instant,
+        operation: &mut OperationGuard,
     ) -> Result<OwnedResponsePdu, ClientError> {
-        if !self.is_connected() {
+        if !self.connected.load(Ordering::Acquire) {
             warn!("request rejected because client is disconnected");
             return Err(ClientError::NotConnected);
         }
 
         // Lock before registration so a request cannot expire while queued for
         // the sink and then be transmitted as an orphan.
-        let Some(mut sink) = poll_before_deadline(attempt_deadline, self.sink.lock()).await else {
-            warn!("request deadline elapsed while waiting for the transport sink");
-            return Err(ClientError::Timeout);
-        };
+        let mut sink =
+            match poll_before_deadline_or_cancel(attempt_deadline, operation, self.sink.lock())
+                .await
+            {
+                PollOutcome::Ready(sink) => sink,
+                PollOutcome::Deadline => {
+                    warn!("request deadline elapsed while waiting for the transport sink");
+                    return Err(ClientError::Timeout);
+                }
+                PollOutcome::Cancelled => return Err(ClientError::ShuttingDown),
+            };
 
         // Register transaction.
-        let (txn_id, rx) = self
-            .txn_mgr
-            .register(unit_id, function_code, attempt_deadline)?;
+        let (registration, mut rx) =
+            self.txn_mgr
+                .register_guarded(unit_id, function_code, attempt_deadline)?;
+        let txn_id = registration.transaction_id();
         tracing::Span::current().record("txn_id", txn_id.0);
         trace!(txn_id = txn_id.0, "registered Modbus transaction");
 
@@ -304,20 +333,27 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         // If sending fails or reaches the deadline, remove the registration so
         // the slot is not retained until a later scheduler pass.
-        match poll_before_deadline(attempt_deadline, sink.send(frame)).await {
-            Some(Ok(())) => {}
-            Some(Err(e)) => {
+        match poll_before_deadline_or_cancel(attempt_deadline, operation, sink.send(frame)).await {
+            PollOutcome::Ready(Ok(())) => {}
+            PollOutcome::Ready(Err(e)) => {
                 warn!(txn_id = txn_id.0, error = %e, "failed to send Modbus request");
-                self.txn_mgr.remove(txn_id);
                 return Err(ClientError::Transport(e));
             }
-            None => {
+            PollOutcome::Deadline => {
                 warn!(
                     txn_id = txn_id.0,
                     "Modbus request send reached its deadline"
                 );
-                self.txn_mgr.remove(txn_id);
                 return Err(ClientError::Timeout);
+            }
+            PollOutcome::Cancelled => {
+                return match rx.try_recv() {
+                    Ok(result) => result,
+                    Err(
+                        tokio::sync::oneshot::error::TryRecvError::Empty
+                        | tokio::sync::oneshot::error::TryRecvError::Closed,
+                    ) => Err(ClientError::ShuttingDown),
+                };
             }
         }
         drop(sink);
@@ -351,17 +387,16 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         fields(unit_id = 0u8, pdu_len = pdu_data.len())
     )]
     pub(crate) async fn send_broadcast(&self, pdu_data: &[u8]) -> Result<(), ClientError> {
-        if !self.is_connected() {
+        if !self.connected.load(Ordering::Acquire) {
             warn!("broadcast rejected because client is disconnected");
             return Err(ClientError::NotConnected);
         }
         let pdu_len = checked_pdu_length(pdu_data.len())?;
 
-        let _permit = self
-            .semaphore
-            .acquire()
-            .await
-            .map_err(|_| ClientError::ShuttingDown)?;
+        let mut operation = self.lifecycle.admit().await?;
+        if operation.is_cancelled() {
+            return Err(ClientError::ShuttingDown);
+        }
 
         let header = MbapHeader::new(
             0, // Transaction ID doesn't matter for broadcast.
@@ -372,8 +407,16 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             pdu: Bytes::copy_from_slice(pdu_data),
         };
 
-        let mut sink = self.sink.lock().await;
-        sink.send(frame).await.map_err(ClientError::Transport)?;
+        let mut sink = tokio::select! {
+            biased;
+            () = operation.cancelled() => return Err(ClientError::ShuttingDown),
+            sink = self.sink.lock() => sink,
+        };
+        tokio::select! {
+            biased;
+            () = operation.cancelled() => return Err(ClientError::ShuttingDown),
+            result = sink.send(frame) => result.map_err(ClientError::Transport)?,
+        }
         debug!("sent Modbus broadcast frame");
 
         Ok(())
@@ -460,7 +503,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         pdu_data: &[u8],
         request_kind: RequestKind,
     ) -> Result<OwnedResponsePdu, ClientError> {
-        if !self.is_connected() {
+        if !self.connected.load(Ordering::Acquire) {
             warn!("request rejected because client is disconnected");
             return Err(ClientError::NotConnected);
         }
@@ -468,11 +511,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         // Admit one logical operation and retain the permit across all attempts
         // and backoff sleeps.
-        let _permit = self
-            .semaphore
-            .acquire()
-            .await
-            .map_err(|_| ClientError::ShuttingDown)?;
+        let mut operation = self.lifecycle.admit().await?;
 
         let operation_start = time::Instant::now();
         let budget = operation_budget(
@@ -491,6 +530,9 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let mut attempts_made = 0u32;
         let mut last_error = None;
         loop {
+            if operation.is_cancelled() {
+                return Err(ClientError::ShuttingDown);
+            }
             if time::Instant::now() >= operation_deadline {
                 return Err(ClientError::RetriesExhausted {
                     attempts: attempts_made,
@@ -510,7 +552,14 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             );
 
             let result = self
-                .send_request(unit_id, function_code, pdu_data, pdu_len, attempt_deadline)
+                .send_request(
+                    unit_id,
+                    function_code,
+                    pdu_data,
+                    pdu_len,
+                    attempt_deadline,
+                    &mut operation,
+                )
                 .await;
 
             let (retry_reason, error) =
@@ -543,20 +592,19 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 backoff_deadline = ?backoff_deadline,
                 "waiting before Modbus request retry"
             );
-            time::sleep_until(backoff_deadline).await;
+            tokio::select! {
+                biased;
+                () = operation.cancelled() => return Err(ClientError::ShuttingDown),
+                () = time::sleep_until(backoff_deadline) => {}
+            }
         }
     }
 }
 
 impl<S: TransportSink + Send + 'static> Drop for ModbusClient<S> {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(true);
-        if let Some(h) = self.reader_handle.take() {
-            h.abort();
-        }
-        if let Some(h) = self.deadline_handle.take() {
-            h.abort();
-        }
+        self.lifecycle.abort();
+        self.lifecycle.abort_coordinator();
     }
 }
 
@@ -565,6 +613,8 @@ impl<S: TransportSink + Send + 'static> std::fmt::Debug for ModbusClient<S> {
         f.debug_struct("ModbusClient")
             .field("unit_id", &self.config.unit_id)
             .field("connected", &self.is_connected())
+            .field("lifecycle", &self.lifecycle.phase_name())
+            .field("active", &self.lifecycle.active_count())
             .field("pending", &self.txn_mgr.pending_count())
             .finish_non_exhaustive()
     }

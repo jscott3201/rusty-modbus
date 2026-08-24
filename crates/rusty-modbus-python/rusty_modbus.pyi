@@ -110,6 +110,8 @@ class ClientConfig:
     def max_in_flight(self) -> int: ...
     @property
     def retry(self) -> RetryConfig | None: ...
+    @property
+    def shutdown_timeout_secs(self) -> float: ...
 
     def __init__(
         self,
@@ -117,6 +119,7 @@ class ClientConfig:
         timeout_secs: float = 5.0,
         max_in_flight: int = 16,
         retry: RetryConfig | None = None,
+        shutdown_timeout_secs: float = 10.0,
     ) -> None: ...
     def __repr__(self) -> str: ...
 
@@ -333,6 +336,10 @@ class ModbusClient:
         """Gracefully shut down the client."""
         ...
 
+    def abort(self) -> None:
+        """Immediately cancel client work without waiting."""
+        ...
+
     async def __aenter__(self) -> ModbusClient: ...
     async def __aexit__(
         self,
@@ -474,6 +481,10 @@ class SyncModbusClient:
 
     def shutdown(self) -> None:
         """Gracefully shut down the client."""
+        ...
+
+    def abort(self) -> None:
+        """Immediately cancel client work without waiting."""
         ...
 
     def __enter__(self) -> SyncModbusClient: ...

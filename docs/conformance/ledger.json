@@ -7,7 +7,7 @@
     "as_of": "2026-08-23",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 51
+    "test_count": 52
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -2074,7 +2074,22 @@
           "path": "crates/rusty-modbus-client/src/client.rs"
         },
         {
+          "path": "crates/rusty-modbus-client/src/lifecycle.rs"
+        },
+        {
           "path": "crates/rusty-modbus-client/src/transaction.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-python/src/client.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-python/src/config.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-python/src/sync_client.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-python/rusty_modbus.pyi"
         },
         {
           "path": "crates/rusty-modbus-server/src/server.rs"
@@ -2084,26 +2099,25 @@
         }
       ],
       "test_ids": [
+        "spec_client_lifecycle",
         "spec_client_retry_policy",
         "spec_tcp_transport"
       ],
       "evidence_gap": {
-        "detail": "Client admission and drain ordering and server idle, half-open, and shutdown behavior still lack bounded lifecycle proof.",
+        "detail": "Client shutdown is internally verified. Server shutdown bounds remain open, and gateway and simulator lifecycle and idle ownership do not yet have equivalent proof.",
         "owner": "maintainers",
-        "follow_up": "PR-204, PR-301"
+        "follow_up": "PR-301"
       },
       "assessments": [
         {
           "profile": "tcp-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Attempt deadlines and retry envelopes are bounded, but shutdown does not seal admission before drain."
+          "disposition": "supported",
+          "evidence": "internally-verified"
         },
         {
           "profile": "physical-rtu-client",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Attempt deadlines and retry envelopes are bounded, but shutdown does not seal admission before drain."
+          "disposition": "supported",
+          "evidence": "internally-verified"
         },
         {
           "profile": "tcp-server",
@@ -3943,6 +3957,14 @@
       "category": null
     },
     {
+      "id": "spec_client_lifecycle",
+      "path": "crates/rusty-modbus-conformance/tests/spec_client_lifecycle.rs",
+      "requirement_ids": [
+        "TCP-011"
+      ],
+      "category": null
+    },
+    {
       "id": "spec_client_response_shape",
       "path": "crates/rusty-modbus-conformance/tests/spec_client_response_shape.rs",
       "requirement_ids": [
@@ -4938,7 +4960,8 @@
       "title": "Client shutdown signals the reader before attempting to drain and does not seal new admission first",
       "priority": "P1",
       "confidence": "Verified source finding / API-contract gap",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by a monotonic client lifecycle that seals admission before drain, keeps response and deadline processing active for admitted operations, cancels at the configured absolute shutdown deadline, reclaims dropped transaction slots, and joins client-owned tasks. Client and conformance tests cover admission races, broadcasts, retry backoff, task joins, abort, and Drop.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-204"
@@ -5238,10 +5261,11 @@
   "follow_ups": [
     {
       "id": "ISSUE-90",
-      "title": "Server shutdown can hang with live connections",
-      "status": "open",
+      "title": "Document the Drop/shutdown contract on ModbusClient",
+      "status": "closed",
+      "status_reason": "The Rust and Python APIs now document and test graceful shutdown, immediate abort, and final-handle Drop behavior.",
       "owner": "maintainers",
-      "follow_up": "Track issue #90",
+      "follow_up": "Closed by PR-204",
       "url": "https://github.com/jscott3201/rusty-modbus/issues/90",
       "requirement_ids": [
         "TCP-011",

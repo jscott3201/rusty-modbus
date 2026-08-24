@@ -106,6 +106,14 @@ impl SyncModbusClient {
         });
     }
 
+    /// Immediately cancel client work without waiting.
+    fn abort(&self) {
+        match &self.inner {
+            InnerClient::Tcp(c) => c.abort(),
+            InnerClient::Tls(c) => c.abort(),
+        }
+    }
+
     /// Sync context manager — enter.
     fn __enter__(slf: Py<Self>) -> Py<Self> {
         slf

@@ -3,6 +3,8 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -45,6 +47,7 @@ impl TransportSink for ControlledSink {
 
 struct ControlledStream {
     response_rx: mpsc::UnboundedReceiver<Frame>,
+    dropped: Arc<AtomicBool>,
 }
 
 impl TransportStream for ControlledStream {
@@ -56,27 +59,40 @@ impl TransportStream for ControlledStream {
     }
 }
 
+impl Drop for ControlledStream {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 struct TransportControls {
     sent_rx: mpsc::UnboundedReceiver<Frame>,
     outcome_tx: mpsc::UnboundedSender<SendOutcome>,
     response_tx: mpsc::UnboundedSender<Frame>,
+    stream_dropped: Arc<AtomicBool>,
 }
 
 fn controlled_transport() -> (ControlledSink, ControlledStream, TransportControls) {
     let (sent_tx, sent_rx) = mpsc::unbounded_channel();
     let (outcome_tx, outcome_rx) = mpsc::unbounded_channel();
     let (response_tx, response_rx) = mpsc::unbounded_channel();
+    let stream_dropped = Arc::new(AtomicBool::new(false));
 
     (
         ControlledSink {
             sent_tx,
             outcome_rx,
         },
-        ControlledStream { response_rx },
+        ControlledStream {
+            response_rx,
+            dropped: Arc::clone(&stream_dropped),
+        },
         TransportControls {
             sent_rx,
             outcome_tx,
             response_tx,
+            stream_dropped,
         },
     )
 }
@@ -1257,6 +1273,415 @@ async fn shutdown_cancels_pending() {
 
     let result = client.read_holding_registers(UnitId(0xFF), 0, 1).await;
     assert!(matches!(result, Err(ClientError::NotConnected)));
+}
+
+#[tokio::test]
+async fn zero_active_shutdown_joins_background_tasks_before_return() {
+    let (sink, stream, controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    client.shutdown().await;
+
+    assert!(
+        controls
+            .stream_dropped
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+#[tokio::test]
+async fn shutdown_keeps_reader_alive_while_admitted_request_drains() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        shutdown_timeout: Duration::from_secs(1),
+        ..default_config()
+    };
+    let client = Arc::new(ModbusClient::from_transport(sink, stream, config));
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let request_client = Arc::clone(&client);
+    let request =
+        tokio::spawn(async move { request_client.read_holding_registers(UnitId(1), 0, 1).await });
+    let sent = controls.sent_rx.recv().await.unwrap();
+
+    let shutdown_client = Arc::clone(&client);
+    let shutdown = tokio::spawn(async move { shutdown_client.shutdown().await });
+    tokio::task::yield_now().await;
+    assert!(!shutdown.is_finished());
+
+    controls
+        .response_tx
+        .send(mbap_response(
+            &sent,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    assert!(request.is_finished());
+    assert_eq!(request.await.unwrap().unwrap(), vec![0x002A]);
+    shutdown.await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_wakes_preseal_admission_waiter_without_sending() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        max_in_flight: 1,
+        shutdown_timeout: Duration::from_secs(1),
+        ..default_config()
+    };
+    let client = Arc::new(ModbusClient::from_transport(sink, stream, config));
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let first_client = Arc::clone(&client);
+    let first =
+        tokio::spawn(async move { first_client.read_holding_registers(UnitId(1), 0, 1).await });
+    let _sent = controls.sent_rx.recv().await.unwrap();
+
+    let waiting_client = Arc::clone(&client);
+    let waiting =
+        tokio::spawn(async move { waiting_client.read_input_registers(UnitId(1), 0, 1).await });
+    tokio::task::yield_now().await;
+    assert_no_sent_frame(&mut controls);
+
+    let shutdown_client = Arc::clone(&client);
+    let shutdown = tokio::spawn(async move { shutdown_client.shutdown().await });
+    tokio::task::yield_now().await;
+
+    assert!(waiting.is_finished());
+    assert!(matches!(
+        waiting.await.unwrap(),
+        Err(ClientError::ShuttingDown)
+    ));
+    assert_no_sent_frame(&mut controls);
+
+    let rejected = client.read_holding_registers(UnitId(1), 0, 1).await;
+    assert!(matches!(rejected, Err(ClientError::NotConnected)));
+    assert_no_sent_frame(&mut controls);
+
+    client.abort();
+    assert!(matches!(
+        first.await.unwrap(),
+        Err(ClientError::ShuttingDown)
+    ));
+    shutdown.await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_drains_broadcast_without_a_transaction_slot() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        shutdown_timeout: Duration::from_secs(1),
+        ..default_config()
+    };
+    let client = Arc::new(ModbusClient::from_transport(sink, stream, config));
+
+    let broadcast_client = Arc::clone(&client);
+    let broadcast = tokio::spawn(async move {
+        broadcast_client
+            .write_single_register(UnitId(0), 1, 1)
+            .await
+    });
+    assert_eq!(controls.sent_rx.recv().await.unwrap().unit_id(), 0);
+
+    let shutdown_client = Arc::clone(&client);
+    let shutdown = tokio::spawn(async move { shutdown_client.shutdown().await });
+    tokio::task::yield_now().await;
+    assert!(!shutdown.is_finished());
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    broadcast.await.unwrap().unwrap();
+    shutdown.await.unwrap();
+}
+
+#[tokio::test]
+async fn dropping_registered_requests_reclaims_exact_slots_immediately() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_secs(60),
+        max_in_flight: 1,
+        retry: RetryConfig {
+            max_retries: 0,
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    for _ in 0..16 {
+        controls.outcome_tx.send(SendOutcome::Success).unwrap();
+        let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+        assert!(poll_once(request.as_mut()).await.is_none());
+        controls.sent_rx.try_recv().unwrap();
+        drop(request);
+    }
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut next = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(next.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &sent,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+    assert_eq!(next.await.unwrap(), vec![0x002A]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_deadline_hard_cancels_registered_request_and_ignores_late_response() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_secs(60),
+        shutdown_timeout: Duration::from_millis(20),
+        retry: RetryConfig {
+            max_retries: 0,
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = Arc::new(ModbusClient::from_transport(sink, stream, config));
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let request_client = Arc::clone(&client);
+    let request =
+        tokio::spawn(async move { request_client.read_holding_registers(UnitId(1), 0, 1).await });
+    let sent = controls.sent_rx.recv().await.unwrap();
+
+    let shutdown_client = Arc::clone(&client);
+    let shutdown = tokio::spawn(async move { shutdown_client.shutdown().await });
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(19)).await;
+    assert!(!request.is_finished());
+    assert!(!shutdown.is_finished());
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        request.await.unwrap(),
+        Err(ClientError::ShuttingDown)
+    ));
+    shutdown.await.unwrap();
+    assert!(
+        controls
+            .response_tx
+            .send(mbap_response(
+                &sent,
+                Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+            ))
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn abort_cancels_sink_send_and_sink_mutex_wait_without_a_second_frame() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        max_in_flight: 2,
+        ..default_config()
+    };
+    let client = Arc::new(ModbusClient::from_transport(sink, stream, config));
+
+    let sending_client = Arc::clone(&client);
+    let sending =
+        tokio::spawn(async move { sending_client.write_single_register(UnitId(1), 0, 1).await });
+    assert_eq!(controls.sent_rx.recv().await.unwrap().pdu[0], 0x06);
+
+    let waiting_client = Arc::clone(&client);
+    let waiting =
+        tokio::spawn(async move { waiting_client.read_holding_registers(UnitId(1), 0, 1).await });
+    tokio::task::yield_now().await;
+    assert_no_sent_frame(&mut controls);
+
+    client.abort();
+    assert!(matches!(
+        sending.await.unwrap(),
+        Err(ClientError::ShuttingDown)
+    ));
+    assert!(matches!(
+        waiting.await.unwrap(),
+        Err(ClientError::ShuttingDown)
+    ));
+    assert_no_sent_frame(&mut controls);
+    client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn abort_during_busy_backoff_prevents_retry() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        timeout: Duration::from_secs(1),
+        retry: RetryConfig {
+            max_retries: 3,
+            retry_delay: Duration::from_secs(30),
+            ..RetryConfig::default()
+        },
+        ..ClientConfig::default()
+    };
+    let client = Arc::new(ModbusClient::from_transport(sink, stream, config));
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let request_client = Arc::clone(&client);
+    let request =
+        tokio::spawn(async move { request_client.read_holding_registers(UnitId(1), 0, 1).await });
+    let sent = controls.sent_rx.recv().await.unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(&sent, Bytes::from_static(&[0x83, 0x06])))
+        .unwrap();
+    tokio::task::yield_now().await;
+
+    client.abort();
+    assert!(matches!(
+        request.await.unwrap(),
+        Err(ClientError::ShuttingDown)
+    ));
+    tokio::time::advance(Duration::from_secs(30)).await;
+    assert_no_sent_frame(&mut controls);
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn abort_hard_cancels_broadcast_after_frame_observation() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = Arc::new(ModbusClient::from_transport(sink, stream, default_config()));
+
+    let broadcast_client = Arc::clone(&client);
+    let broadcast = tokio::spawn(async move {
+        broadcast_client
+            .write_single_register(UnitId(0), 1, 1)
+            .await
+    });
+    assert_eq!(controls.sent_rx.recv().await.unwrap().unit_id(), 0);
+
+    client.abort();
+    assert!(matches!(
+        broadcast.await.unwrap(),
+        Err(ClientError::ShuttingDown)
+    ));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_shutdown_callers_share_coordinator_when_one_caller_is_cancelled() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = Arc::new(ModbusClient::from_transport(sink, stream, default_config()));
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let request_client = Arc::clone(&client);
+    let request =
+        tokio::spawn(async move { request_client.read_holding_registers(UnitId(1), 0, 1).await });
+    let sent = controls.sent_rx.recv().await.unwrap();
+
+    let mut shutdowns = Vec::new();
+    for _ in 0..32 {
+        let shutdown_client = Arc::clone(&client);
+        shutdowns.push(tokio::spawn(async move {
+            shutdown_client.shutdown().await;
+        }));
+    }
+    tokio::task::yield_now().await;
+    shutdowns.remove(0).abort();
+
+    controls
+        .response_tx
+        .send(mbap_response(
+            &sent,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+    assert_eq!(request.await.unwrap().unwrap(), vec![0x002A]);
+    for shutdown in shutdowns {
+        shutdown.await.unwrap();
+    }
+    assert!(!client.is_connected());
+}
+
+#[tokio::test]
+async fn abort_is_idempotent_rejects_new_calls_and_shutdown_still_joins() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    client.abort();
+    client.abort();
+    let result = client.read_holding_registers(UnitId(1), 0, 1).await;
+    assert!(matches!(result, Err(ClientError::NotConnected)));
+    assert_no_sent_frame(&mut controls);
+
+    client.shutdown().await;
+    client.shutdown().await;
+    assert!(
+        controls
+            .stream_dropped
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+#[tokio::test]
+async fn rtu_abort_uses_the_generic_cancellation_path() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = Arc::new(ModbusClient::from_rtu_transport(
+        sink,
+        stream,
+        default_config(),
+    ));
+
+    let request_client = Arc::clone(&client);
+    let request =
+        tokio::spawn(async move { request_client.read_holding_registers(UnitId(1), 0, 1).await });
+    assert_eq!(controls.sent_rx.recv().await.unwrap().unit_id(), 1);
+    client.abort();
+    assert!(matches!(
+        request.await.unwrap(),
+        Err(ClientError::ShuttingDown)
+    ));
+    client.shutdown().await;
+}
+
+#[test]
+fn abort_and_drop_after_runtime_shutdown_do_not_panic() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (sink, stream, _controls) = controlled_transport();
+        let client = runtime
+            .block_on(async { ModbusClient::from_transport(sink, stream, default_config()) });
+        drop(runtime);
+        client.abort();
+        drop(client);
+    }));
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn drop_outside_runtime_requests_background_task_cancellation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (sink, stream, controls) = controlled_transport();
+    let stream_dropped = Arc::clone(&controls.stream_dropped);
+    let client =
+        runtime.block_on(async { ModbusClient::from_transport(sink, stream, default_config()) });
+
+    std::thread::spawn(move || drop(client)).join().unwrap();
+
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !stream_dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("final-owner Drop should abort the reader task");
+    });
 }
 
 #[tokio::test]

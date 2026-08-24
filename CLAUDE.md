@@ -68,6 +68,7 @@ Layer 0: codec (sans-IO, no_std) / types (newtypes, no_std)
 - **Transport traits use RPITIT** (native `impl Future` in traits, no `async_trait` crate): `TransportSink::send()` and `TransportStream::recv()` in `rusty-modbus-tcp`. These traits are **not object-safe** due to RPITIT — use generics, not `Box<dyn>`.
 - **Generic client**: `ModbusClient<S: TransportSink + Send + 'static = TcpSink>` supports any transport via the type parameter. `from_transport(sink, stream, config)` constructs from pre-connected halves (used for TLS). Default `TcpSink` keeps existing code backward-compatible.
 - **Pipelined client**: 16-slot transaction ring in `TransactionManager`, background reader task, and nearest-deadline timeout scheduling. Semaphore controls max in-flight logical requests.
+- **Client lifecycle**: one admission authority seals the semaphore before drain, accounts for each admitted logical operation, and coordinates sticky cancellation plus reader/deadline task joins. `abort()` and final-owner `Drop` use the non-waiting cancellation path.
 - **Two-pool architecture** (per Modbus/TCP Guide §4.2.1): priority pool (configured devices, never evicted) + non-priority pool (LRU eviction).
 - **`OwnedResponsePdu`**: wraps `Bytes` for zero-copy response sharing through the transaction manager pipeline.
 - **`#![forbid(unsafe_code)]`** on all Rust crates (not the Python crate — PyO3 macros generate unsafe internally).

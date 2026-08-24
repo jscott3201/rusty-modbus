@@ -216,6 +216,14 @@ class ConformanceLedgerTests(unittest.TestCase):
         self.assertEqual(findings["F-007"]["status"], "closed")
         self.assertEqual(findings["F-008"]["status"], "closed")
         self.assertEqual(findings["F-009"]["status"], "closed")
+        self.assertEqual(findings["F-010"]["status"], "closed")
+
+        follow_ups = {item["id"]: item for item in self.canonical["follow_ups"]}
+        self.assertEqual(follow_ups["ISSUE-90"]["status"], "closed")
+        self.assertEqual(
+            follow_ups["ISSUE-90"]["title"],
+            "Document the Drop/shutdown contract on ModbusClient",
+        )
 
     def test_seeded_requirement_corrections_remain_distinct(self) -> None:
         requirements = {item["id"]: item for item in self.canonical["requirements"]}
@@ -263,7 +271,7 @@ class ConformanceLedgerTests(unittest.TestCase):
             "APP-019": "PR-303",
             "TCP-006": "PR-201",
             "TCP-010": "PR-301, PR-302",
-            "TCP-011": "PR-204, PR-301",
+            "TCP-011": "PR-301",
             "TCP-013": "PR-403",
             "RTU-001": "PR-101",
             "RTU-004": "PR-102, PR-103",
@@ -608,9 +616,12 @@ class ConformanceLedgerTests(unittest.TestCase):
         self.assert_invalid(broken_mapping, "has broken requirement 'APP-999'")
 
         closed = copy.deepcopy(self.canonical)
-        closed["follow_ups"][0]["status"] = "closed"
+        closed_follow_up = next(
+            item for item in closed["follow_ups"] if item["status"] == "open"
+        )
+        closed_follow_up["status"] = "closed"
         self.assert_invalid(closed, ".status_reason must be non-blank")
-        closed["follow_ups"][0]["status_reason"] = "Closed by the linked issue."
+        closed_follow_up["status_reason"] = "Closed by the linked issue."
         self.assertEqual(ledger.validate_ledger(closed, ROOT), [])
         self.assertIn("Closed by the linked issue.", ledger.render_markdown(closed))
 

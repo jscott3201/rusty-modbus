@@ -10,23 +10,39 @@ class TestClientConfig:
         assert cfg.timeout_secs == 5.0
         assert cfg.max_in_flight == 16
         assert cfg.retry is None
+        assert cfg.shutdown_timeout_secs == 10.0
 
     def test_custom_values(self):
         retry = RetryConfig(max_retries=5, retry_delay_ms=200)
-        cfg = ClientConfig(unit_id=1, timeout_secs=10.0, max_in_flight=8, retry=retry)
+        cfg = ClientConfig(
+            unit_id=1,
+            timeout_secs=10.0,
+            max_in_flight=8,
+            retry=retry,
+            shutdown_timeout_secs=2.5,
+        )
         assert cfg.unit_id == 1
         assert cfg.retry.max_retries == 5
+        assert cfg.shutdown_timeout_secs == 2.5
 
-    def test_invalid_timeout(self):
-        with pytest.raises(ValueError):
-            ClientConfig(timeout_secs=0.0)
+    @pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan")])
+    def test_invalid_timeout(self, value):
+        with pytest.raises(ValueError, match="timeout_secs"):
+            ClientConfig(timeout_secs=value)
 
     def test_invalid_max_in_flight(self):
         with pytest.raises(ValueError):
             ClientConfig(max_in_flight=0)
 
+    @pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan")])
+    def test_invalid_shutdown_timeout(self, value):
+        with pytest.raises(ValueError, match="shutdown_timeout_secs"):
+            ClientConfig(shutdown_timeout_secs=value)
+
     def test_repr(self):
-        assert "ClientConfig" in repr(ClientConfig())
+        text = repr(ClientConfig())
+        assert "ClientConfig" in text
+        assert "shutdown_timeout_secs=10" in text
 
     def test_frozen(self):
         cfg = ClientConfig()

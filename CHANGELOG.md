@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added synchronous, idempotent `ModbusClient::abort()` for immediate
+  cancellation without a live Tokio runtime. The Python async and sync clients
+  expose the same method, and Python `ClientConfig` now exposes the Rust client
+  shutdown timeout as `shutdown_timeout_secs`.
+
 ### Changed
 
 - Added `ClientError::UnexpectedResponseUnitId { expected, got }`. Downstream
@@ -35,6 +42,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Typed FC03/04/17 reads reject excess register data instead of truncating it,
   and their decoders reject odd register byte counts. Raw FC03 responses retain
   their existing `Bytes` storage after validation rather than copying it.
+- Client shutdown now seals admission before drain, keeps response and deadline
+  processing active for admitted operations, and enforces one absolute shutdown
+  deadline for admitted sink waits, sends, response waits, retries, backoff, and
+  broadcasts. Admission waiters are rejected when the seal closes the
+  semaphore. Remaining work receives `ClientError::ShuttingDown`, and shutdown
+  joins the reader and deadline tasks before returning. Final-owner `Drop` uses
+  the non-waiting abort path.
 
 ## [0.1.1]
 

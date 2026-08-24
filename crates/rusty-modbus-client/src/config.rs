@@ -18,7 +18,9 @@ pub struct ClientConfig {
     pub max_in_flight: usize,
     /// Retry configuration.
     pub retry: RetryConfig,
-    /// Shutdown timeout — how long to wait for in-flight requests during shutdown. Default: 10s.
+    /// Time allowed for admitted logical operations to drain after shutdown
+    /// seals admission. The client cancels remaining work and joins its tasks
+    /// when this duration expires. Default: 10s.
     pub shutdown_timeout: Duration,
 }
 

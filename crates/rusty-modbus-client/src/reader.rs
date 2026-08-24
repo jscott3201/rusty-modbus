@@ -25,11 +25,22 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
     mut stream: R,
     txn_mgr: Arc<TransactionManager>,
     connected: Arc<AtomicBool>,
-    mut shutdown_rx: watch::Receiver<bool>,
+    mut task_stop_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
+            if *task_stop_rx.borrow() {
+                debug!("Modbus reader received task-stop signal");
+                break;
+            }
             tokio::select! {
+                biased;
+                _ = task_stop_rx.changed() => {
+                    if *task_stop_rx.borrow() {
+                        debug!("Modbus reader received task-stop signal");
+                        break;
+                    }
+                }
                 result = stream.recv() => {
                     match result {
                         Ok(frame) => {
@@ -99,12 +110,6 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                             ));
                             break;
                         }
-                    }
-                }
-                _ = shutdown_rx.changed() => {
-                    if *shutdown_rx.borrow() {
-                        debug!("Modbus reader received shutdown signal");
-                        break;
                     }
                 }
             }

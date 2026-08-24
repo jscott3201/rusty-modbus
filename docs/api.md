@@ -129,6 +129,21 @@ failure does not prove non-execution. A configured Server Device Busy (`0x06`)
 response can retry either request kind. Acknowledge (`0x05`) is returned as
 `ClientError::Exception` to report accepted, still-processing work; the
 application owns any completion check.
+
+`shutdown().await` atomically seals request admission, lets admitted operations
+drain with response and deadline processing still active, and cancels remaining
+work at `ClientConfig::shutdown_timeout`. It joins the reader and deadline tasks
+before returning. Concurrent calls share one shutdown coordinator. `abort()` is
+the synchronous alternative: it seals and cancels immediately without waiting
+or requiring a live Tokio runtime. A later `shutdown().await` joins the tasks.
+Dropping the final client owner follows the abort path; dropping a non-final
+`Arc` handle does not stop shared work.
+
+These lifecycle operations do not guarantee a flush or physical close while the
+generic sink remains owned. `TransportSink` has no close method, and cancellation
+may happen after some or all request bytes were written. Device Identification
+admits one page at a time, so a shutdown between pages rejects the next page.
+
 These surfaces map to the [TCP client](conformance/ledger.md#profile-tcp-client),
 [physical RTU client](conformance/ledger.md#profile-physical-rtu-client),
 [Modbus/TCP Security](conformance/ledger.md#profile-modbus-security), and
@@ -200,6 +215,9 @@ The Python client exposes coils, registers, mask write, read/write multiple
 registers, FIFO, file records, and device identification operations. This list
 is not a parity claim; unresolved surface differences are recorded under
 [CONF-008](conformance/ledger.md#requirement-conf-008).
+Both client classes expose synchronous `abort()` methods. Their context-manager
+exits still call graceful `shutdown`; `ClientConfig.shutdown_timeout_secs`
+controls that drain and defaults to 10 seconds.
 
 The gateway and simulator are tracked separately under the
 [gateway](conformance/ledger.md#profile-gateway) and
