@@ -3,6 +3,29 @@
 use rusty_modbus_frame::FrameError;
 use rusty_modbus_tcp::TransportError;
 
+use crate::config::{DataBits, Parity, StopBits};
+
+/// Validation failures when constructing a strict physical RTU configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RtuConfigError {
+    /// A baud rate of zero cannot be used for timing calculations or a serial port.
+    #[error("RTU baud rate must be greater than zero")]
+    ZeroBaudRate,
+
+    /// The raw serial settings do not describe 8E1, 8O1, or 8N2.
+    #[error(
+        "invalid Modbus RTU serial format {data_bits:?}/{parity:?}/{stop_bits:?}; expected 8E1, 8O1, or 8N2"
+    )]
+    InvalidSerialFormat {
+        /// Requested number of data bits.
+        data_bits: DataBits,
+        /// Requested parity mode.
+        parity: Parity,
+        /// Requested number of stop bits.
+        stop_bits: StopBits,
+    },
+}
+
 /// Errors that can occur during RTU transport operations.
 #[derive(Debug, thiserror::Error)]
 pub enum RtuError {

@@ -5,7 +5,10 @@
 
 use std::time::Duration;
 
-use rusty_modbus_rtu::config::{DataBits, Parity, RtuConfig, StopBits};
+use rusty_modbus_rtu::config::{
+    DataBits, Parity, RtuConfig, RtuSerialFormat, RtuTimingMode, StopBits, StrictRtuConfig,
+};
+use rusty_modbus_rtu::{RtuConfigError, RtuUnitIdRole};
 
 // ── RTU Config Defaults ────────────────────────────────────────────
 
@@ -33,12 +36,153 @@ fn rtu_default_stop_bits() {
     assert_eq!(config.stop_bits, StopBits::One);
 }
 
+#[test]
+fn legacy_rtu_default_timeout_and_timing_remain_compatible() {
+    let config = RtuConfig::default();
+
+    assert_eq!(config.response_timeout, Duration::from_secs(1));
+    assert_eq!(
+        config.intercharacter_timeout(),
+        Duration::from_nanos(1_718_750)
+    );
+    assert_eq!(config.interframe_delay(), Duration::from_nanos(4_010_417));
+}
+
+#[test]
+fn strict_rtu_default_resolves_to_19200_8e1() {
+    let config = StrictRtuConfig::default();
+    let resolved = config.resolve();
+
+    assert_eq!(config.baud_rate(), 19_200);
+    assert_eq!(config.serial_format(), RtuSerialFormat::EightEvenOne);
+    assert_eq!(config.response_timeout(), Duration::from_secs(1));
+    assert_eq!(resolved.data_bits(), DataBits::Eight);
+    assert_eq!(resolved.parity(), Parity::Even);
+    assert_eq!(resolved.stop_bits(), StopBits::One);
+    assert_eq!(resolved.timing_mode(), RtuTimingMode::CharacterCalculated);
+}
+
+#[test]
+fn strict_rtu_accepts_only_8e1_8o1_and_8n2_raw_formats() {
+    let cases = [
+        (Parity::Even, StopBits::One, RtuSerialFormat::EightEvenOne),
+        (Parity::Odd, StopBits::One, RtuSerialFormat::EightOddOne),
+        (Parity::None, StopBits::Two, RtuSerialFormat::EightNoneTwo),
+    ];
+    for (parity, stop_bits, format) in cases {
+        let raw = RtuConfig {
+            baud_rate: 9_600,
+            data_bits: DataBits::Eight,
+            parity,
+            stop_bits,
+            response_timeout: Duration::from_secs(1),
+        };
+        assert_eq!(
+            StrictRtuConfig::try_from(&raw).unwrap().serial_format(),
+            format
+        );
+    }
+
+    let invalid = [
+        (DataBits::Five, Parity::Even, StopBits::One),
+        (DataBits::Six, Parity::Even, StopBits::One),
+        (DataBits::Seven, Parity::Even, StopBits::One),
+        (DataBits::Eight, Parity::None, StopBits::One),
+        (DataBits::Eight, Parity::Even, StopBits::Two),
+        (DataBits::Eight, Parity::Odd, StopBits::Two),
+    ];
+    for (data_bits, parity, stop_bits) in invalid {
+        let raw = RtuConfig {
+            baud_rate: 9_600,
+            data_bits,
+            parity,
+            stop_bits,
+            response_timeout: Duration::from_secs(1),
+        };
+        assert!(matches!(
+            StrictRtuConfig::try_from(&raw),
+            Err(RtuConfigError::InvalidSerialFormat { .. })
+        ));
+    }
+
+    let zero_baud = RtuConfig {
+        baud_rate: 0,
+        data_bits: DataBits::Eight,
+        parity: Parity::Even,
+        stop_bits: StopBits::One,
+        response_timeout: Duration::from_secs(1),
+    };
+    assert_eq!(
+        StrictRtuConfig::try_from(&zero_baud),
+        Err(RtuConfigError::ZeroBaudRate)
+    );
+}
+
+#[test]
+fn strict_rtu_timing_uses_exact_ceiling_and_high_speed_recommendation() {
+    let at_9600 =
+        StrictRtuConfig::new(9_600, RtuSerialFormat::EightEvenOne, Duration::from_secs(1))
+            .unwrap()
+            .resolve();
+    assert_eq!(at_9600.character_time(), Duration::from_nanos(1_145_834));
+    assert_eq!(at_9600.t1_5(), Duration::from_nanos(1_718_750));
+    assert_eq!(at_9600.t3_5(), Duration::from_nanos(4_010_417));
+
+    let irregular =
+        StrictRtuConfig::new(12_345, RtuSerialFormat::EightOddOne, Duration::from_secs(1))
+            .unwrap()
+            .resolve();
+    assert_eq!(irregular.character_time(), Duration::from_nanos(891_050));
+    assert_eq!(irregular.t1_5(), Duration::from_nanos(1_336_574));
+    assert_eq!(irregular.t3_5(), Duration::from_nanos(3_118_672));
+
+    let high_speed = StrictRtuConfig::new(
+        19_201,
+        RtuSerialFormat::EightNoneTwo,
+        Duration::from_secs(1),
+    )
+    .unwrap()
+    .resolve();
+    assert_eq!(high_speed.t1_5(), Duration::from_micros(750));
+    assert_eq!(high_speed.t3_5(), Duration::from_micros(1_750));
+    assert_eq!(
+        high_speed.timing_mode(),
+        RtuTimingMode::FixedHighSpeedRecommendation
+    );
+
+    let maximum = StrictRtuConfig::new(
+        u32::MAX,
+        RtuSerialFormat::EightEvenOne,
+        Duration::from_secs(1),
+    )
+    .unwrap()
+    .resolve();
+    assert_eq!(maximum.character_time(), Duration::from_nanos(3));
+}
+
+#[test]
+fn strict_rtu_unit_id_roles_enforce_serial_address_classes() {
+    for unit_id in [0, 1, 247] {
+        assert_eq!(RtuUnitIdRole::ClientDestination.validate(unit_id), Ok(()));
+    }
+    for unit_id in [248, 255] {
+        assert!(RtuUnitIdRole::ClientDestination.validate(unit_id).is_err());
+    }
+
+    for unit_id in [1, 247] {
+        assert_eq!(RtuUnitIdRole::ResponderSource.validate(unit_id), Ok(()));
+    }
+    for unit_id in [0, 248, 255] {
+        assert!(RtuUnitIdRole::ResponderSource.validate(unit_id).is_err());
+    }
+}
+
 // ── Interframe Delay Calculation ───────────────────────────────────
 
 #[test]
 fn interframe_delay_9600_baud() {
     // At 9600 baud: 3.5 × 11 / 9600 ≈ 4.01 ms
-    // 11 bits per character = start(1) + data(8) + parity(0-1) + stop(1-2)
+    // The compatibility method assumes 11 bits despite its raw 8N1 default.
     let config = RtuConfig::default(); // 9600 baud
     let delay = config.interframe_delay();
     let us = delay.as_micros();
@@ -60,7 +204,7 @@ fn interframe_delay_19200_baud_still_calculated() {
 
 #[test]
 fn interframe_delay_above_19200_fixed_1750us() {
-    // Per Modbus serial spec: at baud rates > 19200, fixed 1.75 ms
+    // The serial-line guide recommends fixed 1.75 ms above 19200 baud.
     for baud in [38400, 57600, 115200, 230400] {
         let config = RtuConfig {
             baud_rate: baud,
@@ -121,7 +265,7 @@ fn intercharacter_timeout_19200_baud_still_calculated() {
 
 #[test]
 fn intercharacter_timeout_above_19200_fixed_750us() {
-    // Per Modbus serial spec: at baud rates > 19200, fixed 750 µs.
+    // The serial-line guide recommends fixed 750 µs above 19200 baud.
     for baud in [38400, 57600, 115200, 230400] {
         let config = RtuConfig {
             baud_rate: baud,

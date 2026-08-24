@@ -49,8 +49,9 @@ by the GitHub release pipeline instead of crates.io.
 | Feature | Default | API exposed |
 |---|---:|---|
 | `tcp` | yes | `rusty_modbus::tcp`, `rusty_modbus::client`, `rusty_modbus::Client` |
-| `rtu` | no | `rusty_modbus::rtu` |
-| `rtu-tcp` | no | Alias for `rtu` |
+| `rtu` | no | `rusty_modbus::rtu` configuration and RTU-over-TCP support, without physical serial dependencies |
+| `rtu-serial` | no | Physical serial support in `rusty_modbus::rtu`, in addition to `rtu` |
+| `rtu-tcp` | no | Alias for `rtu`, without physical serial dependencies |
 | `tls` | no | `rusty_modbus::tls` |
 | `server` | no | `rusty_modbus::server`, `rusty_modbus::Server` |
 | `gateway` | no | `rusty_modbus::gateway`, `rusty_modbus::Gateway` |
@@ -59,6 +60,28 @@ by the GitHub release pipeline instead of crates.io.
 
 The foundation crates `types`, `codec`, and `frame` are always re-exported by
 the facade crate.
+
+## Physical RTU configuration
+
+`rusty_modbus_rtu::RtuConfig` and `SerialTransport::open` are the compatibility
+path. Their public fields, 9600/8N1 default, and legacy timing calculations are
+unchanged. Code that requires a Modbus serial character format uses
+`StrictRtuConfig` with `SerialTransport::open_strict` instead. The strict type
+accepts 8E1, 8O1, and 8N2 and cannot contain a zero baud rate.
+
+`StrictRtuConfig::resolve` returns a `ResolvedRtuConfig` with the concrete data,
+parity, and stop-bit settings; response timeout; character time; t1.5; t3.5;
+and timing mode. Character-calculated values use independent integer
+nanosecond ceiling calculations through 19,200 bit/s. Higher rates use the
+recommended fixed 750 microsecond t1.5 and 1.750 millisecond t3.5 values. The
+strict serial halves expose the same resolved snapshot that supplied the port
+settings and transmit delay.
+
+Strict physical sends accept Unit Identifiers 0 through 247 as destinations,
+preserving address zero for broadcast. Strict receives accept responder sources
+1 through 247. This is address-class validation only: expected-peer correlation,
+broadcast operation policy, and physical RTU responder support are not part of
+this API.
 
 ## Rust Client
 

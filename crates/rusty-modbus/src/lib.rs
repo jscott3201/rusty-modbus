@@ -8,8 +8,9 @@
 //! | Feature   | Default | Description |
 //! |-----------|---------|-------------|
 //! | `tcp`     | yes     | TCP transport + client |
-//! | `rtu`     | no      | RTU transport (serial + RTU-over-TCP) |
-//! | `rtu-tcp` | no      | Alias for `rtu` |
+//! | `rtu`     | no      | RTU configuration, framing integration, and RTU-over-TCP transport |
+//! | `rtu-serial` | no   | Physical serial transport in addition to `rtu` |
+//! | `rtu-tcp` | no      | Alias for `rtu` without physical serial dependencies |
 //! | `server`  | no      | Modbus server with pluggable data store |
 //! | `gateway` | no      | TCP ↔ RTU bridge gateway |
 //! | `tls`     | no      | TLS 1.3 transport (Modbus/TCP Security V36) |
