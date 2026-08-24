@@ -101,8 +101,6 @@ impl TransactionManager {
     /// modular index would collide with the next sequential ID.
     ///
     /// Returns the transaction ID and a receiver that will yield the response.
-    /// Dropping the receiver does not reclaim the slot; deadline expiry or a
-    /// later terminal event remains responsible for removing it.
     ///
     /// # Errors
     ///
@@ -152,6 +150,29 @@ impl TransactionManager {
 
         let last_id = self.next_id.load(Ordering::Relaxed).wrapping_sub(1);
         Err(ClientError::TransactionConflict(TransactionId(last_id)))
+    }
+
+    /// Register a transaction with an exact-slot RAII cleanup guard.
+    pub fn register_guarded(
+        &self,
+        unit_id: UnitId,
+        function_code: FunctionCode,
+        deadline: Instant,
+    ) -> Result<
+        (
+            TransactionRegistration<'_>,
+            oneshot::Receiver<Result<OwnedResponsePdu, ClientError>>,
+        ),
+        ClientError,
+    > {
+        let (txn_id, receiver) = self.register(unit_id, function_code, deadline)?;
+        Ok((
+            TransactionRegistration {
+                manager: self,
+                txn_id,
+            },
+            receiver,
+        ))
     }
 
     /// Correlate a Modbus/TCP response with an exact pending transaction.
@@ -329,6 +350,25 @@ impl TransactionManager {
     fn scheduler_scan_count(&self) -> usize {
         self.scheduler_scans
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Removes one exact transaction slot when its request future is dropped.
+pub(crate) struct TransactionRegistration<'a> {
+    manager: &'a TransactionManager,
+    txn_id: TransactionId,
+}
+
+impl TransactionRegistration<'_> {
+    /// The transaction ID owned by this registration.
+    pub(crate) fn transaction_id(&self) -> TransactionId {
+        self.txn_id
+    }
+}
+
+impl Drop for TransactionRegistration<'_> {
+    fn drop(&mut self) {
+        self.manager.remove(self.txn_id);
     }
 }
 
@@ -830,6 +870,47 @@ mod tests {
             CompletionOutcome::Expired | CompletionOutcome::UnknownOrDuplicate
         ));
         assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn response_and_shutdown_cancellation_have_one_exact_slot_winner() {
+        for _ in 0..64 {
+            let manager = std::sync::Arc::new(TransactionManager::new());
+            let (txn_id, rx) = manager
+                .register(
+                    UnitId(1),
+                    FunctionCode::ReadHoldingRegisters,
+                    Instant::now() + std::time::Duration::from_secs(1),
+                )
+                .unwrap();
+            let completing = std::sync::Arc::clone(&manager);
+            let cancelling = std::sync::Arc::clone(&manager);
+
+            let complete = tokio::spawn(async move {
+                completing.complete_response(txn_id, UnitId(1), holding_register_response(0x002A))
+            });
+            let cancel = tokio::spawn(async move {
+                cancelling.cancel_all(|| ClientError::ShuttingDown);
+            });
+            let (completion, cancellation) = tokio::join!(complete, cancel);
+            let completion = completion.unwrap();
+            cancellation.unwrap();
+            let result = rx.await.unwrap();
+
+            assert!(matches!(
+                result,
+                Ok(OwnedResponsePdu::ReadHoldingRegisters(_)) | Err(ClientError::ShuttingDown)
+            ));
+            assert!(matches!(
+                completion,
+                CompletionOutcome::Delivered | CompletionOutcome::UnknownOrDuplicate
+            ));
+            assert_eq!(manager.pending_count(), 0);
+            assert_eq!(
+                manager.complete_response(txn_id, UnitId(1), holding_register_response(0x0011),),
+                CompletionOutcome::UnknownOrDuplicate
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

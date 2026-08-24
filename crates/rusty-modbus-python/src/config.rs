@@ -19,36 +19,51 @@ pub struct ClientConfig {
     pub max_in_flight: usize,
     #[pyo3(get)]
     pub retry: Option<RetryConfig>,
+    #[pyo3(get)]
+    pub shutdown_timeout_secs: f64,
 }
 
 #[pymethods]
 impl ClientConfig {
     #[new]
-    #[pyo3(signature = (unit_id=255, timeout_secs=5.0, max_in_flight=16, retry=None))]
+    #[pyo3(signature = (unit_id=255, timeout_secs=5.0, max_in_flight=16, retry=None, shutdown_timeout_secs=10.0))]
     fn new(
         unit_id: u8,
         timeout_secs: f64,
         max_in_flight: usize,
         retry: Option<RetryConfig>,
+        shutdown_timeout_secs: f64,
     ) -> PyResult<Self> {
-        if timeout_secs <= 0.0 {
-            return Err(PyValueError::new_err("timeout_secs must be positive"));
+        if !timeout_secs.is_finite() || timeout_secs <= 0.0 {
+            return Err(PyValueError::new_err(
+                "timeout_secs must be finite and positive",
+            ));
         }
         if max_in_flight == 0 {
             return Err(PyValueError::new_err("max_in_flight must be >= 1"));
+        }
+        if !shutdown_timeout_secs.is_finite() || shutdown_timeout_secs <= 0.0 {
+            return Err(PyValueError::new_err(
+                "shutdown_timeout_secs must be finite and positive",
+            ));
         }
         Ok(Self {
             unit_id,
             timeout_secs,
             max_in_flight,
             retry,
+            shutdown_timeout_secs,
         })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "ClientConfig(unit_id={}, timeout_secs={}, max_in_flight={}, retry={:?})",
-            self.unit_id, self.timeout_secs, self.max_in_flight, self.retry,
+            "ClientConfig(unit_id={}, timeout_secs={}, max_in_flight={}, retry={:?}, shutdown_timeout_secs={})",
+            self.unit_id,
+            self.timeout_secs,
+            self.max_in_flight,
+            self.retry,
+            self.shutdown_timeout_secs,
         )
     }
 }
@@ -66,7 +81,7 @@ impl ClientConfig {
             timeout: Duration::from_secs_f64(self.timeout_secs),
             max_in_flight: self.max_in_flight,
             retry,
-            ..rusty_modbus_client::ClientConfig::default()
+            shutdown_timeout: Duration::from_secs_f64(self.shutdown_timeout_secs),
         }
     }
 }

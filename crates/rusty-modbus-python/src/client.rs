@@ -105,6 +105,14 @@ impl ModbusClient {
         })
     }
 
+    /// Immediately cancel client work without waiting.
+    fn abort(&self) {
+        match &self.inner {
+            InnerClient::Tcp(c) => c.abort(),
+            InnerClient::Tls(c) => c.abort(),
+        }
+    }
+
     /// Async context manager — enter.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(slf) })

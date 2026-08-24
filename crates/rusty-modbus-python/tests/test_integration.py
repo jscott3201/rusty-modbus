@@ -1,6 +1,7 @@
 """Full-stack integration tests using an embedded Modbus server."""
 import pytest
 from rusty_modbus import (
+    ConnectionError as RmConnectionError,
     InMemoryStore,
     ModbusClient,
     ModbusServer,
@@ -90,11 +91,22 @@ class TestSyncIntegration:
         addr = get_server_addr()
         with SyncModbusClient.connect(addr) as client:
             assert client.is_connected is True
+        assert client.is_connected is False
 
     def test_is_connected(self):
         addr = get_server_addr()
         client = SyncModbusClient.connect(addr)
         assert client.is_connected is True
+        client.shutdown()
+
+    def test_abort_is_synchronous_and_idempotent(self):
+        addr = get_server_addr()
+        client = SyncModbusClient.connect(addr)
+        client.abort()
+        client.abort()
+        assert client.is_connected is False
+        with pytest.raises(RmConnectionError):
+            client.read_holding_registers(unit_id=1, address=0, quantity=1)
         client.shutdown()
 
 
@@ -140,10 +152,22 @@ class TestAsyncIntegration:
         async with await ModbusClient.connect(addr) as client:
             regs = await client.read_holding_registers(unit_id=1, address=0, quantity=2)
             assert regs == [1, 2]
+        assert client.is_connected is False
 
     @pytest.mark.asyncio
     async def test_is_connected(self):
         addr = get_server_addr()
         client = await ModbusClient.connect(addr)
         assert client.is_connected is True
+        await client.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_abort_is_synchronous_and_idempotent(self):
+        addr = get_server_addr()
+        client = await ModbusClient.connect(addr)
+        assert client.abort() is None
+        assert client.abort() is None
+        assert client.is_connected is False
+        with pytest.raises(RmConnectionError):
+            await client.read_holding_registers(unit_id=1, address=0, quantity=1)
         await client.shutdown()

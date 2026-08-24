@@ -12,7 +12,7 @@ This ledger reports repository-scoped evidence for named profiles. It does not s
 - Inventory date: `2026-08-23`
 - Review seed: Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency
 - Requirements: 70
-- Conformance test files: 51
+- Conformance test files: 52
 - Evidence in this seed records repository implementation and mappings; test-file existence does not prove execution.
 
 ## Evidence scale
@@ -82,7 +82,7 @@ Client requests and responses carried in MBAP frames over TCP.
 | [`TCP-007`](#requirement-tcp-007) | A response matches the expected Unit Identifier and function | `supported` | `implemented` | — |
 | [`TCP-008`](#requirement-tcp-008) | Direct and gateway Unit Identifier behavior is explicit | `supported` | `implemented` | — |
 | [`TCP-009`](#requirement-tcp-009) | TCP port 502 is the configurable default | `supported` | `implemented` | — |
-| [`TCP-011`](#requirement-tcp-011) | Connection resources, idle handling, and shutdown are bounded | `compatibility-deviation` | `implemented` | Attempt deadlines and retry envelopes are bounded, but shutdown does not seal admission before drain. |
+| [`TCP-011`](#requirement-tcp-011) | Connection resources, idle handling, and shutdown are bounded | `supported` | `internally-verified` | Client shutdown is internally verified. Server shutdown bounds remain open, and gateway and simulator lifecycle and idle ownership do not yet have equivalent proof. |
 | [`TCP-013`](#requirement-tcp-013) | Connection management survives churn, idle peers, and half-open peers | `compatibility-deviation` | `implemented` | Connection reuse and eviction are implemented without complete health recovery policy. |
 | [`TCP-014`](#requirement-tcp-014) | Priority and non-priority connection pools preserve configured-device priority | `supported` | `implemented` | — |
 | [`CONF-001`](#requirement-conf-001) | Public function and profile claims trace to implementation and tests | `supported` | `implemented` | This seed maps implementation and tests but records no executed-test evidence. |
@@ -179,7 +179,7 @@ Client operation over a serial line with RTU framing and timing.
 | [`APP-020`](#requirement-app-020) | File Record subrequests use reference type 0x06 and internally consistent byte counts | `supported` | `implemented` | — |
 | [`APP-021`](#requirement-app-021) | Device Identification continuation uses the response's next-object identifier | `supported` | `implemented` | — |
 | [`APP-022`](#requirement-app-022) | A serial-line broadcast request does not receive a response | `supported` | `implemented` | — |
-| [`TCP-011`](#requirement-tcp-011) | Connection resources, idle handling, and shutdown are bounded | `compatibility-deviation` | `implemented` | Attempt deadlines and retry envelopes are bounded, but shutdown does not seal admission before drain. |
+| [`TCP-011`](#requirement-tcp-011) | Connection resources, idle handling, and shutdown are bounded | `supported` | `internally-verified` | Client shutdown is internally verified. Server shutdown bounds remain open, and gateway and simulator lifecycle and idle ownership do not yet have equivalent proof. |
 | [`RTU-001`](#requirement-rtu-001) | Serial addresses 1 through 247 are unicast, zero is broadcast, and reserved values are explicit | `compatibility-deviation` | `implemented` | Strict physical serial validates address classes; the legacy serial path remains permissive. |
 | [`RTU-002`](#requirement-rtu-002) | An RTU ADU does not exceed 256 bytes | `supported` | `implemented` | — |
 | [`RTU-003`](#requirement-rtu-003) | RTU CRC uses the specified polynomial and transmits the low-order byte first | `supported` | `implemented` | — |
@@ -529,7 +529,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-tcp-010"></a>
 | `TCP-010` — A server processes multiple outstanding transactions within its advertised bound | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §4.4.1, maximum number of concurrent transactions | `crates/rusty-modbus-server/src/server.rs`; `crates/rusty-modbus-server/src/config.rs` | Gap: The server configuration exposes a transaction bound, but each connection processes requests sequentially. (PR-301, PR-302) |
 <a id="requirement-tcp-011"></a>
-| `TCP-011` — Connection resources, idle handling, and shutdown are bounded | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Evidence and claims, lifecycle evidence policy | `crates/rusty-modbus-client/src/client.rs`; `crates/rusty-modbus-client/src/transaction.rs`; `crates/rusty-modbus-server/src/server.rs`; `crates/rusty-modbus-tcp/src/listener.rs` | `spec_client_retry_policy`, `spec_tcp_transport`; Gap: Client admission and drain ordering and server idle, half-open, and shutdown behavior still lack bounded lifecycle proof. (PR-204, PR-301) |
+| `TCP-011` — Connection resources, idle handling, and shutdown are bounded | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Evidence and claims, lifecycle evidence policy | `crates/rusty-modbus-client/src/client.rs`; `crates/rusty-modbus-client/src/lifecycle.rs`; `crates/rusty-modbus-client/src/transaction.rs`; `crates/rusty-modbus-python/src/client.rs`; `crates/rusty-modbus-python/src/config.rs`; `crates/rusty-modbus-python/src/sync_client.rs`; `crates/rusty-modbus-python/rusty_modbus.pyi`; `crates/rusty-modbus-server/src/server.rs`; `crates/rusty-modbus-tcp/src/listener.rs` | `spec_client_lifecycle`, `spec_client_retry_policy`, `spec_tcp_transport`; Gap: Client shutdown is internally verified. Server shutdown bounds remain open, and gateway and simulator lifecycle and idle ownership do not yet have equivalent proof. (PR-301) |
 <a id="requirement-tcp-012"></a>
 | `TCP-012` — A gateway maps path and target failures to exceptions 0x0A and 0x0B | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §4.4.4, gateway exception responses | `crates/rusty-modbus-gateway/src/gateway.rs` | `spec_exceptions`, `spec_gateway` |
 <a id="requirement-tcp-013"></a>
@@ -633,6 +633,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 |---|---|---|
 | `spec_broadcast` | `crates/rusty-modbus-conformance/tests/spec_broadcast.rs` | `APP-022`, `RTU-001`, `RTU-011` |
 | `spec_byte_count_semantic` | `crates/rusty-modbus-conformance/tests/spec_byte_count_semantic.rs` | `APP-006`, `APP-007`, `APP-012`, `APP-013`, `APP-020` |
+| `spec_client_lifecycle` | `crates/rusty-modbus-conformance/tests/spec_client_lifecycle.rs` | `TCP-011` |
 | `spec_client_response_shape` | `crates/rusty-modbus-conformance/tests/spec_client_response_shape.rs` | `APP-011`, `APP-012`, `APP-013` |
 | `spec_client_retry_policy` | `crates/rusty-modbus-conformance/tests/spec_client_retry_policy.rs` | `APP-018`, `TCP-011`, `CONF-002` |
 | `spec_client_server` | `crates/rusty-modbus-conformance/tests/spec_client_server.rs` | `TCP-005`, `TCP-007`, `CONF-001`, `CONF-002` |
@@ -696,7 +697,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `F-007` | `P1` | Verified source finding / safety gap | `closed` | maintainers | `PR-203` | `TCP-011`, `CONF-002` | Automatic timeout retry applies to writes and can duplicate side effects after an ambiguous response loss | Closed for typed TCP and physical RTU clients by explicit replay-safe versus mutating request classification. Response and transport timeouts can replay reads but are terminal for writes; spec_client_retry_policy and client_tests cover dropped responses, transport timeouts, FC15, and write-before-read FC17. |
 | `F-008` | `P1` | Verified source finding / normative gap | `closed` | maintainers | `PR-203` | `APP-018` | Exception `0x05` Acknowledge is treated as a normal retry signal | Closed by removing Acknowledge from the default retry set and making exception 0x05 terminal even when configured manually. The typed exception remains available for application-owned completion handling, with direct evidence in spec_client_retry_policy. |
 | `F-009` | `P2` | Verified source finding | `closed` | maintainers | `PR-203` | `TCP-011` | A fixed 500 ms sweeper makes timeout precision coarse and wakes when idle | Closed by storing absolute attempt deadlines in the fixed 16-slot ring and scheduling the nearest deadline through race-safe notifications. Client unit tests cover exact expiry, earlier registration wakeup, idle waiting, response races, late responses, and ring wrap behavior. |
-| `F-010` | `P1` | Verified source finding / API-contract gap | `open` | maintainers | `PR-204` | `TCP-011` | Client shutdown signals the reader before attempting to drain and does not seal new admission first | — |
+| `F-010` | `P1` | Verified source finding / API-contract gap | `closed` | maintainers | `PR-204` | `TCP-011` | Client shutdown signals the reader before attempting to drain and does not seal new admission first | Closed by a monotonic client lifecycle that seals admission before drain, keeps response and deadline processing active for admitted operations, cancels at the configured absolute shutdown deadline, reclaims dropped transaction slots, and joins client-owned tasks. Client and conformance tests cover admission races, broadcasts, retry backoff, task joins, abort, and Drop. |
 | `F-011` | `P1` | Verified source finding / API-contract gap | `open` | maintainers | `PR-301`, `PR-302` | `TCP-010`, `TCP-011` | Server `max_transactions` and configured shutdown timeout are not enforced by runtime behavior | — |
 | `F-012` | `P1` | Verified source finding / semantic gap | `open` | maintainers | `PR-303` | `APP-019` | FC16/FC17 compound store operations can interleave across clients | — |
 | `F-013` | `P2` | Verified source finding | `open` | maintainers | `PR-304` | `APP-017` | Custom function codes decode but have no server extension hook; all are returned as Illegal Function | — |
@@ -721,7 +722,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 
 | ID | Status | Owner | Follow-up | Summary | Resolution |
 |---|---|---|---|---|---|
-| [ISSUE-90](https://github.com/jscott3201/rusty-modbus/issues/90) | `open` | maintainers | Track issue #90 | Server shutdown can hang with live connections | — |
+| [ISSUE-90](https://github.com/jscott3201/rusty-modbus/issues/90) | `closed` | maintainers | Closed by PR-204 | Document the Drop/shutdown contract on ModbusClient | The Rust and Python APIs now document and test graceful shutdown, immediate abort, and final-handle Drop behavior. |
 | [ISSUE-91](https://github.com/jscott3201/rusty-modbus/issues/91) | `open` | maintainers | Track issue #91 | Physical RTU server transport is not implemented | — |
 | [ISSUE-92](https://github.com/jscott3201/rusty-modbus/issues/92) | `open` | maintainers | Track issue #92 | Python bindings do not expose all Rust capabilities | — |
 | [ISSUE-93](https://github.com/jscott3201/rusty-modbus/issues/93) | `open` | maintainers | Track issue #93 | CLI exposes a limited operation set | — |

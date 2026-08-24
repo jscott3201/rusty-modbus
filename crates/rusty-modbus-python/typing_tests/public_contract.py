@@ -73,6 +73,7 @@ def _config_properties_are_read_only() -> None:
     client_config = rusty_modbus.ClientConfig()
     assert_type(client_config.unit_id, int)
     assert_type(client_config.timeout_secs, float)
+    assert_type(client_config.shutdown_timeout_secs, float)
     assert_type(client_config.retry, rusty_modbus.RetryConfig | None)
     client_config.unit_id = 1  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -99,6 +100,7 @@ def _client_contracts(
     )
     assert_type(async_client.read_holding_registers(1, 0, 2), Awaitable[list[int]])
     assert_type(async_client.write_file_record(1, bytearray([6, 0, 1])), Awaitable[bytes])
+    assert_type(async_client.abort(), None)
 
     assert_type(
         rusty_modbus.SyncModbusClient.connect("127.0.0.1:502"),
@@ -106,6 +108,7 @@ def _client_contracts(
     )
     assert_type(sync_client.read_coils(1, 0, 2), list[bool])
     assert_type(sync_client.write_file_record(1, (6, 0, 1)), bytes)
+    assert_type(sync_client.abort(), None)
     assert_type(sync_client.__exit__(None, None, None), bool)
 
 
