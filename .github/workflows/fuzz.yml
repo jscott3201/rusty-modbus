@@ -1,0 +1,168 @@
+name: fuzz
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'fuzz/**'
+      - 'scripts/fuzz.py'
+      - 'scripts/test-fuzz.py'
+      - 'deny.toml'
+      - 'crates/rusty-modbus-codec/**'
+      - 'crates/rusty-modbus-frame/**'
+      - 'crates/rusty-modbus-types/**'
+      - 'docs/conformance/**'
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Fuzz operation to run
+        required: true
+        default: replay
+        type: choice
+        options:
+          - replay
+          - campaign
+          - both
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  FUZZ_NIGHTLY: nightly-2026-08-15
+  CARGO_FUZZ_VERSION: 0.13.2
+
+jobs:
+  replay:
+    name: retained corpus replay
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.mode == 'replay' || inputs.mode == 'both'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-15
+          components: rust-src, rustfmt
+      - name: Install pinned cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+          shared-key: fuzz-${{ env.FUZZ_NIGHTLY }}-replay
+      - name: Verify pins
+        run: |
+          rustc +"$FUZZ_NIGHTLY" --version --verbose
+          cargo +"$FUZZ_NIGHTLY" fuzz --version
+          rustup component list --toolchain "$FUZZ_NIGHTLY" --installed
+      - name: Validate tooling and retained corpus
+        run: |
+          python3 scripts/test-fuzz.py
+          python3 scripts/fuzz.py check
+          cargo +"$FUZZ_NIGHTLY" metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1 --no-deps
+          cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked check bans licenses sources
+          cargo audit --file fuzz/Cargo.lock
+      - name: Format fuzz workspace
+        run: cargo +"$FUZZ_NIGHTLY" fmt --manifest-path fuzz/Cargo.toml --all --check
+      - name: Build fuzz targets
+        run: |
+          cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --no-default-features pdu_decode
+          cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features frame mbap_stream
+          cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features frame rtu_frame
+          cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features frame rtu_tcp_stream
+      - name: Replay explicit retained files
+        run: python3 scripts/fuzz.py replay
+      - name: Verify lockfiles are unchanged
+        run: git diff --exit-code -- Cargo.lock fuzz/Cargo.lock
+
+  campaign:
+    name: campaign (${{ matrix.target }})
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.mode == 'campaign' || inputs.mode == 'both'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: pdu_decode
+            seed_offset: 3001
+          - target: mbap_stream
+            seed_offset: 3002
+          - target: rtu_frame
+            seed_offset: 3003
+          - target: rtu_tcp_stream
+            seed_offset: 3004
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-15
+          components: rust-src, rustfmt
+      - name: Install pinned cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+          shared-key: fuzz-${{ env.FUZZ_NIGHTLY }}-campaign-${{ matrix.target }}
+      - name: Validate tooling and retained corpus
+        run: |
+          python3 scripts/test-fuzz.py
+          python3 scripts/fuzz.py check
+          cargo +"$FUZZ_NIGHTLY" metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1 --no-deps
+          cargo +"$FUZZ_NIGHTLY" fmt --manifest-path fuzz/Cargo.toml --all --check
+      - name: Build campaign target
+        run: |
+          if [ "${{ matrix.target }}" = pdu_decode ]; then
+            cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --no-default-features "${{ matrix.target }}"
+          else
+            cargo +"$FUZZ_NIGHTLY" fuzz build --fuzz-dir fuzz --target-dir fuzz/target --features frame "${{ matrix.target }}"
+          fi
+      - name: Derive recorded campaign seed
+        id: campaign-seed
+        env:
+          RUN_ID: ${{ github.run_id }}
+          TARGET_OFFSET: ${{ matrix.seed_offset }}
+        run: |
+          seed=$(( (RUN_ID + TARGET_OFFSET) % 4294967295 ))
+          if [ "$seed" -eq 0 ]; then
+            seed=1
+          fi
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+      - name: Run bounded campaign
+        run: >-
+          python3 scripts/fuzz.py campaign "${{ matrix.target }}"
+          --seconds 60
+          --seed "${{ steps.campaign-seed.outputs.seed }}"
+          --output "$RUNNER_TEMP/fuzz-output/${{ matrix.target }}"
+      - name: Verify lockfiles are unchanged
+        if: always()
+        run: git diff --exit-code -- Cargo.lock fuzz/Cargo.lock
+      - name: Upload campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fuzz-output/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 3

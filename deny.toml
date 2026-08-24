@@ -41,6 +41,7 @@ allow = [
     "Unlicense",
 ]
 exceptions = [
+    { allow = ["NCSA"], crate = "libfuzzer-sys" },
     { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
 ]
 

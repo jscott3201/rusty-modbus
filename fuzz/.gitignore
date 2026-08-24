@@ -1,0 +1,8 @@
+/target/
+/artifacts/
+/coverage/
+
+# These are reviewed inputs, not generated campaign state.
+!/corpus/
+!/corpus/**
+!/Cargo.lock
