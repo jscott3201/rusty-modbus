@@ -307,6 +307,12 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         }
         let pdu_len = checked_pdu_length(pdu_data.len())?;
 
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| ClientError::ShuttingDown)?;
+
         let header = MbapHeader::new(
             0, // Transaction ID doesn't matter for broadcast.
             0x00, pdu_len,

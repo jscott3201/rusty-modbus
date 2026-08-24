@@ -1,16 +1,98 @@
 //! Integration tests for ModbusClient.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::time::Duration;
 
 use bytes::Bytes;
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient, RetryConfig};
 use rusty_modbus_codec::EncodeError;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_tcp::TransportError;
 use rusty_modbus_tcp::config::TcpServerConfig;
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_types::{MbapHeader, UnitId};
+use tokio::sync::mpsc;
+
+enum SendOutcome {
+    Success,
+    Failure,
+}
+
+struct ControlledSink {
+    sent_tx: mpsc::UnboundedSender<Frame>,
+    outcome_rx: mpsc::UnboundedReceiver<SendOutcome>,
+}
+
+impl TransportSink for ControlledSink {
+    async fn send(&mut self, frame: Frame) -> Result<(), TransportError> {
+        self.sent_tx
+            .send(frame)
+            .map_err(|_| TransportError::Disconnected)?;
+        match self.outcome_rx.recv().await {
+            Some(SendOutcome::Success) => Ok(()),
+            Some(SendOutcome::Failure) => Err(TransportError::Io(std::io::Error::other(
+                "controlled send failure",
+            ))),
+            None => Err(TransportError::Disconnected),
+        }
+    }
+}
+
+struct ControlledStream {
+    response_rx: mpsc::UnboundedReceiver<Frame>,
+}
+
+impl TransportStream for ControlledStream {
+    async fn recv(&mut self) -> Result<Frame, TransportError> {
+        self.response_rx
+            .recv()
+            .await
+            .ok_or(TransportError::Disconnected)
+    }
+}
+
+struct TransportControls {
+    sent_rx: mpsc::UnboundedReceiver<Frame>,
+    outcome_tx: mpsc::UnboundedSender<SendOutcome>,
+    response_tx: mpsc::UnboundedSender<Frame>,
+}
+
+fn controlled_transport() -> (ControlledSink, ControlledStream, TransportControls) {
+    let (sent_tx, sent_rx) = mpsc::unbounded_channel();
+    let (outcome_tx, outcome_rx) = mpsc::unbounded_channel();
+    let (response_tx, response_rx) = mpsc::unbounded_channel();
+
+    (
+        ControlledSink {
+            sent_tx,
+            outcome_rx,
+        },
+        ControlledStream { response_rx },
+        TransportControls {
+            sent_rx,
+            outcome_tx,
+            response_tx,
+        },
+    )
+}
+
+fn rtu_frame(unit_id: u8, pdu: impl Into<Bytes>) -> Frame {
+    Frame {
+        header: FrameHeader::Rtu { unit_id },
+        pdu: pdu.into(),
+    }
+}
+
+async fn poll_once<F: Future>(future: Pin<&mut F>) -> Option<F::Output> {
+    tokio::select! {
+        biased;
+        output = future => Some(output),
+        () = std::future::ready(()) => None,
+    }
+}
 
 /// Start a test server that responds to ReadHoldingRegisters with [0x1234, 0x5678].
 async fn start_register_server() -> SocketAddr {
@@ -236,6 +318,188 @@ async fn broadcast_read_rejected() {
 
     let result = client.read_holding_registers(UnitId(0x00), 0, 1).await;
     assert!(matches!(result, Err(ClientError::BroadcastReadNotAllowed)));
+}
+
+#[tokio::test]
+async fn rtu_broadcast_waits_for_pending_unicast() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_rtu_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut unicast = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(unicast.as_mut()).await.is_none());
+    let sent_unicast = controls.sent_rx.try_recv().unwrap();
+    assert_eq!(sent_unicast.unit_id(), 1);
+    assert_eq!(sent_unicast.pdu[0], 0x03);
+
+    let mut broadcast = Box::pin(client.write_single_register(UnitId(0), 7, 0x1234));
+    assert!(poll_once(broadcast.as_mut()).await.is_none());
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    controls
+        .response_tx
+        .send(rtu_frame(1, vec![0x03, 0x02, 0x00, 0x2A]))
+        .unwrap();
+    assert_eq!(unicast.await.unwrap(), vec![0x002A]);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    broadcast.await.unwrap();
+    let sent_broadcast = controls.sent_rx.try_recv().unwrap();
+    assert_eq!(sent_broadcast.unit_id(), 0);
+    assert_eq!(sent_broadcast.pdu[0], 0x06);
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn repeated_rtu_broadcasts_send_once_without_response_or_transaction() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_rtu_transport(sink, stream, default_config());
+
+    for value in 0..20 {
+        controls.outcome_tx.send(SendOutcome::Success).unwrap();
+        client
+            .write_single_register(UnitId(0), value, value)
+            .await
+            .unwrap();
+        let frame = controls.sent_rx.try_recv().unwrap();
+        assert_eq!(frame.unit_id(), 0);
+        assert_eq!(frame.pdu[0], 0x06);
+        assert!(matches!(
+            controls.sent_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut unicast = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(unicast.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 1);
+    controls
+        .response_tx
+        .send(rtu_frame(1, vec![0x03, 0x02, 0x00, 0x2A]))
+        .unwrap();
+    assert_eq!(unicast.await.unwrap(), vec![0x002A]);
+}
+
+#[tokio::test]
+async fn rtu_broadcast_send_failure_releases_admission() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_rtu_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Failure).unwrap();
+    let result = client.write_single_register(UnitId(0), 1, 1).await;
+    assert!(matches!(result, Err(ClientError::Transport(_))));
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 0);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    client.write_single_register(UnitId(0), 2, 2).await.unwrap();
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 0);
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn cancelled_waiting_rtu_broadcast_does_not_send_or_leak_admission() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_rtu_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut unicast = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(unicast.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 1);
+
+    let mut cancelled = Box::pin(client.write_single_register(UnitId(0), 1, 1));
+    assert!(poll_once(cancelled.as_mut()).await.is_none());
+    drop(cancelled);
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    controls
+        .response_tx
+        .send(rtu_frame(1, vec![0x03, 0x02, 0x00, 0x2A]))
+        .unwrap();
+    assert_eq!(unicast.await.unwrap(), vec![0x002A]);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    client.write_single_register(UnitId(0), 2, 2).await.unwrap();
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 0);
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn cancelled_acquired_rtu_broadcast_releases_admission() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_rtu_transport(sink, stream, default_config());
+
+    let mut cancelled = Box::pin(client.write_single_register(UnitId(0), 1, 1));
+    assert!(poll_once(cancelled.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 0);
+    drop(cancelled);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    client.write_single_register(UnitId(0), 2, 2).await.unwrap();
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 0);
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn tcp_broadcast_uses_one_admission_slot_without_global_serialization() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        max_in_flight: 2,
+        ..default_config()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut unicast = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(unicast.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 1);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    client.write_single_register(UnitId(0), 1, 1).await.unwrap();
+    assert_eq!(controls.sent_rx.try_recv().unwrap().unit_id(), 0);
+
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(1, 1, 4)),
+            pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        })
+        .unwrap();
+    assert_eq!(unicast.await.unwrap(), vec![0x002A]);
+}
+
+#[tokio::test]
+async fn device_identification_broadcast_read_is_rejected_before_transport() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_rtu_transport(sink, stream, default_config());
+
+    let mut request = Box::pin(client.read_device_identification(UnitId(0)));
+    let result = poll_once(request.as_mut())
+        .await
+        .expect("broadcast read rejection must not wait for transport");
+    assert!(matches!(result, Err(ClientError::BroadcastReadNotAllowed)));
+    assert!(matches!(
+        controls.sent_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]
