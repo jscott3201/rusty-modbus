@@ -15,7 +15,7 @@ readme = "README.md"
 [dependencies]
 rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.1", features = ["serde"] }
 rusty-modbus-server = { path = "../rusty-modbus-server", version = "0.1.1" }
-tokio = { version = "1", features = ["rt", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 thiserror = "2"

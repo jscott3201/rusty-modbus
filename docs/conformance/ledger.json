@@ -118,7 +118,7 @@
     {
       "id": "simulator",
       "name": "Simulator",
-      "scope": "The simulator's TCP server and data model, including explicit parsed-but-inert configuration gaps.",
+      "scope": "The simulator's validated static TCP data model, in-process library, and package-local YAML executable. Dynamic updates and fault injection are rejected.",
       "owner": "maintainers",
       "anchor": "profile-simulator",
       "transport_class": "simulator"
@@ -3886,6 +3886,9 @@
           "path": "crates/rusty-modbus-sim/src/simulator.rs"
         },
         {
+          "path": "crates/rusty-modbus-sim/src/main.rs"
+        },
+        {
           "path": "docs/api.md"
         }
       ],
@@ -3938,7 +3941,7 @@
           "profile": "simulator",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "The Python, CLI, and simulator surfaces intentionally expose a narrower capability set."
+          "reason": "The simulator library and package-local executable expose validated static TCP maps; broader Python and main CLI parity remains deferred."
         },
         {
           "profile": "rtu-over-tcp-extension",
@@ -4655,7 +4658,7 @@
       "profile": "simulator",
       "kind": "capability",
       "minimum_evidence": "implemented",
-      "text": "Provides an in-process Modbus/TCP simulator at the implemented evidence level; parsed-but-inert configuration remains a listed non-parity gap.",
+      "text": "Provides in-process and package-local executable Modbus/TCP simulation for validated static YAML configurations at the implemented evidence level.",
       "requirement_ids": [
         "APP-017",
         "TCP-005",
@@ -5150,11 +5153,11 @@
       "title": "Simulator accepts fault and dynamic update configuration that runtime does not enforce",
       "priority": "P1",
       "confidence": "Verified source finding",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by shared pre-runtime validation in ModbusSimulator::from_config/from_yaml. Unknown and duplicate fields, dynamic modes, faults, arbitrary static bounds, invalid Unit Identifiers/listen addresses, invalid counts/ranges/initial lengths, and same-table overlaps have direct package and spec_simulator tests.",
       "owner": "maintainers",
       "primary_closure_packages": [
-        "PR-701",
-        "PR-702"
+        "PR-701"
       ],
       "requirement_ids": [
         "CONF-008"
@@ -5165,7 +5168,8 @@
       "title": "No runnable YAML simulator command is shipped",
       "priority": "P2",
       "confidence": "Verified source finding",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by the packaged rusty-modbus-sim binary and process tests for help and errors, bind-before-readiness ordering, port-zero readiness, an independent Modbus request, SIGTERM shutdown, bounded stop completion, and exact stdout records.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-701"

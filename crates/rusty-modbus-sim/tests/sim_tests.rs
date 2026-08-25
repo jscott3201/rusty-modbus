@@ -99,6 +99,41 @@ faults: []
 }
 
 #[tokio::test]
+async fn short_initial_arrays_are_zero_filled() {
+    let yaml = r"
+device:
+  unit_id: 1
+registers:
+  holding:
+    - address: 10
+      count: 3
+      initial: [4660]
+  coils:
+    - address: 20
+      count: 3
+      initial: [true]
+faults: []
+";
+    let mut sim = ModbusSimulator::from_yaml(yaml).unwrap();
+    let addr = sim.start().await.unwrap();
+    let client = ModbusClient::connect(addr, client_config()).await.unwrap();
+
+    assert_eq!(
+        client
+            .read_holding_registers(UnitId(1), 10, 3)
+            .await
+            .unwrap(),
+        vec![4660, 0, 0]
+    );
+    assert_eq!(
+        client.read_coils(UnitId(1), 20, 3).await.unwrap(),
+        vec![true, false, false]
+    );
+
+    sim.stop().await;
+}
+
+#[tokio::test]
 async fn hvac_profile_has_registers() {
     let mut sim = ModbusSimulator::from_config(hvac_controller()).unwrap();
     let addr = sim.start().await.unwrap();
@@ -187,7 +222,7 @@ async fn from_config_allows_single_register_at_last_address() {
         initial: vec![0xBEEF],
         mode: UpdateMode::Static,
         min: 0,
-        max: 0,
+        max: u16::MAX,
     }];
 
     let mut sim = ModbusSimulator::from_config(config).unwrap();
@@ -212,7 +247,7 @@ fn from_config_rejects_register_block_that_overflows_address_space() {
         initial: vec![0x1111, 0x2222],
         mode: UpdateMode::Static,
         min: 0,
-        max: 0,
+        max: u16::MAX,
     }];
 
     let err = ModbusSimulator::from_config(config).unwrap_err();

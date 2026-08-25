@@ -1,7 +1,7 @@
 //! Modbus device simulator for testing and CI.
 //!
-//! Configures a virtual Modbus server with predefined register maps,
-//! fault injection, and pre-built device profiles.
+//! Configures a Modbus/TCP server with validated static register maps and
+//! pre-built device profiles.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::all, clippy::pedantic)]

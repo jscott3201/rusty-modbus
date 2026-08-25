@@ -1,0 +1,19 @@
+device:
+  unit_id: 1
+  vendor_name: rusty-modbus-sim
+  product_code: BASIC
+  revision: "1.0"
+  listen_addr: 127.0.0.1:0
+registers:
+  holding:
+    - address: 0
+      count: 4
+      initial: [4660, 0, 0, 0]
+      mode: static
+      min: 0
+      max: 65535
+  coils:
+    - address: 0
+      count: 4
+      initial: [true, false, false, false]
+faults: []

@@ -6,7 +6,9 @@
 use std::time::Duration;
 
 use rusty_modbus_client::{ClientConfig, ModbusClient};
-use rusty_modbus_sim::{ModbusSimulator, generic_io, hvac_controller, power_meter, vfd_drive};
+use rusty_modbus_sim::{
+    ModbusSimulator, SimError, generic_io, hvac_controller, power_meter, vfd_drive,
+};
 use rusty_modbus_types::UnitId;
 
 fn config() -> ClientConfig {
@@ -145,4 +147,27 @@ async fn simulator_write_and_read_back() {
     assert_eq!(coils, vec![true]);
 
     sim.stop().await;
+}
+
+#[test]
+fn simulator_rejects_unknown_configuration_fields() {
+    let error = ModbusSimulator::from_yaml(
+        "device: {}\nregisters:\n  holding:\n    - address: 0\n      count: 1\n      typo: true\nfaults: []\n",
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(error, SimError::ConfigParse(message) if message.to_string().contains("unknown field"))
+    );
+}
+
+#[test]
+fn simulator_rejects_unimplemented_dynamic_and_fault_behavior() {
+    for yaml in [
+        "device: {}\nregisters:\n  holding:\n    - address: 0\n      count: 1\n      mode: random\nfaults: []\n",
+        "device: {}\nregisters: {}\nfaults:\n  - type: timeout\n",
+    ] {
+        let error = ModbusSimulator::from_yaml(yaml).unwrap_err();
+        assert!(matches!(error, SimError::Config(_)), "{error}");
+    }
 }

@@ -361,13 +361,13 @@ TLS transport primitives and role metadata; mutual certificate authentication is
 <a id="profile-simulator"></a>
 ### Simulator (`simulator`)
 
-The simulator's TCP server and data model, including explicit parsed-but-inert configuration gaps.
+The simulator's validated static TCP data model, in-process library, and package-local YAML executable. Dynamic updates and fault injection are rejected.
 
 **Claims**
 
 | Claim | Kind | Minimum evidence | Requirement IDs |
 |---|---|---|---|
-| `claim-simulator`: Provides an in-process Modbus/TCP simulator at the implemented evidence level; parsed-but-inert configuration remains a listed non-parity gap. | `capability` | `implemented` | `APP-017`, `TCP-005`, `CONF-008` |
+| `claim-simulator`: Provides in-process and package-local executable Modbus/TCP simulation for validated static YAML configurations at the implemented evidence level. | `capability` | `implemented` | `APP-017`, `TCP-005`, `CONF-008` |
 
 **Requirement assessments**
 
@@ -406,7 +406,7 @@ The simulator's TCP server and data model, including explicit parsed-but-inert c
 | [`CONF-003`](#requirement-conf-003) | Parsers have malformed-input and arbitrary stream-chunking evidence | `supported` | `implemented` | — |
 | [`CONF-005`](#requirement-conf-005) | Independent implementation evidence exists before interoperability is claimed | `unsupported` | `not-implemented` | No independent implementation or authorized tool evidence is recorded. |
 | [`CONF-007`](#requirement-conf-007) | Release documentation makes only named profile and evidence-threshold claims | `supported` | `implemented` | The ledger establishes claim authority; final release-claim audit remains outstanding. |
-| [`CONF-008`](#requirement-conf-008) | Rust, Python, CLI, and simulator surfaces have parity or state non-parity | `compatibility-deviation` | `implemented` | The Python, CLI, and simulator surfaces intentionally expose a narrower capability set. |
+| [`CONF-008`](#requirement-conf-008) | Rust, Python, CLI, and simulator surfaces have parity or state non-parity | `compatibility-deviation` | `implemented` | The simulator library and package-local executable expose validated static TCP maps; broader Python and main CLI parity remains deferred. |
 
 <a id="profile-rtu-over-tcp-extension"></a>
 ### RTU-over-TCP extension (`rtu-over-tcp-extension`)
@@ -623,7 +623,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-conf-007"></a>
 | `CONF-007` — Release documentation makes only named profile and evidence-threshold claims | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Evidence and claims | `docs/conformance/schema.md`; `scripts/conformance_ledger.py` | Gap: The ledger establishes claim authority; final release-claim audit remains outstanding. (PR-704) |
 <a id="requirement-conf-008"></a>
-| `CONF-008` — Rust, Python, CLI, and simulator surfaces have parity or state non-parity | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Evidence and claims, explicit capability scope | `crates/rusty-modbus-sim/src/config.rs`; `crates/rusty-modbus-sim/src/simulator.rs`; `docs/api.md` | `spec_simulator`; Gap: Python, CLI, and simulator capability parity is incomplete and explicitly deferred. (PR-704) |
+| `CONF-008` — Rust, Python, CLI, and simulator surfaces have parity or state non-parity | `project-profile` | [rusty-modbus-project-policy](schema.md) `1`, § Evidence and claims, explicit capability scope | `crates/rusty-modbus-sim/src/config.rs`; `crates/rusty-modbus-sim/src/simulator.rs`; `crates/rusty-modbus-sim/src/main.rs`; `docs/api.md` | `spec_simulator`; Gap: Python, CLI, and simulator capability parity is incomplete and explicitly deferred. (PR-704) |
 
 ## Conformance test inventory
 
@@ -709,8 +709,8 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `F-017` | `P1` | Verified source finding | `open` | maintainers | `PR-403` | `TCP-013` | Pooled connections are returned to idle even after timeout, framing error, or disconnect unless callers manually prevent reuse | — |
 | `F-018` | `P2` | Verified source finding | `open` | maintainers | `PR-403` | `TCP-013`, `TCP-014` | Pool “health check” evicts old idle entries but does not establish socket/protocol health | — |
 | `F-019` | `P2` | Verified source finding / extension risk | `open` | maintainers | `PR-104` | `EXT-001`, `EXT-003`, `EXT-004` | RTU-over-TCP accepts the first valid CRC prefix, leaving a boundary-ambiguity profile that is not explicit | — |
-| `F-020` | `P1` | Verified source finding | `open` | maintainers | `PR-701`, `PR-702` | `CONF-008` | Simulator accepts fault and dynamic update configuration that runtime does not enforce | — |
-| `F-021` | `P2` | Verified source finding | `open` | maintainers | `PR-701` | `CONF-008` | No runnable YAML simulator command is shipped | — |
+| `F-020` | `P1` | Verified source finding | `closed` | maintainers | `PR-701` | `CONF-008` | Simulator accepts fault and dynamic update configuration that runtime does not enforce | Closed by shared pre-runtime validation in ModbusSimulator::from_config/from_yaml. Unknown and duplicate fields, dynamic modes, faults, arbitrary static bounds, invalid Unit Identifiers/listen addresses, invalid counts/ranges/initial lengths, and same-table overlaps have direct package and spec_simulator tests. |
+| `F-021` | `P2` | Verified source finding | `closed` | maintainers | `PR-701` | `CONF-008` | No runnable YAML simulator command is shipped | Closed by the packaged rusty-modbus-sim binary and process tests for help and errors, bind-before-readiness ordering, port-zero readiness, an independent Modbus request, SIGTERM shutdown, bounded stop completion, and exact stdout records. |
 | `F-022` | `P2` | Verified source finding / evidence gap | `open` | maintainers | `PR-702` | `RTU-012`, `CONF-004` | No first-party serial RTU responder exists for master testing | — |
 | `F-023` | `P2` | Evidence gap | `closed` | maintainers | `PR-001` | `CONF-001` | Conformance tests are broad but not linked to a maintained normative ledger | Closed by the maintained canonical ledger and validator introduced in PR-001. |
 | `F-024` | `P2` | Evidence gap | `closed` | maintainers | `PR-003` | `CONF-003` | Parser property and fuzz evidence is incomplete | Closed for the parser and frame-assembly foundation by fixed-seed properties, five pinned cargo-fuzz targets, a retained manifest corpus, deterministic replay, and bounded scheduling. Physical timestamp-source integration remains outside this evidence, and RTU-over-TCP boundary/recovery policy remains assigned to PR-104. |

@@ -38,7 +38,7 @@ smaller API when they only need codec, transport, server, or simulator pieces.
 | `rusty-modbus-server` | Async server and pluggable `DataStore` trait. |
 | `rusty-modbus-pool` | Connection pooling for client workloads. |
 | `rusty-modbus-gateway` | TCP frontend with RTU-over-TCP backend routing and frame translation; not a physical serial gateway. |
-| `rusty-modbus-sim` | YAML-driven in-process simulator. |
+| `rusty-modbus-sim` | YAML-driven static Modbus/TCP simulator library and installable executable. |
 
 The CLI crate is intentionally `publish = false`; release binaries are produced
 by the GitHub release pipeline instead of crates.io.

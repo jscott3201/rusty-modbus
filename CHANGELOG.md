@@ -23,6 +23,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added a bounded Rust `DataStore::handle_custom_function` hook for non-standard
   function codes. Existing stores keep the Illegal Function default; the hook is
   not exposed through Python, the CLI, or the simulator.
+- Added the `rusty-modbus-sim <CONFIG>` executable. It reports the actual bound
+  address and Unit Identifier on stdout, serves until SIGINT/SIGTERM on Unix or
+  Ctrl-C elsewhere, and waits for the existing bounded server stop path.
 
 ### Changed
 
@@ -33,6 +36,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `DecodeError::InvalidRegisterDataLength` /
   `EncodeError::InvalidRegisterDataLength`. Exhaustive Rust matches on these
   error enums must handle the new variants.
+- Simulator YAML now rejects unknown or duplicate fields, unsupported update
+  modes and faults, invalid direct TCP Unit Identifiers and listen addresses,
+  noncanonical static bounds, zero or overflowing blocks, excess initial
+  values, and same-table overlaps before runtime state is created.
 
 ### Fixed
 
