@@ -29,7 +29,7 @@ state or imply Modbus Organization conformance testing or certification.
 - **Pluggable server** — async `DataStore` trait for custom register backends
 - **TCP-to-RTU-over-TCP gateway** — request routing and frame translation; no physical serial gateway
 - **Connection pooling** — two-pool architecture with idle eviction and reconnect backoff
-- **YAML simulator** — initial register maps and device profiles; parsed update and fault settings are not active
+- **YAML simulator** — runnable static TCP device maps with fail-loud configuration validation and parseable readiness output
 - **CLI tool** — read/write/server/shell/dashboard/discover commands with JSON output
 - **Python bindings** — CPython 3.14/3.14t wheels with typed async/sync clients and server stores
 - **Conformance evidence** — 70 requirement rows and the live Rust conformance-test inventory in the [profile ledger](docs/conformance/ledger.md)
@@ -74,6 +74,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 The `rusty-modbus` facade crate enables the `tcp` client feature by default.
 Enable `server`, `rtu`, `tls`, `pool`, `gateway`, or `full` when those modules
 are needed.
+
+## Simulator
+
+The `rusty-modbus-sim` package installs a separate executable for validated
+static device configurations:
+
+```bash
+cargo run -p rusty-modbus-sim -- crates/rusty-modbus-sim/examples/basic.yaml
+
+# After publication to crates.io
+cargo install rusty-modbus-sim
+rusty-modbus-sim device.yaml
+```
+
+Successful bind writes
+`RUSTY_MODBUS_SIM_READY address=<SocketAddr> unit_id=<u8>` to stdout. Dynamic
+update modes, fault entries, unknown fields, invalid block ranges, and
+overlapping blocks are rejected before bind. The
+[simulator README](crates/rusty-modbus-sim/README.md) defines the YAML and
+process-output contracts.
 
 ## Python Quick Start
 
@@ -203,7 +223,7 @@ crates/
   rusty-modbus-client/      Pipelined async client
   rusty-modbus-server/      Pluggable DataStore server
   rusty-modbus-gateway/     TCP <-> RTU-over-TCP bridge
-  rusty-modbus-sim/         YAML simulator + device profiles
+  rusty-modbus-sim/         YAML simulator library, executable, and device profiles
   rusty-modbus-cli/         CLI binary (read/write/server/shell/dashboard/discover)
   rusty-modbus/             Facade crate with feature flags
   rusty-modbus-conformance/ Requirement-oriented test suite

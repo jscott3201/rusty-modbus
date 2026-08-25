@@ -4,19 +4,21 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level simulator configuration (deserializable from YAML).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimConfig {
     /// Device identity.
     pub device: DeviceConfig,
     /// Register definitions.
     #[serde(default)]
     pub registers: RegisterConfig,
-    /// Fault injection rules.
+    /// Fault injection rules. Nonempty lists are rejected until fault injection is implemented.
     #[serde(default)]
     pub faults: Vec<FaultConfig>,
 }
 
 /// Device identity and settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
     /// Modbus unit ID. Default: 1.
     #[serde(default = "default_unit_id")]
@@ -53,6 +55,7 @@ fn default_listen() -> String {
 
 /// Register definitions for all four data tables.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegisterConfig {
     /// Holding register blocks.
     #[serde(default)]
@@ -70,6 +73,7 @@ pub struct RegisterConfig {
 
 /// A contiguous block of registers with initial values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegisterBlock {
     /// Starting address.
     pub address: u16,
@@ -78,23 +82,24 @@ pub struct RegisterBlock {
     /// Initial values (padded with 0 if shorter than count).
     #[serde(default)]
     pub initial: Vec<u16>,
-    /// Update mode for dynamic simulation.
+    /// Requested update mode. Only [`UpdateMode::Static`] is currently accepted.
     #[serde(default)]
     pub mode: UpdateMode,
-    /// Minimum value for random mode.
+    /// Reserved lower bound. Static blocks must use 0.
     #[serde(default)]
     pub min: u16,
-    /// Maximum value for random mode.
+    /// Reserved upper bound. Static blocks must use 65535.
     #[serde(default = "default_max_u16")]
     pub max: u16,
 }
 
 fn default_max_u16() -> u16 {
-    1000
+    u16::MAX
 }
 
 /// A contiguous block of coils/discrete inputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoilBlock {
     /// Starting address.
     pub address: u16,
@@ -109,17 +114,18 @@ pub struct CoilBlock {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateMode {
-    /// Values are static — only change via writes.
+    /// Values do not update automatically.
     #[default]
     Static,
-    /// Values are randomized within `[min, max]` on each read.
+    /// Reserved for future randomized updates; rejected by current validation.
     Random,
-    /// Values increment by 1 on each read, wrapping at `max`.
+    /// Reserved for future incrementing updates; rejected by current validation.
     Increment,
 }
 
-/// Fault injection configuration.
+/// Reserved fault injection configuration. Current validation rejects every entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FaultConfig {
     /// Type of fault to inject.
     #[serde(rename = "type")]
@@ -154,6 +160,7 @@ pub enum FaultType {
 
 /// Trigger condition for fault injection.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FaultTrigger {
     /// Match a specific function code name (e.g., `read_holding_registers`).
     pub function: Option<String>,
