@@ -163,11 +163,25 @@ tables:
 
 Optional `DataStore` methods cover atomic FC 0x16/0x17 operations, file records,
 FIFO queues, Report Server ID, Diagnostics, Read Exception Status, Get Comm Event
-Counter, and Get Comm Event Log. The compound-operation defaults return
-`IllegalFunction` without composing ordinary register methods. Existing stores
-continue to compile, but FC 0x16 and FC 0x17 remain unavailable until the store
-implements `atomic_mask_write_register` and
-`atomic_read_write_registers_be`. The server crate maps to the
+Counter, Get Comm Event Log, and non-standard function codes. The
+compound-operation and custom-function defaults return `IllegalFunction`.
+Existing stores continue to compile, but FC 0x16 and FC 0x17 remain unavailable
+until the store implements `atomic_mask_write_register` and
+`atomic_read_write_registers_be`.
+
+`DataStore::handle_custom_function` receives the Unit Identifier, raw custom
+function code, and request data without the function byte. Request data is
+bounded to `MAX_PDU_SIZE - 1` bytes by PDU decoding. The response buffer is
+exactly `MAX_PDU_SIZE - 1` bytes and carries only vendor data; the returned
+length selects the initialized prefix. The server prepends the original
+function code, so `Ok(0)` emits a one-byte PDU. An overreported length becomes
+Server Device Failure, while `Err(code)` emits the standard exception PDU.
+Custom broadcasts do not invoke the hook or produce a response.
+
+The custom-function hook is a Rust-only capability; the Python bindings, CLI,
+and simulator do not expose it. Store implementations are trusted in-process
+code, not an authorization or panic-isolation boundary. A secured server must
+authorize requests before custom dispatch. The server crate maps to the
 [TCP server profile](conformance/ledger.md#profile-tcp-server); there is no
 first-party [physical RTU responder](conformance/ledger.md#profile-physical-rtu-responder),
 and TLS primitives do not compose a secured server on their own.

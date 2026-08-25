@@ -79,13 +79,14 @@ pub async fn process_request<S: DataStore>(
         }
     };
 
-    dispatch_request(request, pdu, is_broadcast, store, device_id).await
+    dispatch_request(request, pdu, unit_id, is_broadcast, store, device_id).await
 }
 
 #[allow(clippy::too_many_lines)]
 async fn dispatch_request<S: DataStore>(
     request: RequestPdu<'_>,
     pdu: &[u8],
+    unit_id: UnitId,
     is_broadcast: bool,
     store: &S,
     device_id: &DeviceIdentification,
@@ -331,13 +332,34 @@ async fn dispatch_request<S: DataStore>(
                 Some(encode_exception(fc | 0x80, ExceptionCode::IllegalFunction))
             }
         }
-        RequestPdu::Custom(..) => {
+        RequestPdu::Custom(function_code, request_data) => {
             if is_broadcast {
                 return None;
             }
-            let fc = pdu.first().copied().unwrap_or(0);
-            Some(encode_exception(fc | 0x80, ExceptionCode::IllegalFunction))
+            Some(handle_custom_request(unit_id, function_code, request_data, store).await)
         }
+    }
+}
+
+async fn handle_custom_request<S: DataStore>(
+    unit_id: UnitId,
+    function_code: u8,
+    request_data: &[u8],
+    store: &S,
+) -> Vec<u8> {
+    let mut response = vec![0u8; MAX_PDU_SIZE];
+    response[0] = function_code;
+
+    match store
+        .handle_custom_function(unit_id, function_code, request_data, &mut response[1..])
+        .await
+    {
+        Ok(response_data_len) if response_data_len < MAX_PDU_SIZE => {
+            response.truncate(1 + response_data_len);
+            response
+        }
+        Ok(_) => encode_exception(function_code | 0x80, ExceptionCode::ServerDeviceFailure),
+        Err(ec) => encode_exception(function_code | 0x80, ec),
     }
 }
 
