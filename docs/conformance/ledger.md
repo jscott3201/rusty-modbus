@@ -12,7 +12,7 @@ This ledger reports repository-scoped evidence for named profiles. It does not s
 - Inventory date: `2026-08-23`
 - Review seed: Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency
 - Requirements: 70
-- Conformance test files: 53
+- Conformance test files: 54
 - Evidence in this seed records repository implementation and mappings; test-file existence does not prove execution.
 
 ## Evidence scale
@@ -492,7 +492,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-app-016"></a>
 | `APP-016` — Exception responses set the function-code high bit and carry a defined exception code | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §7, MODBUS exception responses | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_exceptions`, `spec_fixed_pdu_lengths`, `spec_handler_exceptions`, `spec_parser_resilience`, `spec_response_encode` |
 <a id="requirement-app-017"></a>
-| `APP-017` — Unsupported function codes receive Illegal Function unless an extension defines them | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §5, server action for an unsupported function code; §7, exception code 01 | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs` | `spec_fc07_exception_status`, `spec_fc08_diagnostics`, `spec_fc0b_event_counter`, `spec_fc0c_event_log`, `spec_fc11_report_server`, `spec_handler_exceptions`, `spec_server_function_codes`, `spec_server_handler`, `spec_server_validation` |
+| `APP-017` — Unsupported function codes receive Illegal Function unless an extension defines them | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §5, server action for an unsupported function code; §7, exception code 01 | `crates/rusty-modbus-codec/src/validate.rs`; `crates/rusty-modbus-codec/src/response/mod.rs`; `crates/rusty-modbus-server/src/handler.rs`; `crates/rusty-modbus-server/src/store/mod.rs` | `spec_custom_functions`, `spec_fc07_exception_status`, `spec_fc08_diagnostics`, `spec_fc0b_event_counter`, `spec_fc0c_event_log`, `spec_fc11_report_server`, `spec_handler_exceptions`, `spec_server_function_codes`, `spec_server_handler`, `spec_server_validation` |
 <a id="requirement-app-018"></a>
 | `APP-018` — Acknowledge exception 0x05 represents deferred processing rather than completed success | `MUST` | [modbus-application-protocol](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf) `V1.1b3`, §7, exception code 05 Acknowledge | `crates/rusty-modbus-client/src/config.rs`; `crates/rusty-modbus-client/src/client.rs`; `crates/rusty-modbus-client/src/error.rs`; `crates/rusty-modbus-gateway/src/translator.rs`; `crates/rusty-modbus-rtu/src/rtu_tcp.rs` | `spec_client_retry_policy`, `spec_exceptions` |
 <a id="requirement-app-019"></a>
@@ -639,6 +639,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `spec_client_server` | `crates/rusty-modbus-conformance/tests/spec_client_server.rs` | `TCP-005`, `TCP-007`, `CONF-001`, `CONF-002` |
 | `spec_constants` | `crates/rusty-modbus-conformance/tests/spec_constants.rs` | `APP-001`, `APP-004`, `APP-005`, `APP-006`, `APP-007`, `APP-008`, `APP-009`, `TCP-009`, `RTU-002`, `SEC-001`, `SEC-005` |
 | `spec_crc16` | `crates/rusty-modbus-conformance/tests/spec_crc16.rs` | `RTU-003` |
+| `spec_custom_functions` | `crates/rusty-modbus-conformance/tests/spec_custom_functions.rs` | `APP-017` |
 | `spec_encode_validation` | `crates/rusty-modbus-conformance/tests/spec_encode_validation.rs` | `APP-001`, `APP-006`, `APP-007`, `APP-020`, `CONF-003` |
 | `spec_exceptions` | `crates/rusty-modbus-conformance/tests/spec_exceptions.rs` | `APP-016`, `APP-018`, `TCP-012` |
 | `spec_fc01_read_coils` | `crates/rusty-modbus-conformance/tests/spec_fc01_read_coils.rs` | `APP-004`, `APP-010`, `APP-011` |
@@ -701,7 +702,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `F-010` | `P1` | Verified source finding / API-contract gap | `closed` | maintainers | `PR-204` | `TCP-011` | Client shutdown signals the reader before attempting to drain and does not seal new admission first | Closed by a monotonic client lifecycle that seals admission before drain, keeps response and deadline processing active for admitted operations, cancels at the configured absolute shutdown deadline, reclaims dropped transaction slots, and joins client-owned tasks. Client and conformance tests cover admission races, broadcasts, retry backoff, task joins, abort, and Drop. |
 | `F-011` | `P1` | Verified source finding / API-contract gap | `mitigated` | maintainers | `PR-301`, `PR-302` | `TCP-010`, `TCP-011` | Server `max_transactions` and configured shutdown timeout are not enforced by runtime behavior | PR-301 validates server limits before bind, enforces the configured shutdown deadline, seals listener and request admission, joins owned connection tasks, and reports drained versus forced completion with counters across Rust, CLI, and Python. Runtime enforcement of max_transactions remains assigned to PR-302. |
 | `F-012` | `P1` | Verified source finding / semantic gap | `closed` | maintainers | `PR-303` | `APP-019` | FC16/FC17 compound store operations can interleave across clients | Closed by default-deny atomic FC16/FC17 DataStore hooks, one-guard InMemoryStore implementations, and Rust/Python tests covering opt-in, fail-closed defaults, validation, broadcast behavior, and concurrent linearization. |
-| `F-013` | `P2` | Verified source finding | `open` | maintainers | `PR-304` | `APP-017` | Custom function codes decode but have no server extension hook; all are returned as Illegal Function | — |
+| `F-013` | `P2` | Verified source finding | `closed` | maintainers | `PR-304` | `APP-017` | Custom function codes decode but have no server extension hook; all are returned as Illegal Function | Closed by the defaulted DataStore custom-function hook and direct tests for context, bounds, exceptions, default Illegal Function behavior, dispatch isolation, concurrency, MBAP identity, and panic cleanup. |
 | `F-014` | `P1` | Verified source finding / security-profile gap | `open` | maintainers | `PR-501`, `PR-502` | `SEC-007`, `SEC-008`, `SEC-009` | TLS role authorization is not composed into a secured request-serving runtime | — |
 | `F-015` | `P2` | Verified source finding / operational gap | `open` | maintainers | `PR-501`, `PR-503` | `SEC-004`, `SEC-009`, `SEC-010` | TLS connection limits, profile labeling, certificate lifecycle, and advisory cleanup are incomplete | — |
 | `F-016` | `P1` | Verified source finding | `open` | maintainers | `PR-401` | `TCP-008`, `TCP-012`, `RTU-010` | Gateway creates a backend connection per request and is not a first-class physical serial gateway despite broad positioning | — |
@@ -716,7 +717,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `F-025` | `P2` | Evidence gap | `open` | maintainers | `PR-002`, `PR-601–604` | `CONF-006` | Existing performance report is strong but lacks machine-readable regression budgets and key production topologies | — |
 | `F-026` | `P2` | Evidence gap | `open` | maintainers | `PR-703` | `CONF-005` | Independent implementation/tool interoperability evidence is not part of the release gate | — |
 | `F-027` | `P2` | Claim/evidence gap | `mitigated` | maintainers | `PR-704` | `CONF-007` | Public “complete/conformant” language can outrun the actual evidence level and formal certification status | Claim authority is established; the final release wording audit remains assigned to PR-704. |
-| `F-028` | `P3` | Verified source finding | `open` | maintainers | `PR-304`, `PR-704` | `APP-017`, `CONF-008` | Error variants and convenience APIs sometimes use misleading or asymmetric high-level names | — |
+| `F-028` | `P3` | Verified source finding | `open` | maintainers | `PR-704` | `APP-017`, `CONF-008` | Error variants and convenience APIs sometimes use misleading or asymmetric high-level names | — |
 | `F-029` | `P3` | Evidence/maintenance gap | `open` | maintainers | `PR-704` | `CONF-008` | Python/facade/CLI feature and error parity are not maintained from one capability manifest | — |
 
 ## Linked issue follow-ups

@@ -7,7 +7,7 @@
     "as_of": "2026-08-23",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 53
+    "test_count": 54
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -1277,9 +1277,13 @@
         },
         {
           "path": "crates/rusty-modbus-server/src/handler.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/store/mod.rs"
         }
       ],
       "test_ids": [
+        "spec_custom_functions",
         "spec_fc07_exception_status",
         "spec_fc08_diagnostics",
         "spec_fc0b_event_counter",
@@ -4035,6 +4039,14 @@
       "category": null
     },
     {
+      "id": "spec_custom_functions",
+      "path": "crates/rusty-modbus-conformance/tests/spec_custom_functions.rs",
+      "requirement_ids": [
+        "APP-017"
+      ],
+      "category": null
+    },
+    {
       "id": "spec_encode_validation",
       "path": "crates/rusty-modbus-conformance/tests/spec_encode_validation.rs",
       "requirement_ids": [
@@ -5028,7 +5040,8 @@
       "title": "Custom function codes decode but have no server extension hook; all are returned as Illegal Function",
       "priority": "P2",
       "confidence": "Verified source finding",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by the defaulted DataStore custom-function hook and direct tests for context, bounds, exceptions, default Illegal Function behavior, dispatch isolation, concurrency, MBAP identity, and panic cleanup.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-304"
@@ -5258,7 +5271,6 @@
       "status": "open",
       "owner": "maintainers",
       "primary_closure_packages": [
-        "PR-304",
         "PR-704"
       ],
       "requirement_ids": [

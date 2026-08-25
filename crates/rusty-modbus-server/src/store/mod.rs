@@ -1,6 +1,6 @@
 //! Data store abstraction for the four Modbus data tables, plus optional
-//! compound-register, file-record, FIFO-queue, and serial-line-diagnostic
-//! capabilities.
+//! compound-register, file-record, FIFO-queue, serial-line-diagnostic, and
+//! custom-function capabilities.
 
 mod bits;
 pub mod memory;
@@ -9,7 +9,7 @@ use std::future::Future;
 
 use rusty_modbus_types::{
     DiagnosticSubFunction, ExceptionCode, MAX_FIFO_VALUES, MAX_PDU_SIZE, MAX_READ_COILS,
-    MAX_READ_DISCRETE_INPUTS, MAX_READ_REGISTERS, MAX_WRITE_COILS, MAX_WRITE_REGISTERS,
+    MAX_READ_DISCRETE_INPUTS, MAX_READ_REGISTERS, MAX_WRITE_COILS, MAX_WRITE_REGISTERS, UnitId,
 };
 
 pub(crate) const MAX_FILE_RECORD_REGISTERS: usize = 122;
@@ -153,9 +153,10 @@ pub(crate) fn pack_registers_be(registers: &[u16], out: &mut [u8]) -> Result<(),
 ///
 /// The eight methods covering the four core data tables (coils, discrete inputs,
 /// holding/input registers) are **required**. Atomic compound operations, file
-/// records, FIFO queues, and the serial-line diagnostics family are **optional**.
-/// Existing implementations keep compiling and opt into only the capabilities
-/// they can implement with the documented semantics.
+/// records, FIFO queues, the serial-line diagnostics family, and non-standard
+/// function codes are **optional**. Existing implementations keep compiling and
+/// opt into only the capabilities they can implement with the documented
+/// semantics.
 pub trait DataStore: Send + Sync {
     // ── Coils (read-write bits) ────────────────────────────────────
 
@@ -415,6 +416,42 @@ pub trait DataStore: Send + Sync {
             }
             pack_registers_be(&values[..count], out)?;
             Ok(count)
+        }
+    }
+
+    // ── Non-standard function codes — optional capability ──────────
+
+    /// Handle one decoded non-standard function-code request.
+    ///
+    /// `unit_id` is the request Unit Identifier, and `function_code` is the raw
+    /// non-standard code from that request.
+    ///
+    /// `request_data` excludes the function-code byte and contains at most
+    /// `MAX_PDU_SIZE - 1` bytes. `response_data` is exactly
+    /// `MAX_PDU_SIZE - 1` bytes and carries only vendor response data. Write the
+    /// response bytes at the start of that buffer and return their initialized
+    /// length. The server prepends `function_code`; `Ok(0)` therefore produces a
+    /// one-byte response PDU.
+    ///
+    /// A returned length above the buffer size becomes
+    /// [`ExceptionCode::ServerDeviceFailure`]. Returning `Err(code)` produces a
+    /// standard exception response for `function_code`. Broadcast and standard
+    /// function requests do not call this method. The default returns
+    /// [`ExceptionCode::IllegalFunction`].
+    ///
+    /// Implementations are trusted in-process code. Panics and cancellation
+    /// follow the same connection lifecycle as other [`DataStore`] methods; the
+    /// server does not add isolation or a timeout around this call.
+    fn handle_custom_function(
+        &self,
+        unit_id: UnitId,
+        function_code: u8,
+        request_data: &[u8],
+        response_data: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ExceptionCode>> + Send {
+        async move {
+            let _ = (unit_id, function_code, request_data, response_data);
+            Err(ExceptionCode::IllegalFunction)
         }
     }
 

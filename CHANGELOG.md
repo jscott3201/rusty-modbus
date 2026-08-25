@@ -20,6 +20,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added defaulted atomic FC 0x16/0x17 `DataStore` hooks and matching optional
   Python store callbacks. Existing custom stores still compile and return Illegal
   Function for these operations until they implement the new capability.
+- Added a bounded Rust `DataStore::handle_custom_function` hook for non-standard
+  function codes. Existing stores keep the Illegal Function default; the hook is
+  not exposed through Python, the CLI, or the simulator.
 
 ### Changed
 
