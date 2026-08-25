@@ -23,6 +23,9 @@ pub use assembler::{
 pub use config::{ResolvedRtuConfig, RtuConfig, RtuSerialFormat, RtuTimingMode, StrictRtuConfig};
 pub use error::{RtuConfigError, RtuError};
 pub use rtu_tcp::{RtuOverTcpTransport, RtuTcpRecvStream, RtuTcpSink};
+pub use rusty_modbus_frame::rtu_tcp::{
+    ConfiguredRtuOverTcpCodec, RtuOverTcpCodec, RtuOverTcpDirection, RtuOverTcpFramingPolicy,
+};
 #[cfg(feature = "serial")]
 pub use serial::{SerialRecvStream, SerialSink, SerialTransport};
 pub use unit_id::{RtuUnitIdError, RtuUnitIdRole};

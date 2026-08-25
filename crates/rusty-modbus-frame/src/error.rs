@@ -58,6 +58,22 @@ pub enum FrameError {
         actual: u16,
     },
 
+    /// A strict RTU-over-TCP policy cannot derive a frame length for the function form.
+    #[error("indeterminate strict RTU-over-TCP length for function code {function_code:#04X}")]
+    IndeterminateRtuOverTcpFrameLength {
+        /// Function code whose request or response grammar is not length-derivable.
+        function_code: u8,
+    },
+
+    /// A declared strict RTU-over-TCP frame shape exceeds the RTU PDU bound.
+    #[error("invalid strict RTU-over-TCP PDU length: {length} (maximum {maximum})")]
+    InvalidRtuOverTcpFrameLength {
+        /// PDU length implied by the frame's count fields.
+        length: usize,
+        /// Maximum legal PDU length.
+        maximum: usize,
+    },
+
     /// Frame is truncated (not enough bytes).
     #[error("frame truncated")]
     Truncated,

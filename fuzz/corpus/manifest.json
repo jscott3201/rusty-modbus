@@ -241,7 +241,7 @@
       ],
       "class": "regression",
       "source": "Exact first-valid-CRC-prefix regression from spec_parser_resilience.rs.",
-      "contract": "The current extension policy emits the four-byte valid prefix and does not claim a stricter boundary.",
+      "contract": "Compatibility framing emits the four-byte valid prefix; strict request and response decoders do not fall back to compatibility scanning.",
       "sha256": "1cdbe3982ced4b41f3dc1ec5c7b4abb5fc6c985a831b8ae0141e12643e163f98"
     },
     {
@@ -252,7 +252,7 @@
       ],
       "class": "regression",
       "source": "Deterministic 256-byte CRC-miss generator from spec_parser_resilience.rs.",
-      "contract": "An exact-maximum CRC miss returns None and retains exactly the current bounded maximum.",
+      "contract": "An exact-maximum CRC miss makes a terminal framing-error decision without waiting for another byte.",
       "sha256": "00a342e21afa4c6860b6d0998c524aaac6eb996970ff1b2b92caaaa603fd76e0"
     },
     {

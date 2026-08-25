@@ -35,6 +35,20 @@ Enable the crate's `serial` feature for physical ports. Through the
 `rusty-modbus` facade, use `rtu-serial`; the smaller `rtu` feature does not pull
 in `tokio-serial`.
 
+## RTU-over-TCP framing
+
+`RtuOverTcpTransport::connect` retains compatibility first-valid-CRC-prefix
+framing. Use `connect_with_framing_policy` with `FunctionAwareStrict` to derive
+one incoming response boundary for supported standard forms. Strict mode is
+direction-aware, length-only framing: PDU semantic validation remains in the
+codec/client layers. Decoder errors terminate the connection and do not trigger
+byte discard or resynchronization. The facade re-exports the policy, direction,
+and configured codec types through `rusty_modbus::rtu` when the `rtu`/`rtu-tcp`
+feature is enabled.
+
+RTU-over-TCP remains a project extension, not Modbus/TCP or physical RTU. See
+[ADR 0004](../../docs/adr/0004-rtu-over-tcp-framing-policy.md).
+
 The [physical RTU client](../../docs/conformance/ledger.md#profile-physical-rtu-client)
 retains listed receive-framing and legacy compatibility deviations. A first-party
 [physical RTU responder](../../docs/conformance/ledger.md#profile-physical-rtu-responder)

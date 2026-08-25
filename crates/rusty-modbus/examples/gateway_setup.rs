@@ -11,14 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = GatewayConfig {
         tcp_listen: "0.0.0.0:5020".parse()?,
         routes: vec![
-            RouteEntry {
-                unit_id_range: 1..=10,
-                backend_addr: "192.168.1.100:5020".parse()?,
-            },
-            RouteEntry {
-                unit_id_range: 11..=20,
-                backend_addr: "192.168.1.101:5020".parse()?,
-            },
+            RouteEntry::new(1..=10, "192.168.1.100:5020".parse()?),
+            RouteEntry::new(11..=20, "192.168.1.101:5020".parse()?),
         ],
         serial_timeout: Duration::from_secs(1),
         ..GatewayConfig::default()

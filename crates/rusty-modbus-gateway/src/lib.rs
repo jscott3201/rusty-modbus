@@ -17,3 +17,4 @@ pub use config::{GatewayConfig, RouteEntry};
 pub use error::GatewayError;
 pub use gateway::ModbusGateway;
 pub use routing::RouteTable;
+pub use rusty_modbus_rtu::RtuOverTcpFramingPolicy;

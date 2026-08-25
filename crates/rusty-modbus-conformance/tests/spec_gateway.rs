@@ -135,14 +135,8 @@ fn spec_7_gateway_target_failed() {
 fn routing_resolve_within_range() {
     use rusty_modbus_gateway::config::RouteEntry;
     let table = RouteTable::new(vec![
-        RouteEntry {
-            unit_id_range: 1..=10,
-            backend_addr: "127.0.0.1:5001".parse().unwrap(),
-        },
-        RouteEntry {
-            unit_id_range: 11..=20,
-            backend_addr: "127.0.0.1:5002".parse().unwrap(),
-        },
+        RouteEntry::new(1..=10, "127.0.0.1:5001".parse().unwrap()),
+        RouteEntry::new(11..=20, "127.0.0.1:5002".parse().unwrap()),
     ]);
 
     assert_eq!(table.resolve(1), Some("127.0.0.1:5001".parse().unwrap()));
@@ -158,14 +152,8 @@ fn routing_all_backends_deduplicates() {
     use rusty_modbus_gateway::config::RouteEntry;
     let addr = "127.0.0.1:5001".parse().unwrap();
     let table = RouteTable::new(vec![
-        RouteEntry {
-            unit_id_range: 1..=10,
-            backend_addr: addr,
-        },
-        RouteEntry {
-            unit_id_range: 11..=20,
-            backend_addr: addr,
-        },
+        RouteEntry::new(1..=10, addr),
+        RouteEntry::new(11..=20, addr),
     ]);
     let backends: Vec<_> = table.all_backends().collect();
     assert_eq!(
@@ -180,13 +168,7 @@ fn routing_all_backends_deduplicates() {
 fn routing_overlapping_ranges_rejected() {
     use rusty_modbus_gateway::config::RouteEntry;
     let _ = RouteTable::new(vec![
-        RouteEntry {
-            unit_id_range: 1..=10,
-            backend_addr: "127.0.0.1:5001".parse().unwrap(),
-        },
-        RouteEntry {
-            unit_id_range: 5..=15,
-            backend_addr: "127.0.0.1:5002".parse().unwrap(),
-        },
+        RouteEntry::new(1..=10, "127.0.0.1:5001".parse().unwrap()),
+        RouteEntry::new(5..=15, "127.0.0.1:5002".parse().unwrap()),
     ]);
 }

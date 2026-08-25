@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use rusty_modbus_frame::frame::FrameHeader;
+use rusty_modbus_rtu::RtuOverTcpFramingPolicy;
 use rusty_modbus_rtu::rtu_tcp::RtuOverTcpTransport;
 use rusty_modbus_tcp::TcpConfig;
 use rusty_modbus_tcp::config::TcpServerConfig;
@@ -148,7 +149,7 @@ async fn handle_tcp_connection(
         }
 
         // Route by unit ID.
-        let Some(backend_addr) = route_table.resolve(unit_id) else {
+        let Some(route) = route_table.resolve_route(unit_id) else {
             // No route → GatewayPathUnavailable (0x0A).
             let exc = translator::make_exception_frame(
                 txn_id,
@@ -161,6 +162,8 @@ async fn handle_tcp_connection(
             }
             continue;
         };
+        let backend_addr = route.backend_addr;
+        let framing_policy = route.rtu_over_tcp_framing_policy;
 
         // Connect to backend RTU-over-TCP device.
         let tcp_config = TcpConfig {
@@ -176,6 +179,7 @@ async fn handle_tcp_connection(
         let resp_frame = forward_to_backend(
             backend_addr,
             tcp_config,
+            framing_policy,
             rtu_frame,
             serial_timeout,
             txn_id,
@@ -193,6 +197,7 @@ async fn handle_tcp_connection(
 async fn forward_to_backend(
     backend_addr: SocketAddr,
     tcp_config: TcpConfig,
+    framing_policy: RtuOverTcpFramingPolicy,
     rtu_frame: rusty_modbus_frame::Frame,
     serial_timeout: std::time::Duration,
     txn_id: TransactionId,
@@ -200,7 +205,8 @@ async fn forward_to_backend(
     fc: u8,
 ) -> rusty_modbus_frame::Frame {
     let Ok((mut rtu_sink, mut rtu_stream)) =
-        RtuOverTcpTransport::connect(backend_addr, tcp_config).await
+        RtuOverTcpTransport::connect_with_framing_policy(backend_addr, tcp_config, framing_policy)
+            .await
     else {
         return translator::make_exception_frame(
             txn_id,

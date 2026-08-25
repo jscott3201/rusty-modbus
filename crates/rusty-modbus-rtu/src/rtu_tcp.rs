@@ -10,7 +10,9 @@ use std::time::Duration;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rusty_modbus_frame::frame::Frame;
-use rusty_modbus_frame::rtu_tcp::RtuOverTcpCodec;
+use rusty_modbus_frame::rtu_tcp::{
+    ConfiguredRtuOverTcpCodec, RtuOverTcpCodec, RtuOverTcpDirection, RtuOverTcpFramingPolicy,
+};
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_tcp::{TcpConfig, TransportError};
 use tokio::net::TcpStream;
@@ -19,8 +21,8 @@ use tokio_util::codec::Framed;
 
 use crate::error::RtuError;
 
-type InnerSink = SplitSink<Framed<TcpStream, RtuOverTcpCodec>, Frame>;
-type InnerStream = SplitStream<Framed<TcpStream, RtuOverTcpCodec>>;
+type InnerSink = SplitSink<Framed<TcpStream, ConfiguredRtuOverTcpCodec>, Frame>;
+type InnerStream = SplitStream<Framed<TcpStream, ConfiguredRtuOverTcpCodec>>;
 
 /// RTU-over-TCP transport factory.
 ///
@@ -39,6 +41,29 @@ impl RtuOverTcpTransport {
         addr: SocketAddr,
         config: TcpConfig,
     ) -> Result<(RtuTcpSink, RtuTcpRecvStream), RtuError> {
+        Self::connect_with_framing_policy(
+            addr,
+            config,
+            RtuOverTcpFramingPolicy::CrcScanCompatibility,
+        )
+        .await
+    }
+
+    /// Connect with an explicit incoming RTU-over-TCP framing policy.
+    ///
+    /// Incoming frames are configured as [`RtuOverTcpDirection::Response`]. A
+    /// decoder error is terminal for the receive stream; the transport does not
+    /// discard bytes or attempt to resynchronize the connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RtuError::Timeout`] if the connection cannot be established
+    /// within `config.connect_timeout`, or [`RtuError::Io`] on socket errors.
+    pub async fn connect_with_framing_policy(
+        addr: SocketAddr,
+        config: TcpConfig,
+        policy: RtuOverTcpFramingPolicy,
+    ) -> Result<(RtuTcpSink, RtuTcpRecvStream), RtuError> {
         let stream = timeout(config.connect_timeout, TcpStream::connect(addr))
             .await
             .map_err(|_| RtuError::Timeout)?
@@ -46,7 +71,8 @@ impl RtuOverTcpTransport {
 
         configure_socket(&stream, &config)?;
 
-        let framed = Framed::new(stream, RtuOverTcpCodec);
+        let codec = RtuOverTcpCodec::with_policy(policy, RtuOverTcpDirection::Response);
+        let framed = Framed::new(stream, codec);
         let (sink, recv_stream) = framed.split();
 
         Ok((
