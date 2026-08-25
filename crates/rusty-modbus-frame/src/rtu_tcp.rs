@@ -28,7 +28,8 @@
 //! - FC 0x18: request `P=3`, response `P=3+u16_byte_count`.
 //! - FC 0x2B / MEI 0x0E: request `P=4`; response starts at `P=7` and adds
 //!   `2+object_value_length` for each declared object.
-//! - Exception responses use `P=2`.
+//! - Exception responses use `P=2` when their base function is one of the
+//!   standard functions supported above.
 //!
 //! Custom/reserved functions, exception-marked requests, other MEI types, and
 //! any derived `P>253` are terminal strict errors. This grammar determines
@@ -219,8 +220,14 @@ fn strict_pdu_length(
     let function_code = src[1];
     if function_code & 0x80 != 0 {
         return match direction {
-            RtuOverTcpDirection::Response => Ok(Some(2)),
-            RtuOverTcpDirection::Request => Err(indeterminate(function_code)),
+            RtuOverTcpDirection::Response
+                if strict_supports_standard_base_function(function_code & 0x7F) =>
+            {
+                Ok(Some(2))
+            }
+            RtuOverTcpDirection::Request | RtuOverTcpDirection::Response => {
+                Err(indeterminate(function_code))
+            }
         };
     }
 
@@ -243,6 +250,18 @@ fn strict_pdu_length(
         (0x2B, RtuOverTcpDirection::Response) => mei_response_pdu_length(src),
         _ => Err(indeterminate(function_code)),
     }
+}
+
+const fn strict_supports_standard_base_function(function_code: u8) -> bool {
+    matches!(
+        function_code,
+        0x01..=0x08
+            | 0x0B
+            | 0x0C
+            | 0x0F..=0x11
+            | 0x14..=0x18
+            | 0x2B
+    )
 }
 
 fn pdu_length_from_u8_count(
@@ -627,7 +646,7 @@ mod tests {
             &[
                 0x2B, 0x0E, 1, 1, 0, 0, 2, 0, 3, b'a', b'b', b'c', 1, 1, b'z',
             ],
-            &[0xE5, 2],
+            &[0x83, 2],
         ];
 
         for &pdu in forms {
@@ -648,6 +667,28 @@ mod tests {
             assert_strict_decodes(RtuOverTcpDirection::Request, &pdu);
             assert_strict_decodes(RtuOverTcpDirection::Response, &pdu);
         }
+    }
+
+    #[test]
+    fn strict_rejects_custom_exception_while_compatibility_accepts_it() {
+        let raw = make_rtu_frame(1, &[0xE5, 2]);
+        let mut strict_source = BytesMut::from(&raw[..]);
+
+        assert!(matches!(
+            strict(RtuOverTcpDirection::Response).decode(&mut strict_source),
+            Err(FrameError::IndeterminateRtuOverTcpFrameLength {
+                function_code: 0xE5
+            })
+        ));
+        assert_eq!(&strict_source[..], &raw);
+
+        let mut compatibility_source = BytesMut::from(&raw[..]);
+        let frame = RtuOverTcpCodec
+            .decode(&mut compatibility_source)
+            .unwrap()
+            .unwrap();
+        assert_eq!(&frame.pdu[..], &[0xE5, 2]);
+        assert!(compatibility_source.is_empty());
     }
 
     #[test]

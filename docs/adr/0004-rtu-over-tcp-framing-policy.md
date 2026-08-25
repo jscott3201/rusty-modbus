@@ -23,9 +23,11 @@ derived boundary. The framed connection must be discarded after any decoder
 error; the codec does not discard bytes, scan for a later boundary, or define
 resynchronization.
 
-Strict framing derives lengths for the fixed, byte-count, word-count, exception,
-and MEI 0x0E forms listed in the RTU-over-TCP API documentation. Length derivation
-does not validate quantities, values, control fields, or other PDU semantics.
+Strict framing derives lengths for the fixed, byte-count, word-count, MEI 0x0E,
+and exception forms listed in the RTU-over-TCP API documentation. An exception
+is length-derivable only when its base function is one of the standard functions
+supported by the strict grammar. Length derivation does not validate quantities,
+values, control fields, or other PDU semantics.
 
 ## Unsupported strict forms
 

@@ -254,9 +254,10 @@ CRC-valid-prefix rule. `RtuOverTcpCodec::with_policy` requires an incoming
 Strict supports FC 0x01-0x04 request/fixed and response/byte-count forms; fixed
 FC 0x05-0x07, selected fixed-word FC 0x08 diagnostics, and FC 0x0B; byte-count
 FC 0x0C, 0x0F, 0x10, 0x11, 0x14, 0x15, and 0x17 forms; fixed FC 0x16; FC 0x18
-with its 16-bit response count; exception responses; and bounded FC 0x2B / MEI
-0x0E object sequences. The exact request/response lengths are documented on the
-policy API and in [ADR 0004](adr/0004-rtu-over-tcp-framing-policy.md).
+with its 16-bit response count; exception responses for those supported standard
+base functions; and bounded FC 0x2B / MEI 0x0E object sequences. The exact
+request/response lengths are documented on the policy API and in
+[ADR 0004](adr/0004-rtu-over-tcp-framing-policy.md).
 
 Strict rejects FC 0x08 Return Query Data, Force Listen Only Mode, unknown
 diagnostic sub-functions, custom/reserved functions, exception-marked requests,

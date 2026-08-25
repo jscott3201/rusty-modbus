@@ -244,6 +244,25 @@ fn rtu_tcp_strict_bounds_and_terminal_errors() {
         )
     ));
 
+    let custom_exception = make_rtu_frame(1, &[0xE5, 2]);
+    let mut strict_custom_exception = BytesMut::from(&custom_exception[..]);
+    assert!(matches!(
+        strict_rtu_tcp(RtuOverTcpDirection::Response).decode(&mut strict_custom_exception),
+        Err(
+            rusty_modbus_frame::FrameError::IndeterminateRtuOverTcpFrameLength {
+                function_code: 0xE5
+            }
+        )
+    ));
+
+    let mut compatibility_custom_exception = BytesMut::from(&custom_exception[..]);
+    let decoded = RtuOverTcpCodec
+        .decode(&mut compatibility_custom_exception)
+        .unwrap()
+        .unwrap();
+    assert_eq!(&decoded.pdu[..], &[0xE5, 2]);
+    assert!(compatibility_custom_exception.is_empty());
+
     let query = make_rtu_frame(1, &[0x08, 0, 0, 0, 1]);
     let mut query = BytesMut::from(&query[..]);
     assert!(matches!(
