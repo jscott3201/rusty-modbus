@@ -5,9 +5,12 @@
 
 use bytes::{Bytes, BytesMut};
 use rusty_modbus_frame::Frame;
-use rusty_modbus_frame::crc::crc16;
+use rusty_modbus_frame::crc::{crc16, verify_crc};
 use rusty_modbus_frame::frame::FrameHeader;
-use rusty_modbus_types::MAX_PDU_SIZE;
+use rusty_modbus_frame::rtu_tcp::{
+    ConfiguredRtuOverTcpCodec, RtuOverTcpCodec, RtuOverTcpDirection, RtuOverTcpFramingPolicy,
+};
+use rusty_modbus_types::{MAX_PDU_SIZE, MAX_RTU_ADU_SIZE};
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Build a valid RTU frame.
@@ -17,6 +20,10 @@ fn make_rtu_frame(unit_id: u8, pdu: &[u8]) -> Vec<u8> {
     let crc = crc16(&buf);
     buf.extend_from_slice(&crc.to_le_bytes());
     buf
+}
+
+fn strict_rtu_tcp(direction: RtuOverTcpDirection) -> ConfiguredRtuOverTcpCodec {
+    RtuOverTcpCodec::with_policy(RtuOverTcpFramingPolicy::FunctionAwareStrict, direction)
 }
 
 // ── RTU Codec ──────────────────────────────────────────────────────
@@ -160,6 +167,144 @@ fn rtu_tcp_exception_response() {
 
     let frame = codec.decode(&mut buf).unwrap().unwrap();
     assert_eq!(&frame.pdu[..], &[0x83, 0x02]);
+}
+
+#[test]
+fn rtu_tcp_strict_supported_length_grammars() {
+    let forms: &[(RtuOverTcpDirection, &[u8])] = &[
+        (RtuOverTcpDirection::Request, &[0x03, 0, 0, 0, 1]),
+        (RtuOverTcpDirection::Response, &[0x03, 2, 0, 1]),
+        (RtuOverTcpDirection::Request, &[0x10, 0, 0, 0, 1, 2, 0, 1]),
+        (RtuOverTcpDirection::Response, &[0x18, 0, 2, 0, 1]),
+        (RtuOverTcpDirection::Response, &[0x83, 2]),
+        (RtuOverTcpDirection::Request, &[0x2B, 0x0E, 1, 0]),
+        (
+            RtuOverTcpDirection::Response,
+            &[0x2B, 0x0E, 1, 1, 0, 0, 1, 0, 3, b'a', b'b', b'c'],
+        ),
+    ];
+
+    for &(direction, pdu) in forms {
+        let raw = make_rtu_frame(1, pdu);
+        let mut source = BytesMut::from(&raw[..]);
+        let decoded = strict_rtu_tcp(direction)
+            .decode(&mut source)
+            .unwrap()
+            .unwrap();
+        assert_eq!(&decoded.pdu[..], pdu);
+        assert!(source.is_empty());
+    }
+}
+
+#[test]
+fn rtu_tcp_strict_uses_derived_boundary_under_fragmentation_and_coalescing() {
+    let first = frame_with_early_crc_prefix();
+    let second = make_rtu_frame(2, &[0x07, 0xA5]);
+    assert!((4..first.len()).any(|length| verify_crc(&first[..length])));
+    let mut source = BytesMut::from(&first[..first.len() - 1]);
+    let mut codec = strict_rtu_tcp(RtuOverTcpDirection::Response);
+
+    assert!(codec.decode(&mut source).unwrap().is_none());
+    source.extend_from_slice(&first[first.len() - 1..]);
+    source.extend_from_slice(&second);
+
+    let decoded = codec.decode(&mut source).unwrap().unwrap();
+    assert_eq!(&decoded.pdu[..], &first[1..first.len() - 2]);
+    assert_eq!(&source[..], &second);
+}
+
+#[test]
+fn rtu_tcp_strict_bounds_and_terminal_errors() {
+    let mut maximum_pdu = vec![0x14, 251];
+    maximum_pdu.resize(MAX_PDU_SIZE, 0xA5);
+    let maximum = make_rtu_frame(1, &maximum_pdu);
+    assert_eq!(maximum.len(), MAX_RTU_ADU_SIZE);
+    let mut source = BytesMut::from(&maximum[..]);
+    assert!(
+        strict_rtu_tcp(RtuOverTcpDirection::Response)
+            .decode(&mut source)
+            .unwrap()
+            .is_some()
+    );
+
+    let mut overflow = BytesMut::from(&[1, 0x14, 252][..]);
+    assert!(matches!(
+        strict_rtu_tcp(RtuOverTcpDirection::Response).decode(&mut overflow),
+        Err(rusty_modbus_frame::FrameError::InvalidRtuOverTcpFrameLength { .. })
+    ));
+
+    let custom = make_rtu_frame(1, &[0x41, 0, 0]);
+    let mut custom = BytesMut::from(&custom[..]);
+    assert!(matches!(
+        strict_rtu_tcp(RtuOverTcpDirection::Request).decode(&mut custom),
+        Err(
+            rusty_modbus_frame::FrameError::IndeterminateRtuOverTcpFrameLength {
+                function_code: 0x41
+            }
+        )
+    ));
+
+    let custom_exception = make_rtu_frame(1, &[0xE5, 2]);
+    let mut strict_custom_exception = BytesMut::from(&custom_exception[..]);
+    assert!(matches!(
+        strict_rtu_tcp(RtuOverTcpDirection::Response).decode(&mut strict_custom_exception),
+        Err(
+            rusty_modbus_frame::FrameError::IndeterminateRtuOverTcpFrameLength {
+                function_code: 0xE5
+            }
+        )
+    ));
+
+    let mut compatibility_custom_exception = BytesMut::from(&custom_exception[..]);
+    let decoded = RtuOverTcpCodec
+        .decode(&mut compatibility_custom_exception)
+        .unwrap()
+        .unwrap();
+    assert_eq!(&decoded.pdu[..], &[0xE5, 2]);
+    assert!(compatibility_custom_exception.is_empty());
+
+    let query = make_rtu_frame(1, &[0x08, 0, 0, 0, 1]);
+    let mut query = BytesMut::from(&query[..]);
+    assert!(matches!(
+        strict_rtu_tcp(RtuOverTcpDirection::Response).decode(&mut query),
+        Err(
+            rusty_modbus_frame::FrameError::IndeterminateRtuOverTcpFrameLength {
+                function_code: 0x08
+            }
+        )
+    ));
+
+    let mut bad_crc = maximum;
+    let last = bad_crc.len() - 1;
+    bad_crc[last] ^= 0x80;
+    let mut bad_crc = BytesMut::from(&bad_crc[..]);
+    assert!(matches!(
+        strict_rtu_tcp(RtuOverTcpDirection::Response).decode(&mut bad_crc),
+        Err(rusty_modbus_frame::FrameError::CrcMismatch { .. })
+    ));
+}
+
+#[test]
+fn rtu_tcp_strict_is_length_only_not_semantic_validation() {
+    // FC03 response byte counts must normally be even; framing only uses the count.
+    let raw = make_rtu_frame(1, &[0x03, 1, 0xAA]);
+    let mut source = BytesMut::from(&raw[..]);
+    let decoded = strict_rtu_tcp(RtuOverTcpDirection::Response)
+        .decode(&mut source)
+        .unwrap()
+        .unwrap();
+    assert_eq!(&decoded.pdu[..], &[0x03, 1, 0xAA]);
+}
+
+fn frame_with_early_crc_prefix() -> Vec<u8> {
+    for value in 0..=u16::MAX {
+        let [high, low] = value.to_be_bytes();
+        let raw = make_rtu_frame(1, &[0x03, 4, high, low, 0x12, 0x34]);
+        if (4..raw.len()).any(|length| verify_crc(&raw[..length])) {
+            return raw;
+        }
+    }
+    unreachable!("the bounded search contains an early CRC-valid prefix");
 }
 
 #[test]

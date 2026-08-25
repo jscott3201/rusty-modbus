@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
+use rusty_modbus_rtu::RtuOverTcpFramingPolicy;
 use rusty_modbus_tcp::config::TcpServerConfig;
 
 /// Gateway configuration.
@@ -43,4 +44,25 @@ pub struct RouteEntry {
     pub unit_id_range: RangeInclusive<u8>,
     /// Backend RTU-over-TCP address (for CI testing; serial path in production).
     pub backend_addr: SocketAddr,
+    /// Incoming response framing policy for this RTU-over-TCP backend.
+    pub rtu_over_tcp_framing_policy: RtuOverTcpFramingPolicy,
+}
+
+impl RouteEntry {
+    /// Create a route using compatibility CRC-scan framing.
+    #[must_use]
+    pub fn new(unit_id_range: RangeInclusive<u8>, backend_addr: SocketAddr) -> Self {
+        Self {
+            unit_id_range,
+            backend_addr,
+            rtu_over_tcp_framing_policy: RtuOverTcpFramingPolicy::CrcScanCompatibility,
+        }
+    }
+
+    /// Select the incoming RTU-over-TCP response framing policy for this route.
+    #[must_use]
+    pub fn with_rtu_over_tcp_framing_policy(mut self, policy: RtuOverTcpFramingPolicy) -> Self {
+        self.rtu_over_tcp_framing_policy = policy;
+        self
+    }
 }

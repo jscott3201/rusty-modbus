@@ -5,6 +5,7 @@
 use bytes::Bytes;
 use rusty_modbus_codec::{ResponsePdu, decode_response};
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
+use rusty_modbus_rtu::RtuOverTcpFramingPolicy;
 use rusty_modbus_rtu::config::RtuConfig;
 use rusty_modbus_rtu::rtu_tcp::RtuOverTcpTransport;
 use rusty_modbus_tcp::config::TcpConfig;
@@ -124,6 +125,29 @@ async fn rtu_over_tcp_full_modbus_decode() {
         }
         other => panic!("unexpected: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn rtu_over_tcp_strict_response_framing() {
+    let addr = start_rtu_tcp_modbus_server().await;
+    let config = TcpConfig {
+        connect_timeout: Duration::from_secs(2),
+        ..TcpConfig::default()
+    };
+
+    let (mut sink, mut stream) = RtuOverTcpTransport::connect_with_framing_policy(
+        addr,
+        config,
+        RtuOverTcpFramingPolicy::FunctionAwareStrict,
+    )
+    .await
+    .unwrap();
+
+    sink.send(make_rtu_frame(0x01, &[0x03, 0, 0, 0, 2]))
+        .await
+        .unwrap();
+    let response = stream.recv().await.unwrap();
+    assert_eq!(&response.pdu[..], &[0x03, 0x04, 0xAB, 0xCD, 0x12, 0x34]);
 }
 
 #[tokio::test]

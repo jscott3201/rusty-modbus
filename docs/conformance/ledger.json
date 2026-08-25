@@ -2862,14 +2862,15 @@
         },
         {
           "path": "crates/rusty-modbus-rtu/src/rtu_tcp.rs"
+        },
+        {
+          "path": "docs/adr/0004-rtu-over-tcp-framing-policy.md"
         }
       ],
-      "test_ids": [],
-      "evidence_gap": {
-        "detail": "No direct conformance test is mapped in the current inventory.",
-        "owner": "maintainers",
-        "follow_up": "PR-104, PR-704"
-      },
+      "test_ids": [
+        "spec_rtu_framing"
+      ],
+      "evidence_gap": null,
       "assessments": [
         {
           "profile": "rtu-over-tcp-extension",
@@ -2902,11 +2903,7 @@
         "spec_rtu_framing",
         "spec_rtu_transport"
       ],
-      "evidence_gap": {
-        "detail": "Fixed-seed chunk schedules cover unambiguous frames; boundary selection and recovery policy remain assigned to PR-104.",
-        "owner": "maintainers",
-        "follow_up": "PR-104"
-      },
+      "evidence_gap": null,
       "assessments": [
         {
           "profile": "rtu-over-tcp-extension",
@@ -2938,17 +2935,13 @@
         "spec_parser_resilience",
         "spec_rtu_framing"
       ],
-      "evidence_gap": {
-        "detail": "The codec accepts the first valid CRC prefix among candidate lengths.",
-        "owner": "maintainers",
-        "follow_up": "PR-104"
-      },
+      "evidence_gap": null,
       "assessments": [
         {
           "profile": "rtu-over-tcp-extension",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "The decoder accepts the first valid CRC prefix among candidate frame lengths."
+          "reason": "The default compatibility policy intentionally accepts the first valid CRC prefix. The opt-in direction-aware strict policy prevents shorter-prefix selection for its supported standard forms."
         }
       ]
     },
@@ -2975,17 +2968,12 @@
         "spec_parser_resilience",
         "spec_rtu_framing"
       ],
-      "evidence_gap": {
-        "detail": "An exact-256-byte CRC miss waits for another byte before returning an error.",
-        "owner": "maintainers",
-        "follow_up": "PR-104"
-      },
+      "evidence_gap": null,
       "assessments": [
         {
           "profile": "rtu-over-tcp-extension",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "An exact-256-byte CRC miss waits for another byte before making error progress."
+          "disposition": "supported",
+          "evidence": "implemented"
         }
       ]
     },
@@ -3568,13 +3556,11 @@
         "spec_rtu_framing"
       ],
       "evidence_gap": {
-        "detail": "The timestamp-driven RTU core has bounded event-sequence fuzzing, but physical timestamp-source integration and RTU-over-TCP boundary/recovery policy remain separate work.",
+        "detail": "The timestamp-driven RTU core has bounded event-sequence fuzzing, but physical timestamp-source integration remains separate work.",
         "owner": "maintainers",
-        "follow_up": "PR-102, PR-104",
+        "follow_up": "PR-102",
         "profiles": [
-          "physical-rtu-client",
-          "gateway",
-          "rtu-over-tcp-extension"
+          "physical-rtu-client"
         ]
       },
       "assessments": [
@@ -3602,9 +3588,8 @@
         },
         {
           "profile": "gateway",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "PDU, MBAP, and RTU-over-TCP byte fuzzing is present; the extension boundary/recovery policy remains assigned to PR-104."
+          "disposition": "supported",
+          "evidence": "implemented"
         },
         {
           "profile": "modbus-security",
@@ -3618,9 +3603,8 @@
         },
         {
           "profile": "rtu-over-tcp-extension",
-          "disposition": "compatibility-deviation",
-          "evidence": "implemented",
-          "reason": "Incremental byte fuzzing preserves the current first-valid-CRC and exact-maximum contracts; boundary/recovery policy remains assigned to PR-104."
+          "disposition": "supported",
+          "evidence": "implemented"
         }
       ]
     },
@@ -4369,6 +4353,7 @@
       "path": "crates/rusty-modbus-conformance/tests/spec_rtu_framing.rs",
       "requirement_ids": [
         "CONF-003",
+        "EXT-001",
         "EXT-002",
         "EXT-003",
         "EXT-004",
@@ -5137,7 +5122,8 @@
       "title": "RTU-over-TCP accepts the first valid CRC prefix, leaving a boundary-ambiguity profile that is not explicit",
       "priority": "P2",
       "confidence": "Verified source finding / extension risk",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed by an explicit bounded RTU-over-TCP extension contract: compatibility framing retains first-valid-CRC-prefix behavior but errors on an exact-256-byte miss, while opt-in direction-aware strict framing derives one boundary for supported standard forms and rejects unsupported or malformed shapes without fallback. Unit, conformance, and bounded fuzz evidence are internal only; compatibility retains its documented ambiguity and no interoperability, certification, Modbus/TCP, or physical RTU claim is made.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-104"
@@ -5221,7 +5207,7 @@
       "requirement_ids": [
         "CONF-003"
       ],
-      "status_reason": "Closed for the parser and frame-assembly foundation by fixed-seed properties, five pinned cargo-fuzz targets, a retained manifest corpus, deterministic replay, and bounded scheduling. Physical timestamp-source integration remains outside this evidence, and RTU-over-TCP boundary/recovery policy remains assigned to PR-104."
+      "status_reason": "Closed for the parser and frame-assembly foundation by fixed-seed properties, five pinned cargo-fuzz targets, a retained manifest corpus, deterministic replay, and bounded scheduling. RTU-over-TCP now has explicit compatibility and strict boundary policies under the same bounded stream target; physical timestamp-source integration remains outside this evidence."
     },
     {
       "id": "F-025",

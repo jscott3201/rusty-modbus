@@ -35,10 +35,13 @@ impl RouteTable {
     /// Look up the backend address for a given unit ID.
     #[must_use]
     pub fn resolve(&self, unit_id: u8) -> Option<SocketAddr> {
+        self.resolve_route(unit_id).map(|entry| entry.backend_addr)
+    }
+
+    pub(crate) fn resolve_route(&self, unit_id: u8) -> Option<&RouteEntry> {
         self.entries
             .iter()
-            .find(|e| e.unit_id_range.contains(&unit_id))
-            .map(|e| e.backend_addr)
+            .find(|entry| entry.unit_id_range.contains(&unit_id))
     }
 
     /// Return all backend addresses (for broadcast forwarding).
@@ -65,10 +68,7 @@ mod tests {
     use super::*;
 
     fn entry(range: std::ops::RangeInclusive<u8>, port: u16) -> RouteEntry {
-        RouteEntry {
-            unit_id_range: range,
-            backend_addr: format!("127.0.0.1:{port}").parse().unwrap(),
-        }
+        RouteEntry::new(range, format!("127.0.0.1:{port}").parse().unwrap())
     }
 
     #[test]

@@ -243,6 +243,29 @@ The current capability and evidence inventory includes validation for:
 - FC 0x2B / MEI 0x0E request/response control fields and pagination behavior.
 - PDU length, MBAP framing, RTU CRC, and exception response handling.
 
+RTU-over-TCP is a separately labeled project extension, not Modbus/TCP or
+physical RTU. Bare/default `RtuOverTcpCodec` and
+`RtuOverTcpTransport::connect` use `CrcScanCompatibility`, preserving the first
+CRC-valid-prefix rule. `RtuOverTcpCodec::with_policy` requires an incoming
+`Request`/`Response` direction, while
+`RtuOverTcpTransport::connect_with_framing_policy` fixes incoming direction to
+`Response`. `FunctionAwareStrict` derives one boundary and CRC-checks only there.
+
+Strict supports FC 0x01-0x04 request/fixed and response/byte-count forms; fixed
+FC 0x05-0x07, selected fixed-word FC 0x08 diagnostics, and FC 0x0B; byte-count
+FC 0x0C, 0x0F, 0x10, 0x11, 0x14, 0x15, and 0x17 forms; fixed FC 0x16; FC 0x18
+with its 16-bit response count; exception responses for those supported standard
+base functions; and bounded FC 0x2B / MEI 0x0E object sequences. The exact
+request/response lengths are documented on the policy API and in
+[ADR 0004](adr/0004-rtu-over-tcp-framing-policy.md).
+
+Strict rejects FC 0x08 Return Query Data, Force Listen Only Mode, unknown
+diagnostic sub-functions, custom/reserved functions, exception-marked requests,
+and non-0x0E MEI forms rather than guessing or compatibility-scanning. Framing
+uses only length fields; length-correct semantic errors remain for typed decode
+and validation. Any framing error is terminal for that connection, and malformed
+input at the 256-byte ADU bound errors without waiting for byte 257.
+
 ## Python Package
 
 The Python bindings live in `crates/rusty-modbus-python` and are excluded from

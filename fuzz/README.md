@@ -33,7 +33,7 @@ metadata, and every retained corpus hash before a run.
 | `mbap_stream` | `MbapCodec::decode` | Appends bounded chunks, drops each decoded frame, and requires every emitted frame to reduce the retained buffer. A decoder error ends that input. Decoded frames are encoded and decoded once for consistency. |
 | `rtu_assembler` | `RtuFrameAssembler` byte and deadline events | Runs at most 512 four-byte events with explicit timestamps. It covers exact t1.5/t3.5 boundaries, quarantine, stale and early deadlines, timestamp errors, overflow, whole-candidate CRC, and fixed ADU bounds. Emitted ADUs must contain 4 through 256 bytes and pass CRC validation. |
 | `rtu_frame` | `RtuCodec::decode` | Treats at most 257 bytes as one complete candidate ADU. It checks CRC/frame behavior only; it does not model serial reads, t1.5, or t3.5. |
-| `rtu_tcp_stream` | `RtuOverTcpCodec::decode` | Uses the incremental bounds from `mbap_stream` while preserving the current first-valid-CRC-prefix and exact-256-byte CRC-miss behavior. It does not define a stricter extension boundary policy. |
+| `rtu_tcp_stream` | `RtuOverTcpCodec::decode` | Uses the incremental bounds from `mbap_stream` for compatibility framing plus strict request and response framing. Compatibility preserves first-valid-CRC-prefix selection; both policies make a terminal error decision for malformed input at the 256-byte bound. |
 
 The two stream targets interpret their input prefix as a chunk schedule. The
 first byte selects one through sixteen schedule bytes. Each schedule byte maps
@@ -103,6 +103,7 @@ The assembler target accepts synthetic trustworthy timestamps; it does not
 obtain timestamps from `SerialTransport`, reconstruct timing hidden in reads, or
 verify OS/USB chunk behavior. This package also excludes transport recovery
 policy, clients, servers, network I/O, gateways, TLS, and Python bindings.
-RTU-over-TCP boundary/recovery policy remains assigned to PR-104. Fuzz execution
-is internal repository evidence; it does not establish physical interoperability
-or formal conformance status.
+RTU-over-TCP decoder errors terminate the fuzz input because the transport does
+not define stream resynchronization after an error. Fuzz execution is internal
+repository evidence; it does not establish physical interoperability or formal
+conformance status.

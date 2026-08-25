@@ -669,17 +669,14 @@ fn rtu_over_tcp_first_valid_crc_prefix_contract_is_preserved() {
 }
 
 #[test]
-fn rtu_over_tcp_exact_maximum_crc_miss_contract_is_preserved() {
+fn rtu_over_tcp_exact_maximum_crc_miss_is_terminal() {
     let exact_maximum = crc_miss_buffer(MAX_RTU_ADU_SIZE);
     let mut source = BytesMut::from(exact_maximum.as_slice());
-    assert!(RtuOverTcpCodec.decode(&mut source).unwrap().is_none());
-    assert_eq!(source.len(), MAX_RTU_ADU_SIZE);
-
-    source.extend_from_slice(&[0]);
     assert!(matches!(
         RtuOverTcpCodec.decode(&mut source),
         Err(FrameError::Truncated)
     ));
+    assert_eq!(source.len(), MAX_RTU_ADU_SIZE);
 }
 
 #[test]

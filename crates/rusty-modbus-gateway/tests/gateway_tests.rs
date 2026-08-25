@@ -9,7 +9,7 @@ use bytes::Bytes;
 use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient};
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_frame::rtu_tcp::RtuOverTcpCodec;
-use rusty_modbus_gateway::{GatewayConfig, ModbusGateway, RouteEntry};
+use rusty_modbus_gateway::{GatewayConfig, ModbusGateway, RouteEntry, RtuOverTcpFramingPolicy};
 use rusty_modbus_types::{ExceptionCode, UnitId};
 
 use futures_util::{SinkExt, StreamExt};
@@ -74,10 +74,7 @@ async fn gateway_routes_request_to_backend() {
 
     let gw_config = GatewayConfig {
         tcp_listen: "127.0.0.1:0".parse().unwrap(),
-        routes: vec![RouteEntry {
-            unit_id_range: 1..=10,
-            backend_addr: device_addr,
-        }],
+        routes: vec![RouteEntry::new(1..=10, device_addr)],
         serial_timeout: Duration::from_secs(2),
         ..GatewayConfig::default()
     };
@@ -96,15 +93,37 @@ async fn gateway_routes_request_to_backend() {
 }
 
 #[tokio::test]
+async fn gateway_propagates_strict_backend_framing_policy() {
+    let device_addr = start_rtu_device(vec![0xCAFE]).await;
+    let route = RouteEntry::new(1..=10, device_addr)
+        .with_rtu_over_tcp_framing_policy(RtuOverTcpFramingPolicy::FunctionAwareStrict);
+    let gateway = ModbusGateway::start(GatewayConfig {
+        tcp_listen: "127.0.0.1:0".parse().unwrap(),
+        routes: vec![route],
+        serial_timeout: Duration::from_secs(2),
+        ..GatewayConfig::default()
+    })
+    .await
+    .unwrap();
+    let client = ModbusClient::connect(gateway.local_addr(), client_config())
+        .await
+        .unwrap();
+
+    let registers = client
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap();
+
+    assert_eq!(registers, vec![0xCAFE]);
+}
+
+#[tokio::test]
 async fn gateway_returns_path_unavailable_for_unrouted_unit_id() {
     let device_addr = start_rtu_device(vec![0x1234]).await;
 
     let gw_config = GatewayConfig {
         tcp_listen: "127.0.0.1:0".parse().unwrap(),
-        routes: vec![RouteEntry {
-            unit_id_range: 1..=5,
-            backend_addr: device_addr,
-        }],
+        routes: vec![RouteEntry::new(1..=5, device_addr)],
         serial_timeout: Duration::from_secs(1),
         ..GatewayConfig::default()
     };
@@ -143,10 +162,7 @@ async fn gateway_returns_timeout_for_unresponsive_device() {
 
     let gw_config = GatewayConfig {
         tcp_listen: "127.0.0.1:0".parse().unwrap(),
-        routes: vec![RouteEntry {
-            unit_id_range: 1..=10,
-            backend_addr: dead_addr,
-        }],
+        routes: vec![RouteEntry::new(1..=10, dead_addr)],
         serial_timeout: Duration::from_millis(500),
         ..GatewayConfig::default()
     };
@@ -182,14 +198,8 @@ async fn gateway_multiple_routes() {
     let gw_config = GatewayConfig {
         tcp_listen: "127.0.0.1:0".parse().unwrap(),
         routes: vec![
-            RouteEntry {
-                unit_id_range: 1..=10,
-                backend_addr: dev1,
-            },
-            RouteEntry {
-                unit_id_range: 11..=20,
-                backend_addr: dev2,
-            },
+            RouteEntry::new(1..=10, dev1),
+            RouteEntry::new(11..=20, dev2),
         ],
         serial_timeout: Duration::from_secs(2),
         ..GatewayConfig::default()
@@ -249,10 +259,7 @@ async fn gateway_rejects_response_from_wrong_unit_id() {
 
     let gw_config = GatewayConfig {
         tcp_listen: "127.0.0.1:0".parse().unwrap(),
-        routes: vec![RouteEntry {
-            unit_id_range: 1..=10,
-            backend_addr: device_addr,
-        }],
+        routes: vec![RouteEntry::new(1..=10, device_addr)],
         serial_timeout: Duration::from_secs(2),
         ..GatewayConfig::default()
     };
@@ -279,10 +286,7 @@ async fn gateway_rejects_response_with_wrong_function_code() {
 
     let gw_config = GatewayConfig {
         tcp_listen: "127.0.0.1:0".parse().unwrap(),
-        routes: vec![RouteEntry {
-            unit_id_range: 1..=10,
-            backend_addr: device_addr,
-        }],
+        routes: vec![RouteEntry::new(1..=10, device_addr)],
         serial_timeout: Duration::from_secs(2),
         ..GatewayConfig::default()
     };
