@@ -4,8 +4,10 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use rusty_modbus_tcp::{TcpRecvStream, TcpSink, TcpTransport, TransportConnect};
@@ -105,6 +107,7 @@ impl PoolInner {
 /// to restore the pool invariants.
 struct PendingReservation {
     pool: Arc<Mutex<PoolInner>>,
+    capacity_changed: Arc<Notify>,
     addr: SocketAddr,
     is_priority: bool,
     evicted: Option<PoolEntry>,
@@ -114,12 +117,14 @@ struct PendingReservation {
 impl PendingReservation {
     fn new(
         pool: Arc<Mutex<PoolInner>>,
+        capacity_changed: Arc<Notify>,
         addr: SocketAddr,
         is_priority: bool,
         evicted: Option<PoolEntry>,
     ) -> Self {
         Self {
             pool,
+            capacity_changed,
             addr,
             is_priority,
             evicted,
@@ -129,7 +134,11 @@ impl PendingReservation {
 
     /// Transfer ownership of the active charge to the returned lease.
     fn commit(mut self, entry: PoolEntry) -> PooledConnection {
-        let connection = PooledConnection::new(entry, Arc::clone(&self.pool));
+        let connection = PooledConnection::new(
+            entry,
+            Arc::clone(&self.pool),
+            Arc::clone(&self.capacity_changed),
+        );
         self.committed = true;
         // A successful replacement deliberately retires the evicted connection.
         drop(self.evicted.take());
@@ -151,7 +160,16 @@ impl Drop for PendingReservation {
             // Preserve the original entry, including its LRU timestamp.
             inner.idle.push(entry);
         }
+        drop(inner);
+        self.capacity_changed.notify_waiters();
     }
+}
+
+/// Capacity acquired either by checking out an idle entry or by reserving a
+/// charge for a new connection.
+enum Acquisition {
+    Reused(PooledConnection),
+    Reserved(PendingReservation),
 }
 
 /// Connection pool with two-pool eviction model.
@@ -159,8 +177,11 @@ impl Drop for PendingReservation {
 /// Priority connections (to configured addresses) are never locally evicted and
 /// live in a per-device budget separate from the non-priority pool. Non-priority
 /// connections are evicted oldest-first when the non-priority pool is full.
+/// Capacity waiters use change broadcasts only as retry hints; the pool makes no
+/// fairness or FIFO guarantee, and `PoolInner` remains the accounting authority.
 pub struct ConnectionPool {
     inner: Arc<Mutex<PoolInner>>,
+    capacity_changed: Arc<Notify>,
     config: PoolConfig,
     health_task: Option<tokio::task::JoinHandle<()>>,
     /// Background pre-connect/reconnect tasks (one per priority device).
@@ -194,9 +215,11 @@ impl ConnectionPool {
             active_priority: HashMap::new(),
             shutting_down: false,
         }));
+        let capacity_changed = Arc::new(Notify::new());
 
         let health_task = health::spawn_health_check(
             Arc::clone(&inner),
+            Arc::clone(&capacity_changed),
             config.health_check_interval,
             config.idle_timeout,
         );
@@ -209,6 +232,7 @@ impl ConnectionPool {
 
         Self {
             inner,
+            capacity_changed,
             config,
             health_task: Some(health_task),
             pre_connect_tasks,
@@ -218,6 +242,7 @@ impl ConnectionPool {
     /// Get a connection to the specified address.
     ///
     /// Returns an idle connection if available, otherwise establishes a new one.
+    /// This method is fail-fast: it does not wait for pool capacity.
     /// Priority devices draw from their own per-device budget; non-priority
     /// requests draw from `max_connections`, evicting the oldest idle
     /// non-priority connection when that pool is full.
@@ -235,6 +260,43 @@ impl ConnectionPool {
             .await
     }
 
+    /// Get a connection, waiting up to `timeout` for pool capacity when full.
+    ///
+    /// Idle reuse or a new capacity reservation is attempted immediately, even
+    /// when `timeout` is [`Duration::ZERO`]. Only a full relevant priority or
+    /// non-priority budget causes a wait. The fixed acquisition deadline ends as
+    /// soon as capacity is reserved and never wraps TCP connection establishment;
+    /// transport connection timeouts remain reported through
+    /// [`PoolError::ConnectionFailed`].
+    ///
+    /// Waiting is cancellation-safe and shutdown-aware. Capacity-change
+    /// broadcasts are stateless retry hints, so wakeups may be spurious or cross
+    /// pool budgets and no fairness or FIFO ordering is guaranteed.
+    ///
+    /// If `timeout` is too large to represent as an absolute deadline, the
+    /// initial acquisition attempt is still honored. If the relevant budget
+    /// remains full after a final state check, this method returns
+    /// [`PoolError::Timeout`] rather than panicking or waiting without a bound.
+    ///
+    /// # Errors
+    ///
+    /// - [`PoolError::ShuttingDown`] if shutdown is observed, including while
+    ///   waiting.
+    /// - [`PoolError::Timeout`] if capacity is not reserved by the fixed deadline.
+    /// - [`PoolError::ConnectionFailed`] if a post-reservation TCP connection
+    ///   attempt fails.
+    pub async fn get_with_acquisition_timeout(
+        &self,
+        addr: SocketAddr,
+        timeout: Duration,
+    ) -> Result<PooledConnection, PoolError> {
+        let tcp_config = self.config.tcp_config.clone();
+        self.get_with_acquisition_timeout_and_connector(addr, timeout, move || {
+            TcpTransport::connect(tcp_config, addr)
+        })
+        .await
+    }
+
     /// Internal acquisition path with an injectable connector for deterministic
     /// cancellation testing.
     async fn get_with_connector<C, F>(
@@ -246,69 +308,200 @@ impl ConnectionPool {
         C: FnOnce() -> F,
         F: Future<Output = Result<(TcpSink, TcpRecvStream), rusty_modbus_tcp::TransportError>>,
     {
+        let acquisition = self.acquire_immediate(addr)?;
+        Self::finish_acquisition(acquisition, connector).await
+    }
+
+    /// Timed acquisition path with an injectable connector for deterministic
+    /// capacity-wait and connector-scope testing.
+    async fn get_with_acquisition_timeout_and_connector<C, F>(
+        &self,
+        addr: SocketAddr,
+        timeout: Duration,
+        connector: C,
+    ) -> Result<PooledConnection, PoolError>
+    where
+        C: FnOnce() -> F,
+        F: Future<Output = Result<(TcpSink, TcpRecvStream), rusty_modbus_tcp::TransportError>>,
+    {
+        let acquisition = self.acquire_with_timeout(addr, timeout).await?;
+        Self::finish_acquisition(acquisition, connector).await
+    }
+
+    /// Attempt one immediate idle checkout or reservation.
+    fn acquire_immediate(&self, addr: SocketAddr) -> Result<Acquisition, PoolError> {
+        let is_priority = self.is_priority_addr(addr);
+        let mut inner = self.inner.lock();
+        if inner.shutting_down {
+            return Err(PoolError::ShuttingDown);
+        }
+
+        self.try_acquire_locked(&mut inner, addr, is_priority)
+            .ok_or(PoolError::Exhausted)
+    }
+
+    /// Wait for an idle checkout or reservation using one absolute deadline.
+    async fn acquire_with_timeout(
+        &self,
+        addr: SocketAddr,
+        timeout: Duration,
+    ) -> Result<Acquisition, PoolError> {
         let is_priority = self.is_priority_addr(addr);
 
-        // Fast path: reuse an idle connection or reserve a slot under the lock.
-        let reservation = {
+        // Always honor one shutdown-aware immediate attempt before constructing
+        // the deadline. Besides preserving zero-timeout behavior, this keeps an
+        // unrepresentably large timeout from rejecting available capacity.
+        let initial_acquisition = {
             let mut inner = self.inner.lock();
             if inner.shutting_down {
                 return Err(PoolError::ShuttingDown);
             }
+            self.try_acquire_locked(&mut inner, addr, is_priority)
+        };
+        if let Some(acquisition) = initial_acquisition {
+            return Ok(acquisition);
+        }
 
-            // Reuse an idle connection to this address (either pool).
-            if let Some(idx) = inner.idle.iter().position(|e| e.addr == addr) {
-                let mut entry = inner.idle.swap_remove(idx);
-                entry.last_used = Instant::now();
-                inner.charge_active(&entry);
-                return Ok(PooledConnection::new(entry, Arc::clone(&self.inner)));
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            // Capacity may have changed after the initial full observation. Check
+            // complete state once more, with sticky shutdown taking precedence,
+            // before returning the deterministic overflow result.
+            let mut inner = self.inner.lock();
+            if inner.shutting_down {
+                return Err(PoolError::ShuttingDown);
             }
+            return self
+                .try_acquire_locked(&mut inner, addr, is_priority)
+                .ok_or(PoolError::Timeout);
+        };
+        let mut waited = false;
 
-            // No idle connection: reserve a slot in the appropriate pool.
-            let evicted = if is_priority {
-                // Priority pool: bounded by this device's own budget, never evicted.
-                let cap = self.priority_cap(addr);
-                if inner.priority_total(addr) >= cap {
-                    return Err(PoolError::Exhausted);
+        loop {
+            // Enable registration before inspecting state so a broadcast between
+            // the inspection and await cannot be lost. Notify is only a hint;
+            // every wake retries the exact budget under PoolInner.
+            let notified = self.capacity_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let acquisition = {
+                let mut inner = self.inner.lock();
+                if inner.shutting_down {
+                    return Err(PoolError::ShuttingDown);
                 }
-                *inner.active_priority.entry(addr).or_insert(0) += 1;
-                None
-            } else {
-                // Non-priority pool: bounded by max_connections, LRU-evicted.
-                if inner.non_priority_total() < self.config.max_connections {
-                    inner.active_non_priority += 1;
-                    None
-                } else if let Some(idx) = find_evictable(&inner) {
-                    // Evict to stay within the cap, but keep the entry in hand:
-                    // rollback restores it unchanged.
-                    let evicted = inner.idle.swap_remove(idx);
-                    inner.active_non_priority += 1;
-                    Some(evicted)
-                } else {
-                    return Err(PoolError::Exhausted);
+                // Once any wait has occurred, shutdown wins and then the fixed
+                // deadline wins before newly available capacity can be admitted.
+                if waited && Instant::now() >= deadline {
+                    return Err(PoolError::Timeout);
                 }
+                self.try_acquire_locked(&mut inner, addr, is_priority)
             };
 
-            // Establish the RAII owner before releasing the pool lock.
-            PendingReservation::new(Arc::clone(&self.inner), addr, is_priority, evicted)
-        };
-        // Lock released — connect outside the lock while `reservation` owns the
-        // active charge and any tentatively evicted entry.
-
-        match connector().await {
-            Ok((sink, stream)) => {
-                let entry = PoolEntry {
-                    addr,
-                    sink,
-                    stream,
-                    last_used: Instant::now(),
-                    is_priority,
-                };
-                Ok(reservation.commit(entry))
+            if let Some(acquisition) = acquisition {
+                return Ok(acquisition);
             }
-            Err(e) => {
-                // Use the same guard rollback as future cancellation.
-                drop(reservation);
-                Err(PoolError::ConnectionFailed(e))
+
+            waited = true;
+            tokio::select! {
+                () = notified.as_mut() => {}
+                () = tokio::time::sleep_until(deadline) => {
+                    // Recheck sticky shutdown at the deadline so it wins whenever
+                    // it has been observed by the pool state machine.
+                    if self.inner.lock().shutting_down {
+                        return Err(PoolError::ShuttingDown);
+                    }
+                    return Err(PoolError::Timeout);
+                }
+            }
+        }
+    }
+
+    /// Inspect and mutate capacity while the caller holds the pool mutex.
+    fn try_acquire_locked(
+        &self,
+        inner: &mut PoolInner,
+        addr: SocketAddr,
+        is_priority: bool,
+    ) -> Option<Acquisition> {
+        // Reuse an idle connection to this address (either pool).
+        if let Some(idx) = inner.idle.iter().position(|e| e.addr == addr) {
+            let mut entry = inner.idle.swap_remove(idx);
+            entry.last_used = Instant::now();
+            inner.charge_active(&entry);
+            return Some(Acquisition::Reused(PooledConnection::new(
+                entry,
+                Arc::clone(&self.inner),
+                Arc::clone(&self.capacity_changed),
+            )));
+        }
+
+        // No idle connection: reserve a slot in the appropriate pool.
+        let evicted = if is_priority {
+            // Priority pool: bounded by this device's own budget, never evicted.
+            let cap = self.priority_cap(addr);
+            if inner.priority_total(addr) >= cap {
+                return None;
+            }
+            *inner.active_priority.entry(addr).or_insert(0) += 1;
+            None
+        } else {
+            // Non-priority pool: bounded by max_connections, LRU-evicted.
+            if inner.non_priority_total() < self.config.max_connections {
+                inner.active_non_priority += 1;
+                None
+            } else if let Some(idx) = find_evictable(inner) {
+                // Evict to stay within the cap, but keep the entry in hand:
+                // rollback restores it unchanged.
+                let evicted = inner.idle.swap_remove(idx);
+                inner.active_non_priority += 1;
+                Some(evicted)
+            } else {
+                return None;
+            }
+        };
+
+        // Establish the RAII owner before releasing the pool lock.
+        Some(Acquisition::Reserved(PendingReservation::new(
+            Arc::clone(&self.inner),
+            Arc::clone(&self.capacity_changed),
+            addr,
+            is_priority,
+            evicted,
+        )))
+    }
+
+    /// Reuse an idle lease or run the connector after a reservation. No pool
+    /// acquisition deadline reaches this phase.
+    async fn finish_acquisition<C, F>(
+        acquisition: Acquisition,
+        connector: C,
+    ) -> Result<PooledConnection, PoolError>
+    where
+        C: FnOnce() -> F,
+        F: Future<Output = Result<(TcpSink, TcpRecvStream), rusty_modbus_tcp::TransportError>>,
+    {
+        match acquisition {
+            Acquisition::Reused(connection) => Ok(connection),
+            Acquisition::Reserved(reservation) => {
+                // Connect outside the lock while `reservation` owns the active
+                // charge and any tentatively evicted entry.
+                match connector().await {
+                    Ok((sink, stream)) => {
+                        let entry = PoolEntry {
+                            addr: reservation.addr,
+                            sink,
+                            stream,
+                            last_used: Instant::now(),
+                            is_priority: reservation.is_priority,
+                        };
+                        Ok(reservation.commit(entry))
+                    }
+                    Err(e) => {
+                        // Use the same guard rollback as future cancellation.
+                        drop(reservation);
+                        Err(PoolError::ConnectionFailed(e))
+                    }
+                }
             }
         }
     }
@@ -324,6 +517,7 @@ impl ConnectionPool {
             inner.shutting_down = true;
             inner.idle.clear();
         }
+        self.capacity_changed.notify_waiters();
 
         if let Some(task) = &self.health_task {
             task.abort();
@@ -460,6 +654,7 @@ mod tests {
 
     use rusty_modbus_tcp::{TcpConfig, TransportError};
     use tokio::sync::oneshot;
+    use tokio::sync::oneshot::error::TryRecvError;
     use tokio::task::JoinHandle;
 
     type GetTask = JoinHandle<Result<PooledConnection, PoolError>>;
@@ -520,6 +715,30 @@ mod tests {
         (task, entered_rx)
     }
 
+    fn spawn_pending_timed_get(
+        pool: Arc<ConnectionPool>,
+        addr: SocketAddr,
+        timeout: Duration,
+    ) -> (GetTask, oneshot::Receiver<()>) {
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            pool.get_with_acquisition_timeout_and_connector(addr, timeout, move || async move {
+                entered_tx
+                    .send(())
+                    .expect("pending connector entry receiver should remain live");
+                pending::<Result<(TcpSink, TcpRecvStream), TransportError>>().await
+            })
+            .await
+        });
+        (task, entered_rx)
+    }
+
+    async fn acquired_connection(pool: &ConnectionPool, addr: SocketAddr) -> PooledConnection {
+        pool.get_with_connector(addr, || async { Ok(connected_halves().await) })
+            .await
+            .expect("test connector should establish a connection")
+    }
+
     async fn abort_pending(task: GetTask) {
         // Repeated cancellation requests must still drop one reservation once.
         task.abort();
@@ -528,6 +747,414 @@ mod tests {
             .await
             .expect_err("pending acquisition should be cancelled");
         assert!(error.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn healthy_return_wakes_non_priority_waiter_for_reuse() {
+        let addr = test_addr(15_100);
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let first = acquired_connection(&pool, addr).await;
+
+        let waiting_pool = Arc::clone(&pool);
+        let waiter = tokio::spawn(async move {
+            waiting_pool
+                .get_with_acquisition_timeout_and_connector(
+                    addr,
+                    Duration::from_secs(5),
+                    || async { Err(TransportError::Disconnected) },
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        drop(first);
+
+        let reused = waiter
+            .await
+            .expect("waiter task should complete")
+            .expect("returned lease should be reused without running the connector");
+        assert_eq!(reused.addr(), addr);
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+
+        drop(reused);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalidation_wakes_waiter_and_runs_fresh_connector() {
+        let addr = test_addr(15_101);
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let mut first = acquired_connection(&pool, addr).await;
+        let replacement_halves = connected_halves().await;
+        let (entered_tx, mut entered_rx) = oneshot::channel();
+
+        let waiting_pool = Arc::clone(&pool);
+        let waiter = tokio::spawn(async move {
+            waiting_pool
+                .get_with_acquisition_timeout_and_connector(
+                    addr,
+                    Duration::from_secs(5),
+                    move || async move {
+                        entered_tx
+                            .send(())
+                            .expect("fresh connector entry receiver should remain live");
+                        Ok(replacement_halves)
+                    },
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(entered_rx.try_recv(), Err(TryRecvError::Empty));
+        assert!(!waiter.is_finished());
+
+        first.invalidate(crate::LeaseInvalidationReason::Transport);
+        entered_rx
+            .await
+            .expect("invalidation should wake the fresh connector");
+
+        let replacement = waiter
+            .await
+            .expect("waiter task should complete")
+            .expect("fresh connector should succeed");
+        assert_eq!(replacement.addr(), addr);
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+
+        drop(first);
+        drop(replacement);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn priority_waiter_ignores_cross_budget_wake_until_device_is_available() {
+        let priority_addr = test_addr(15_102);
+        let non_priority_addr = test_addr(15_103);
+        let mut config = test_config(1);
+        config.priority_devices = vec![crate::PriorityDevice {
+            addr: priority_addr,
+            max_connections: 1,
+        }];
+        let pool = Arc::new(ConnectionPool::new(config));
+        let priority = acquired_connection(&pool, priority_addr).await;
+        let non_priority = acquired_connection(&pool, non_priority_addr).await;
+
+        let waiting_pool = Arc::clone(&pool);
+        let waiter = tokio::spawn(async move {
+            waiting_pool
+                .get_with_acquisition_timeout_and_connector(
+                    priority_addr,
+                    Duration::from_secs(5),
+                    || async { Err(TransportError::Disconnected) },
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        // A non-priority return broadcasts, but cannot satisfy this device's
+        // separate priority budget.
+        drop(non_priority);
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 1);
+
+        drop(priority);
+        let acquired = waiter
+            .await
+            .expect("priority waiter task should complete")
+            .expect("device return should satisfy its own waiter");
+        assert_eq!(acquired.addr(), priority_addr);
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_pending_reservation_wakes_waiter_with_exact_accounting() {
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let (first, first_entered) = spawn_pending_get(Arc::clone(&pool), test_addr(15_104));
+        first_entered
+            .await
+            .expect("first connector should reserve the only slot");
+
+        let (waiter, waiter_entered) =
+            spawn_pending_timed_get(Arc::clone(&pool), test_addr(15_105), Duration::from_secs(5));
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        assert_eq!(pool.active_count(), 1);
+
+        abort_pending(first).await;
+        waiter_entered
+            .await
+            .expect("reservation cancellation should wake the waiter");
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.inner.lock().non_priority_total(), 1);
+
+        abort_pending(waiter).await;
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn explicit_connect_failure_wakes_waiter_with_exact_accounting() {
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (fail_tx, fail_rx) = oneshot::channel();
+        let first_pool = Arc::clone(&pool);
+        let first = tokio::spawn(async move {
+            first_pool
+                .get_with_connector(test_addr(15_106), move || async move {
+                    entered_tx
+                        .send(())
+                        .expect("first connector entry receiver should remain live");
+                    fail_rx
+                        .await
+                        .expect("test should explicitly release connector failure");
+                    Err(TransportError::Disconnected)
+                })
+                .await
+        });
+        entered_rx
+            .await
+            .expect("first connector should reserve the only slot");
+
+        let (waiter, waiter_entered) =
+            spawn_pending_timed_get(Arc::clone(&pool), test_addr(15_107), Duration::from_secs(5));
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        fail_tx
+            .send(())
+            .expect("first connector should still be pending");
+        let result = first.await.expect("first connector task should complete");
+        assert!(matches!(
+            result,
+            Err(PoolError::ConnectionFailed(TransportError::Disconnected))
+        ));
+        waiter_entered
+            .await
+            .expect("connect failure rollback should wake the waiter");
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.inner.lock().non_priority_total(), 1);
+
+        abort_pending(waiter).await;
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn health_eviction_broadcast_wakes_blocked_non_priority_waiter() {
+        let idle_addr = test_addr(15_108);
+        let replacement_addr = test_addr(15_109);
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+
+        // A future timestamp keeps this synthetic idle entry from being selected
+        // by the unchanged LRU rule. Running the same eviction pass used by the
+        // health task at a later explicit instant makes the wake deterministic.
+        let last_used = Instant::now() + Duration::from_mins(1);
+        let entry = idle_entry(idle_addr, last_used).await;
+        pool.inner.lock().idle.push(entry);
+        let (waiter, mut waiter_entered) =
+            spawn_pending_timed_get(Arc::clone(&pool), replacement_addr, Duration::from_secs(5));
+        tokio::task::yield_now().await;
+        assert_eq!(waiter_entered.try_recv(), Err(TryRecvError::Empty));
+        assert!(!waiter.is_finished());
+
+        assert!(health::run_health_check(
+            &pool.inner,
+            &pool.capacity_changed,
+            last_used + Duration::from_secs(1),
+            Duration::from_secs(1),
+        ));
+        waiter_entered
+            .await
+            .expect("actual health eviction should wake the waiter");
+        assert_eq!(pool.idle_count(), 0);
+        assert_eq!(pool.active_count(), 1);
+
+        abort_pending(waiter).await;
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_broadcast_wakes_blocked_waiter() {
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let first = acquired_connection(&pool, test_addr(15_110)).await;
+        let (waiter, _waiter_entered) =
+            spawn_pending_timed_get(Arc::clone(&pool), test_addr(15_111), Duration::from_secs(5));
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        pool.shutdown();
+        let result = waiter.await.expect("waiter task should complete");
+        assert!(matches!(result, Err(PoolError::ShuttingDown)));
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+
+        drop(first);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn spurious_broadcasts_do_not_extend_absolute_deadline() {
+        let pool = Arc::new(ConnectionPool::new(test_config(0)));
+        let waiting_pool = Arc::clone(&pool);
+        let waiter = tokio::spawn(async move {
+            waiting_pool
+                .get_with_acquisition_timeout_and_connector(
+                    test_addr(15_112),
+                    Duration::from_millis(100),
+                    || async { Err(TransportError::Disconnected) },
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        let broadcasting_pool = Arc::clone(&pool);
+        let broadcaster = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                broadcasting_pool.capacity_changed.notify_waiters();
+            }
+        });
+
+        let result = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("absolute acquisition deadline should remain bounded")
+            .expect("waiter task should complete");
+        assert!(matches!(result, Err(PoolError::Timeout)));
+        broadcaster.abort();
+        let error = broadcaster
+            .await
+            .expect_err("broadcaster should be cancelled after the waiter finishes");
+        assert!(error.is_cancelled());
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_capacity_wait_changes_no_accounting_and_strands_no_later_waiter() {
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let (first, first_entered) = spawn_pending_get(Arc::clone(&pool), test_addr(15_113));
+        first_entered
+            .await
+            .expect("first connector should reserve the only slot");
+
+        let (cancelled_waiter, _cancelled_entered) =
+            spawn_pending_timed_get(Arc::clone(&pool), test_addr(15_114), Duration::from_secs(5));
+        tokio::task::yield_now().await;
+        assert!(!cancelled_waiter.is_finished());
+        abort_pending(cancelled_waiter).await;
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.inner.lock().non_priority_total(), 1);
+
+        let (later_waiter, later_entered) =
+            spawn_pending_timed_get(Arc::clone(&pool), test_addr(15_115), Duration::from_secs(5));
+        tokio::task::yield_now().await;
+        assert!(!later_waiter.is_finished());
+
+        abort_pending(first).await;
+        later_entered
+            .await
+            .expect("later waiter should observe released capacity");
+        assert_eq!(pool.active_count(), 1);
+
+        abort_pending(later_waiter).await;
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn acquisition_deadline_ends_before_pending_connector() {
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let (task, entered) = spawn_pending_timed_get(
+            Arc::clone(&pool),
+            test_addr(15_116),
+            Duration::from_millis(20),
+        );
+        entered
+            .await
+            .expect("immediate reservation should enter the connector");
+        assert_eq!(pool.active_count(), 1);
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(
+            !task.is_finished(),
+            "capacity timeout must not wrap the pending connector"
+        );
+        assert_eq!(pool.active_count(), 1);
+
+        abort_pending(task).await;
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn connector_timeout_after_reservation_remains_connection_failed() {
+        let pool = ConnectionPool::new(test_config(1));
+
+        let result = pool
+            .get_with_acquisition_timeout_and_connector(
+                test_addr(15_118),
+                Duration::ZERO,
+                || async { Err(TransportError::Timeout) },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(PoolError::ConnectionFailed(TransportError::Timeout))
+        ));
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn multiple_waiters_and_returns_do_not_strand_available_capacity() {
+        const WAITERS: usize = 8;
+
+        let addr = test_addr(15_117);
+        let pool = Arc::new(ConnectionPool::new(test_config(2)));
+        let first = acquired_connection(&pool, addr).await;
+        let second = acquired_connection(&pool, addr).await;
+        let mut waiters = Vec::new();
+
+        for _ in 0..WAITERS {
+            let waiting_pool = Arc::clone(&pool);
+            waiters.push(tokio::spawn(async move {
+                let connection = waiting_pool
+                    .get_with_acquisition_timeout_and_connector(
+                        addr,
+                        Duration::from_secs(5),
+                        || async { Err(TransportError::Disconnected) },
+                    )
+                    .await?;
+                tokio::task::yield_now().await;
+                drop(connection);
+                Ok::<(), PoolError>(())
+            }));
+        }
+        tokio::task::yield_now().await;
+        assert!(waiters.iter().all(|waiter| !waiter.is_finished()));
+
+        drop(first);
+        drop(second);
+
+        for waiter in waiters {
+            waiter
+                .await
+                .expect("waiter task should complete")
+                .expect("each waiter should eventually reuse released capacity");
+        }
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 2);
+        assert_eq!(pool.inner.lock().non_priority_total(), 2);
     }
 
     #[tokio::test]

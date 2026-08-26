@@ -9,6 +9,33 @@ Pool evidence and recovery gaps are tracked under the
 - 📖 [API documentation](https://docs.rs/rusty-modbus-pool)
 - 📦 [Workspace & examples](https://github.com/jscott3201/rusty-modbus)
 
+## Capacity acquisition
+
+`ConnectionPool::get` remains fail-fast: when the relevant non-priority or
+per-device priority budget is full and no idle entry can be reused or evicted,
+it returns `PoolError::Exhausted`. Call
+`ConnectionPool::get_with_acquisition_timeout` to opt into waiting up to one
+fixed deadline for that capacity instead.
+
+The acquisition timeout covers only time spent waiting for pool capacity. It
+ends once capacity is reserved and does not wrap TCP connection establishment,
+transport I/O, or the independent `TcpConfig::connect_timeout`. A zero duration
+still performs one immediate idle-reuse or reservation attempt before returning
+`PoolError::Timeout` for a full budget.
+
+If a supplied duration is too large to represent as an absolute deadline, the
+same initial acquisition attempt still runs. When the relevant budget remains
+full after a final state check, the method returns `PoolError::Timeout` instead
+of panicking, silently shortening the duration, or treating it as an unlimited
+wait. Representable durations retain their requested absolute deadline.
+
+Capacity-change broadcasts are retry hints rather than permits, so waiters may
+wake spuriously or because another pool budget changed. Every waiter rechecks
+the exact pool state, and no fairness or FIFO order is guaranteed. Cancelling a
+capacity wait changes no accounting; cancelling a later pending connection uses
+the reservation guard to release its charge. Pool shutdown wakes blocked
+waiters, which return `PoolError::ShuttingDown` when shutdown is observed.
+
 ## Manual lease invalidation
 
 Checked-out connections return to the idle pool on drop by default. Callers must
