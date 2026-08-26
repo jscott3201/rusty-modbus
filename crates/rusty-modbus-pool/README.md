@@ -23,6 +23,12 @@ transport I/O, or the independent `TcpConfig::connect_timeout`. A zero duration
 still performs one immediate idle-reuse or reservation attempt before returning
 `PoolError::Timeout` for a full budget.
 
+If a supplied duration is too large to represent as an absolute deadline, the
+same initial acquisition attempt still runs. When the relevant budget remains
+full after a final state check, the method returns `PoolError::Timeout` instead
+of panicking, silently shortening the duration, or treating it as an unlimited
+wait. Representable durations retain their requested absolute deadline.
+
 Capacity-change broadcasts are retry hints rather than permits, so waiters may
 wake spuriously or because another pool budget changed. Every waiter rechecks
 the exact pool state, and no fairness or FIFO order is guaranteed. Cancelling a

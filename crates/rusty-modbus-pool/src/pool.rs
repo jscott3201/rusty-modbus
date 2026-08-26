@@ -273,6 +273,11 @@ impl ConnectionPool {
     /// broadcasts are stateless retry hints, so wakeups may be spurious or cross
     /// pool budgets and no fairness or FIFO ordering is guaranteed.
     ///
+    /// If `timeout` is too large to represent as an absolute deadline, the
+    /// initial acquisition attempt is still honored. If the relevant budget
+    /// remains full after a final state check, this method returns
+    /// [`PoolError::Timeout`] rather than panicking or waiting without a bound.
+    ///
     /// # Errors
     ///
     /// - [`PoolError::ShuttingDown`] if shutdown is observed, including while
@@ -341,8 +346,34 @@ impl ConnectionPool {
         addr: SocketAddr,
         timeout: Duration,
     ) -> Result<Acquisition, PoolError> {
-        let deadline = Instant::now() + timeout;
         let is_priority = self.is_priority_addr(addr);
+
+        // Always honor one shutdown-aware immediate attempt before constructing
+        // the deadline. Besides preserving zero-timeout behavior, this keeps an
+        // unrepresentably large timeout from rejecting available capacity.
+        let initial_acquisition = {
+            let mut inner = self.inner.lock();
+            if inner.shutting_down {
+                return Err(PoolError::ShuttingDown);
+            }
+            self.try_acquire_locked(&mut inner, addr, is_priority)
+        };
+        if let Some(acquisition) = initial_acquisition {
+            return Ok(acquisition);
+        }
+
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            // Capacity may have changed after the initial full observation. Check
+            // complete state once more, with sticky shutdown taking precedence,
+            // before returning the deterministic overflow result.
+            let mut inner = self.inner.lock();
+            if inner.shutting_down {
+                return Err(PoolError::ShuttingDown);
+            }
+            return self
+                .try_acquire_locked(&mut inner, addr, is_priority)
+                .ok_or(PoolError::Timeout);
+        };
         let mut waited = false;
 
         loop {

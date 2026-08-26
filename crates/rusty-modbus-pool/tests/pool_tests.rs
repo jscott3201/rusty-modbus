@@ -393,6 +393,54 @@ async fn zero_acquisition_timeout_checks_immediate_capacity_and_reuse() {
 }
 
 #[tokio::test]
+async fn duration_max_allows_public_immediate_capacity_and_reuse() {
+    let (addr, mut accepted) = tracked_echo_server().await;
+    let mut config = pool_config_for(addr);
+    config.max_connections = 1;
+    let pool = ConnectionPool::new(config);
+
+    let first = pool
+        .get_with_acquisition_timeout(addr, Duration::MAX)
+        .await
+        .expect("Duration::MAX must not panic before an available reservation");
+    wait_for_accept(&mut accepted).await;
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(first);
+    let reused = pool
+        .get_with_acquisition_timeout(addr, Duration::MAX)
+        .await
+        .expect("Duration::MAX must not panic before immediate idle reuse");
+    assert_eq!(reused.addr(), addr);
+    assert!(
+        accepted.try_recv().is_err(),
+        "idle reuse must not establish another TCP connection"
+    );
+}
+
+#[tokio::test]
+async fn duration_max_full_public_api_returns_timeout_without_accounting_change() {
+    let addr = echo_server().await;
+    let mut config = pool_config_for(addr);
+    config.max_connections = 1;
+    let pool = ConnectionPool::new(config);
+    let first = pool.get(addr).await.unwrap();
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    let result = pool.get_with_acquisition_timeout(addr, Duration::MAX).await;
+
+    assert!(matches!(result, Err(PoolError::Timeout)));
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(first);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
+}
+
+#[tokio::test]
 async fn evicts_oldest_idle_non_priority() {
     let addr1 = echo_server().await;
     let addr2 = echo_server().await;
