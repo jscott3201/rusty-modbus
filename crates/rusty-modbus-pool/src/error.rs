@@ -13,8 +13,8 @@ pub enum PoolError {
     #[error("connection failed: {0}")]
     ConnectionFailed(#[from] TransportError),
 
-    /// Operation timed out.
-    #[error("operation timed out")]
+    /// The fixed pool-capacity acquisition deadline elapsed.
+    #[error("pool capacity acquisition timed out")]
     Timeout,
 
     /// Pool is shutting down; no new connections will be issued.

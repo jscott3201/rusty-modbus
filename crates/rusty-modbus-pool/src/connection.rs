@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use rusty_modbus_tcp::{TcpRecvStream, TcpSink};
@@ -79,14 +80,20 @@ impl LeaseInvalidationReason {
 pub struct PooledConnection {
     entry: Option<PoolEntry>,
     pool: Arc<Mutex<PoolInner>>,
+    capacity_changed: Arc<Notify>,
     invalidation_reason: Option<LeaseInvalidationReason>,
 }
 
 impl PooledConnection {
-    pub(crate) fn new(entry: PoolEntry, pool: Arc<Mutex<PoolInner>>) -> Self {
+    pub(crate) fn new(
+        entry: PoolEntry,
+        pool: Arc<Mutex<PoolInner>>,
+        capacity_changed: Arc<Notify>,
+    ) -> Self {
         Self {
             entry: Some(entry),
             pool,
+            capacity_changed,
             invalidation_reason: None,
         }
     }
@@ -125,6 +132,7 @@ impl PooledConnection {
 
         // Retire the TCP halves only after releasing the pool mutex.
         drop(entry);
+        self.capacity_changed.notify_waiters();
     }
 
     /// The caller's first invalidation reason, or `None` if none was recorded.
@@ -184,6 +192,8 @@ impl Drop for PooledConnection {
             if !inner.shutting_down {
                 inner.idle.push(entry);
             }
+            drop(inner);
+            self.capacity_changed.notify_waiters();
         }
     }
 }

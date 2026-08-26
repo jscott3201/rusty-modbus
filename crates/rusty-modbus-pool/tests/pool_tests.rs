@@ -363,6 +363,36 @@ async fn exhaustion_when_full() {
 }
 
 #[tokio::test]
+async fn zero_acquisition_timeout_checks_immediate_capacity_and_reuse() {
+    let (addr, mut accepted) = tracked_echo_server().await;
+    let mut config = pool_config_for(addr);
+    config.max_connections = 1;
+    let pool = ConnectionPool::new(config);
+
+    let first = pool
+        .get_with_acquisition_timeout(addr, Duration::ZERO)
+        .await
+        .expect("zero timeout should allow an immediate reservation");
+    wait_for_accept(&mut accepted).await;
+
+    let result = pool
+        .get_with_acquisition_timeout(addr, Duration::ZERO)
+        .await;
+    assert!(matches!(result, Err(PoolError::Timeout)));
+
+    drop(first);
+    let reused = pool
+        .get_with_acquisition_timeout(addr, Duration::ZERO)
+        .await
+        .expect("zero timeout should allow immediate idle reuse");
+    assert_eq!(reused.addr(), addr);
+    assert!(
+        accepted.try_recv().is_err(),
+        "idle reuse must not establish another TCP connection"
+    );
+}
+
+#[tokio::test]
 async fn evicts_oldest_idle_non_priority() {
     let addr1 = echo_server().await;
     let addr2 = echo_server().await;
