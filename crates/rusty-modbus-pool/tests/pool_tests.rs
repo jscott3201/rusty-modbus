@@ -5,11 +5,14 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
-use rusty_modbus_pool::{BackoffConfig, ConnectionPool, PoolConfig, PoolError, PriorityDevice};
+use rusty_modbus_pool::{
+    BackoffConfig, ConnectionPool, LeaseInvalidationReason, PoolConfig, PoolError, PriorityDevice,
+};
 use rusty_modbus_tcp::config::{TcpConfig, TcpServerConfig};
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_types::MbapHeader;
+use tokio::sync::mpsc;
 
 /// Start an echo server on an ephemeral port.
 async fn echo_server() -> SocketAddr {
@@ -32,6 +35,40 @@ async fn echo_server() -> SocketAddr {
     });
 
     addr
+}
+
+/// Start an echo server that reports every accepted TCP connection.
+async fn tracked_echo_server() -> (SocketAddr, mpsc::UnboundedReceiver<()>) {
+    let config = TcpServerConfig::default();
+    let listener = TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), config)
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (accepted_tx, accepted_rx) = mpsc::unbounded_channel();
+
+    tokio::spawn(async move {
+        while let Ok((mut sink, mut stream, _, _guard)) = listener.accept().await {
+            if accepted_tx.send(()).is_err() {
+                return;
+            }
+            tokio::spawn(async move {
+                while let Ok(frame) = stream.recv().await {
+                    if sink.send(frame).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    (addr, accepted_rx)
+}
+
+async fn wait_for_accept(accepted: &mut mpsc::UnboundedReceiver<()>) {
+    tokio::time::timeout(Duration::from_secs(1), accepted.recv())
+        .await
+        .expect("server should accept a fresh connection promptly")
+        .expect("tracked server should remain available");
 }
 
 /// Start an echo server bound to a *specific* address (used to bring a device
@@ -121,6 +158,154 @@ async fn reuses_idle_connection() {
         let resp = conn.stream().recv().await.unwrap();
         assert_eq!(&resp.pdu[..], &pdu);
     }
+}
+
+#[tokio::test]
+async fn invalidating_non_priority_releases_capacity_without_returning_idle() {
+    let addr = echo_server().await;
+    let pool = ConnectionPool::new(pool_config_for(addr));
+    let mut conn = pool.get(addr).await.unwrap();
+
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+    assert_eq!(conn.invalidation_reason(), None);
+    assert!(format!("{conn:?}").contains("invalidation_reason: None"));
+
+    conn.invalidate(LeaseInvalidationReason::CallerDirected);
+
+    assert_eq!(
+        conn.invalidation_reason(),
+        Some(LeaseInvalidationReason::CallerDirected)
+    );
+    assert!(format!("{conn:?}").contains("invalidation_reason: Some(CallerDirected)"));
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(conn);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+}
+
+#[tokio::test]
+async fn invalidating_priority_releases_its_device_budget() {
+    let addr = echo_server().await;
+    let mut config = pool_config_for(addr);
+    config.priority_devices = vec![PriorityDevice {
+        addr,
+        max_connections: 1,
+    }];
+    let pool = ConnectionPool::new(config);
+    let mut first = pool.get(addr).await.unwrap();
+
+    assert_eq!(pool.active_count(), 1);
+    assert!(matches!(pool.get(addr).await, Err(PoolError::Exhausted)));
+
+    first.invalidate(LeaseInvalidationReason::Cancelled);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    let second = pool
+        .get(addr)
+        .await
+        .expect("invalidation should release the one-slot priority budget");
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(first);
+    assert_eq!(pool.active_count(), 1);
+    drop(second);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
+}
+
+#[tokio::test]
+async fn repeated_invalidation_keeps_first_reason_and_releases_only_once() {
+    let addr = echo_server().await;
+    let mut config = pool_config_for(addr);
+    config.max_connections = 2;
+    let pool = ConnectionPool::new(config);
+    let mut invalidated = pool.get(addr).await.unwrap();
+    let sibling = pool.get(addr).await.unwrap();
+    assert_eq!(pool.active_count(), 2);
+
+    invalidated.invalidate(LeaseInvalidationReason::Timeout);
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    invalidated.invalidate(LeaseInvalidationReason::Protocol);
+    invalidated.invalidate(LeaseInvalidationReason::Transport);
+    assert_eq!(
+        invalidated.invalidation_reason(),
+        Some(LeaseInvalidationReason::Timeout)
+    );
+    // The sibling's remaining charge proves repetition did not reach the
+    // saturating accounting path and mask an extra release.
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(invalidated);
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(sibling);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
+}
+
+#[tokio::test]
+async fn shutdown_then_invalidation_retires_active_connection() {
+    let addr = echo_server().await;
+    let pool = ConnectionPool::new(pool_config_for(addr));
+    let mut conn = pool.get(addr).await.unwrap();
+    assert_eq!(pool.active_count(), 1);
+
+    pool.shutdown();
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    conn.invalidate(LeaseInvalidationReason::Transport);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(conn);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+}
+
+#[tokio::test]
+#[should_panic(expected = "connection already returned or invalidated")]
+async fn invalidated_connection_access_panics() {
+    let addr = echo_server().await;
+    let pool = ConnectionPool::new(pool_config_for(addr));
+    let mut conn = pool.get(addr).await.unwrap();
+    conn.invalidate(LeaseInvalidationReason::Protocol);
+
+    let _ = conn.addr();
+}
+
+#[tokio::test]
+async fn invalidation_forces_next_acquisition_to_open_fresh_connection() {
+    let (addr, mut accepted) = tracked_echo_server().await;
+    let mut config = pool_config_for(addr);
+    config.max_connections = 1;
+    let pool = ConnectionPool::new(config);
+
+    let mut first = pool.get(addr).await.unwrap();
+    wait_for_accept(&mut accepted).await;
+    first.invalidate(LeaseInvalidationReason::Transport);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    let second = pool.get(addr).await.unwrap();
+    wait_for_accept(&mut accepted).await;
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(first);
+    assert_eq!(pool.active_count(), 1);
+    drop(second);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
 }
 
 #[tokio::test]
