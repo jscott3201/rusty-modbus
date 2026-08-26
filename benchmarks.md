@@ -1,6 +1,6 @@
 # Rusty Modbus Benchmark Report
 
-Last updated: 2026-06-03
+Last updated: 2026-08-26
 
 This document records the current local and Docker performance baseline for the
 Modbus/TCP client/server path. The focus is single-connection pipelining: one
@@ -147,10 +147,56 @@ checkout. That Criterion layout is not presented as a stable upstream API.
 Report evidence is explicitly `observational_only`: artifact validity may be
 `valid`, while performance comparability and runner isolation remain
 `not_proven`, and budget and statistical decisions remain `not_evaluated`.
-Schema v1 defines no performance budget, threshold, verdict, accepted baseline,
-host-isolation policy, or cross-run comparison. The report renderer does not
-compute deltas. Checksums remain an integrity inventory, not a signature or
-attestation.
+The report schema itself defines no performance budget, threshold, verdict,
+accepted baseline, host-isolation policy, or cross-run comparison. The report
+renderer does not compute deltas. Checksums remain an integrity inventory, not a
+signature or attestation.
+
+### Observed benchmark report deltas
+
+The independent `benchmark-comparison` schema version `1` consumes two complete,
+validated `benchmark-report` v1 JSON files. The first operand is positionally
+named `baseline` and the second is positionally named `candidate`; neither name
+means that a report has been accepted, promoted, or approved. Emit the canonical
+comparison JSON to standard output with:
+
+```bash
+python3 scripts/baseline.py compare-report \
+  <BASELINE-benchmark-report-v1.json> \
+  <CANDIDATE-benchmark-report-v1.json>
+```
+
+The command uses the same repository-contained, symlink-rejecting report loader
+as `validate-report`, including the target-SHA Criterion identity proof. It does
+not modify either input or create an output directory. The two reports must have
+the exact `benchmark-report` v1 schema identity, identical producer records, and
+the same run mode. Their complete scenario-key sets must be equal; missing,
+extra, ambiguous, or duplicate keys are rejected rather than partially matched.
+
+TCP stress keys contain `kind`, `producer_id`, transport, operation, in-flight
+depth, clients, registers, repetitions, duration seconds, and warmup seconds.
+Criterion keys contain `kind`, `producer_id`, and benchmark ID; duplicate
+Criterion benchmark IDs are rejected even when their private source paths are
+different. Paired metrics must have identical units and shapes, and Criterion
+confidence levels must be exactly equal before point estimates are observed.
+
+Each matched TCP scenario records only the two input means and signed
+`candidate_minus_baseline` for throughput (`operations_per_second`) and p99
+latency (`ms`). Each matched Criterion scenario records only the two mean point
+estimates and the same signed subtraction in `ns`. The output preserves each
+operand's full target SHA, run ID, mode, declared runner label and recorded
+runner context, source artifact provenance, and producer records. It does not
+require or infer runner or environment equality.
+
+Comparison evidence remains fixed to `classification=observational_only`,
+`performance_comparability=not_proven`, `runner_isolation=not_proven`,
+`budget_decision=not_evaluated`, and
+`statistical_significance=not_evaluated`. Schema v1 defines no percentage,
+direction label, improvement or regression wording, threshold, pass/fail,
+budget verdict, confidence inference, statistical test, accepted baseline, or
+performance decision. It generates no timestamp. Scenario-key ordering,
+sorted-key JSON, and a trailing newline make repeated rendering of identical
+inputs byte-identical.
 
 The measured report below remains the June 2026 baseline; the harness does not
 replace those numbers until a clean, committed-SHA run is recorded.

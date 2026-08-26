@@ -28,6 +28,8 @@ REPORT_SCHEMA_NAME = "benchmark-report"
 REPORT_SCHEMA_VERSION = 1
 REPORT_JSON_NAME = "benchmark-report-v1.json"
 REPORT_MARKDOWN_NAME = "benchmark-report-v1.md"
+COMPARISON_SCHEMA_NAME = "benchmark-comparison"
+COMPARISON_SCHEMA_VERSION = 1
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
 SUPPORTED_CRITERION_VERSION = "0.5.1"
@@ -41,6 +43,13 @@ MODES = ("correctness", "bench-smoke", "bench-full")
 BENCHMARK_MODES = ("bench-smoke", "bench-full")
 REPORT_EVIDENCE = {
     "artifact_validity": "valid",
+    "budget_decision": "not_evaluated",
+    "classification": "observational_only",
+    "performance_comparability": "not_proven",
+    "runner_isolation": "not_proven",
+    "statistical_significance": "not_evaluated",
+}
+COMPARISON_EVIDENCE = {
     "budget_decision": "not_evaluated",
     "classification": "observational_only",
     "performance_comparability": "not_proven",
@@ -2682,6 +2691,547 @@ def load_report_file(repo_root: Path, value: str) -> dict[str, Any]:
     return report
 
 
+def _comparison_identity_key(
+    kind_value: Any, producer_value: Any, identity: Any, label: str
+) -> tuple[str | int, ...]:
+    kind = _require_nonempty_string(kind_value, f"{label}.kind")
+    producer_id = _require_nonempty_string(
+        producer_value, f"{label}.producer_id"
+    )
+    if kind == "tcp_stress":
+        if producer_id != STRESS_PRODUCER_ID:
+            raise BaselineError(f"{label} has an unsupported TCP stress producer")
+        identity = _require_exact_keys(
+            identity,
+            {
+                "clients",
+                "duration_seconds",
+                "in_flight",
+                "operation",
+                "registers",
+                "repetitions",
+                "transport",
+                "warmup_seconds",
+            },
+            f"{label}.identity",
+        )
+        transport = _require_nonempty_string(
+            identity["transport"], f"{label}.identity.transport"
+        )
+        operation = _require_nonempty_string(
+            identity["operation"], f"{label}.identity.operation"
+        )
+        if transport != "tcp" or operation not in {"read", "mixed"}:
+            raise BaselineError(f"{label} has an unsupported TCP stress identity")
+        return (
+            kind,
+            producer_id,
+            transport,
+            operation,
+            _strict_int(
+                identity["in_flight"], f"{label}.identity.in_flight", minimum=1
+            ),
+            _strict_int(identity["clients"], f"{label}.identity.clients", minimum=1),
+            _strict_int(
+                identity["registers"], f"{label}.identity.registers", minimum=1
+            ),
+            _strict_int(
+                identity["repetitions"], f"{label}.identity.repetitions", minimum=1
+            ),
+            _strict_int(
+                identity["duration_seconds"], f"{label}.identity.duration_seconds"
+            ),
+            _strict_int(
+                identity["warmup_seconds"], f"{label}.identity.warmup_seconds"
+            ),
+        )
+    if kind == "criterion_estimate":
+        if producer_id != CRITERION_PRODUCER_ID:
+            raise BaselineError(f"{label} has an unsupported Criterion producer")
+        identity = _require_exact_keys(
+            identity, {"benchmark_id"}, f"{label}.identity"
+        )
+        benchmark_id = _require_nonempty_string(
+            identity["benchmark_id"], f"{label}.identity.benchmark_id"
+        )
+        _relative_parts(benchmark_id, f"{label}.identity.benchmark_id")
+        return (kind, producer_id, benchmark_id)
+    raise BaselineError(f"{label}.kind is unsupported")
+
+
+def _report_scenario_comparison_key(
+    scenario: Any, label: str
+) -> tuple[str | int, ...]:
+    if not isinstance(scenario, dict):
+        raise BaselineError(f"{label} must be an object")
+    return _comparison_identity_key(
+        scenario.get("kind"),
+        scenario.get("producer_id"),
+        scenario.get("identity"),
+        label,
+    )
+
+
+def _comparison_scenario_index(
+    report: dict[str, Any], label: str
+) -> dict[tuple[str | int, ...], dict[str, Any]]:
+    index: dict[tuple[str | int, ...], dict[str, Any]] = {}
+    for position, scenario in enumerate(report["scenarios"]):
+        key = _report_scenario_comparison_key(
+            scenario, f"{label} report scenario {position}"
+        )
+        if key in index:
+            raise BaselineError(
+                f"duplicate {key[0]} comparison key in {label} report: {key}"
+            )
+        index[key] = scenario
+    return index
+
+
+def _observed_delta(
+    baseline_value: Any, candidate_value: Any, *, unit: str, label: str
+) -> dict[str, float | str]:
+    baseline_number = _strict_number(baseline_value, f"baseline {label}")
+    candidate_number = _strict_number(candidate_value, f"candidate {label}")
+    difference = candidate_number - baseline_number
+    if not math.isfinite(difference):
+        raise BaselineError(f"{label} candidate-minus-baseline delta must be finite")
+    return {
+        "baseline": baseline_number,
+        "candidate": candidate_number,
+        "candidate_minus_baseline": difference,
+        "unit": unit,
+    }
+
+
+def _paired_report_metric(
+    baseline_metric: Any,
+    candidate_metric: Any,
+    *,
+    expected_keys: set[str],
+    expected_unit: str,
+    label: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    baseline_metric = _require_exact_keys(
+        baseline_metric, expected_keys, f"baseline {label}"
+    )
+    candidate_metric = _require_exact_keys(
+        candidate_metric, expected_keys, f"candidate {label}"
+    )
+    if baseline_metric["unit"] != candidate_metric["unit"]:
+        raise BaselineError(f"{label} units do not match")
+    if baseline_metric["unit"] != expected_unit:
+        raise BaselineError(f"{label} unit is unsupported")
+    return baseline_metric, candidate_metric
+
+
+def _matched_scenario_observation(
+    baseline_scenario: dict[str, Any],
+    candidate_scenario: dict[str, Any],
+    key: tuple[str | int, ...],
+) -> dict[str, Any]:
+    kind = key[0]
+    baseline_metrics = baseline_scenario["metrics"]
+    candidate_metrics = candidate_scenario["metrics"]
+    if kind == "tcp_stress":
+        metric_names = {"p99_latency", "throughput"}
+        baseline_metrics = _require_exact_keys(
+            baseline_metrics, metric_names, "baseline TCP stress metrics"
+        )
+        candidate_metrics = _require_exact_keys(
+            candidate_metrics, metric_names, "candidate TCP stress metrics"
+        )
+        observations = {}
+        for metric_name, report_unit, comparison_unit in (
+            ("p99_latency", "milliseconds", "ms"),
+            ("throughput", "operations_per_second", "operations_per_second"),
+        ):
+            baseline_metric, candidate_metric = _paired_report_metric(
+                baseline_metrics[metric_name],
+                candidate_metrics[metric_name],
+                expected_keys={"recorded_statistics", "unit"},
+                expected_unit=report_unit,
+                label=f"{metric_name} metric",
+            )
+            statistic_keys = {
+                "coefficient_of_variation",
+                "count",
+                "max",
+                "mean",
+                "median",
+                "min",
+                "sample_stddev",
+            }
+            baseline_statistics = _require_exact_keys(
+                baseline_metric["recorded_statistics"],
+                statistic_keys,
+                f"baseline {metric_name} statistics",
+            )
+            candidate_statistics = _require_exact_keys(
+                candidate_metric["recorded_statistics"],
+                statistic_keys,
+                f"candidate {metric_name} statistics",
+            )
+            observations[metric_name] = _observed_delta(
+                baseline_statistics["mean"],
+                candidate_statistics["mean"],
+                unit=comparison_unit,
+                label=f"{metric_name} mean",
+            )
+        return {
+            "identity": dict(baseline_scenario["identity"]),
+            "kind": kind,
+            "observations": observations,
+            "producer_id": baseline_scenario["producer_id"],
+        }
+
+    if kind == "criterion_estimate":
+        baseline_metrics = _require_exact_keys(
+            baseline_metrics, {"mean_estimate"}, "baseline Criterion metrics"
+        )
+        candidate_metrics = _require_exact_keys(
+            candidate_metrics, {"mean_estimate"}, "candidate Criterion metrics"
+        )
+        estimate_keys = {
+            "confidence_level",
+            "lower",
+            "point",
+            "standard_error",
+            "unit",
+            "upper",
+        }
+        baseline_estimate, candidate_estimate = _paired_report_metric(
+            baseline_metrics["mean_estimate"],
+            candidate_metrics["mean_estimate"],
+            expected_keys=estimate_keys,
+            expected_unit="nanoseconds",
+            label="Criterion mean estimate",
+        )
+        if baseline_estimate["confidence_level"] != candidate_estimate["confidence_level"]:
+            raise BaselineError("Criterion confidence levels do not match")
+        return {
+            "identity": dict(baseline_scenario["identity"]),
+            "kind": kind,
+            "observations": {
+                "mean_estimate": _observed_delta(
+                    baseline_estimate["point"],
+                    candidate_estimate["point"],
+                    unit="ns",
+                    label="Criterion mean point estimate",
+                )
+            },
+            "producer_id": baseline_scenario["producer_id"],
+        }
+    raise BaselineError(f"comparison scenario kind is unsupported: {kind!r}")
+
+
+def _comparison_operand(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "producers": report["producers"],
+        "run": report["run"],
+        "runner": report["runner"],
+        "source_artifact": report["source_artifact"],
+    }
+
+
+def build_benchmark_comparison(
+    baseline_report: Any, candidate_report: Any
+) -> dict[str, Any]:
+    for label, report in (("baseline", baseline_report), ("candidate", candidate_report)):
+        errors = validate_report_document(report)
+        if errors:
+            raise BaselineError(f"{label} report validation failed: " + "; ".join(errors))
+    expected_schema = {"name": REPORT_SCHEMA_NAME, "version": REPORT_SCHEMA_VERSION}
+    if baseline_report["report_schema"] != candidate_report["report_schema"]:
+        raise BaselineError("input report schemas do not match")
+    if baseline_report["report_schema"] != expected_schema:
+        raise BaselineError("input report schema is unsupported")
+    if baseline_report["producers"] != candidate_report["producers"]:
+        raise BaselineError("input report producer records do not match")
+    if baseline_report["run"]["mode"] != candidate_report["run"]["mode"]:
+        raise BaselineError("input report run modes do not match")
+
+    baseline_index = _comparison_scenario_index(baseline_report, "baseline")
+    candidate_index = _comparison_scenario_index(candidate_report, "candidate")
+    baseline_keys = set(baseline_index)
+    candidate_keys = set(candidate_index)
+    if baseline_keys != candidate_keys:
+        raise BaselineError(
+            "comparison scenario sets do not match; "
+            f"missing_from_candidate={sorted(baseline_keys - candidate_keys)}, "
+            f"extra_in_candidate={sorted(candidate_keys - baseline_keys)}"
+        )
+
+    comparison = {
+        "comparison_schema": {
+            "name": COMPARISON_SCHEMA_NAME,
+            "version": COMPARISON_SCHEMA_VERSION,
+        },
+        "evidence": dict(COMPARISON_EVIDENCE),
+        "input_report_schema": dict(expected_schema),
+        "operands": {
+            "baseline": _comparison_operand(baseline_report),
+            "candidate": _comparison_operand(candidate_report),
+        },
+        "scenarios": [
+            _matched_scenario_observation(
+                baseline_index[key], candidate_index[key], key
+            )
+            for key in sorted(baseline_keys)
+        ],
+    }
+    errors = validate_comparison_document(comparison)
+    if errors:
+        raise BaselineError("generated comparison is invalid: " + "; ".join(errors))
+    return comparison
+
+
+def _validate_comparison_operand(value: Any, label: str) -> dict[str, Any]:
+    operand = _require_exact_keys(
+        value, {"producers", "run", "runner", "source_artifact"}, label
+    )
+    expected_producers = _report_producers(
+        stress=True,
+        criterion=True,
+        criterion_version=SUPPORTED_CRITERION_VERSION,
+    )
+    if operand["producers"] != expected_producers:
+        raise BaselineError(f"{label}.producers are unsupported")
+    run = _require_exact_keys(
+        operand["run"],
+        {"mode", "run_id", "source_status", "status", "target_sha"},
+        f"{label}.run",
+    )
+    target_sha = validate_full_sha(
+        _require_nonempty_string(run["target_sha"], f"{label}.run.target_sha")
+    )
+    run_id = validate_run_id(
+        _require_nonempty_string(run["run_id"], f"{label}.run.run_id")
+    )
+    mode = _require_nonempty_string(run["mode"], f"{label}.run.mode")
+    if mode not in BENCHMARK_MODES:
+        raise BaselineError(f"{label}.run.mode is unsupported")
+    if run["status"] != "valid" or run["source_status"] != "passed":
+        raise BaselineError(f"{label}.run statuses are unsupported")
+
+    runner = _require_exact_keys(
+        operand["runner"], {"environment", "label"}, f"{label}.runner"
+    )
+    runner_label = validate_runner_label(
+        _require_nonempty_string(runner["label"], f"{label}.runner.label")
+    )
+    _validate_report_environment_shape(runner["environment"], runner_label)
+
+    source = _require_exact_keys(
+        operand["source_artifact"],
+        {"checksum_inventory", "checksum_semantics", "path", "provenance", "schema"},
+        f"{label}.source_artifact",
+    )
+    source_schema = _require_exact_keys(
+        source["schema"], {"name", "version"}, f"{label}.source_artifact.schema"
+    )
+    if (
+        source_schema["name"] != "rusty-modbus-baseline-artifact"
+        or _strict_int(
+            source_schema["version"],
+            f"{label}.source_artifact.schema.version",
+            minimum=1,
+        )
+        != SCHEMA_VERSION
+    ):
+        raise BaselineError(f"{label}.source_artifact.schema is unsupported")
+    source_parts = _relative_parts(source["path"], f"{label}.source_artifact.path")
+    if len(source_parts) < 3 or source_parts[-3:] != (
+        f"baseline-v{SCHEMA_VERSION}",
+        target_sha,
+        run_id,
+    ):
+        raise BaselineError(f"{label}.source_artifact.path does not match its run")
+    if source["checksum_inventory"] != "checksums.sha256":
+        raise BaselineError(f"{label}.source_artifact checksum reference is unsupported")
+    if source["checksum_semantics"] != "integrity_inventory_not_signature_or_attestation":
+        raise BaselineError(f"{label}.source_artifact checksum semantics are unsupported")
+    provenance = _require_exact_keys(
+        source["provenance"],
+        {"ended_utc", "harness_path", "harness_version", "started_utc"},
+        f"{label}.source_artifact.provenance",
+    )
+    if (provenance["harness_path"], provenance["harness_version"]) != (
+        HARNESS_PATH,
+        HARNESS_VERSION,
+    ):
+        raise BaselineError(f"{label}.source_artifact provenance is unsupported")
+    for field in ("started_utc", "ended_utc"):
+        _require_nonempty_string(
+            provenance[field], f"{label}.source_artifact.provenance.{field}"
+        )
+    return operand
+
+
+def _strict_signed_number(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BaselineError(f"{label} must be numeric")
+    try:
+        result = float(value)
+    except (OverflowError, ValueError) as error:
+        raise BaselineError(f"{label} must be finite") from error
+    if not math.isfinite(result):
+        raise BaselineError(f"{label} must be finite")
+    return result
+
+
+def _validate_comparison_observation(value: Any, unit: str, label: str) -> None:
+    observation = _require_exact_keys(
+        value,
+        {"baseline", "candidate", "candidate_minus_baseline", "unit"},
+        label,
+    )
+    if observation["unit"] != unit:
+        raise BaselineError(f"{label}.unit must be {unit}")
+    baseline_value = _strict_number(observation["baseline"], f"{label}.baseline")
+    candidate_value = _strict_number(observation["candidate"], f"{label}.candidate")
+    difference = _strict_signed_number(
+        observation["candidate_minus_baseline"],
+        f"{label}.candidate_minus_baseline",
+    )
+    expected = candidate_value - baseline_value
+    if not math.isfinite(expected) or difference != expected:
+        raise BaselineError(f"{label}.candidate_minus_baseline is not the observed delta")
+
+
+def _validate_comparison_scenario(
+    value: Any, position: int
+) -> tuple[str | int, ...]:
+    label = f"comparison scenario {position}"
+    scenario = _require_exact_keys(
+        value, {"identity", "kind", "observations", "producer_id"}, label
+    )
+    key = _comparison_identity_key(
+        scenario["kind"], scenario["producer_id"], scenario["identity"], label
+    )
+    kind = key[0]
+    observations = scenario["observations"]
+    if kind == "tcp_stress":
+        observations = _require_exact_keys(
+            observations, {"p99_latency", "throughput"}, f"{label}.observations"
+        )
+        _validate_comparison_observation(
+            observations["p99_latency"], "ms", f"{label}.observations.p99_latency"
+        )
+        _validate_comparison_observation(
+            observations["throughput"],
+            "operations_per_second",
+            f"{label}.observations.throughput",
+        )
+        return key
+    if kind == "criterion_estimate":
+        observations = _require_exact_keys(
+            observations, {"mean_estimate"}, f"{label}.observations"
+        )
+        _validate_comparison_observation(
+            observations["mean_estimate"],
+            "ns",
+            f"{label}.observations.mean_estimate",
+        )
+        return key
+    raise BaselineError(f"{label}.kind is unsupported")
+
+
+def validate_comparison_document(comparison: Any) -> list[str]:
+    if not isinstance(comparison, dict):
+        return ["comparison root must be an object"]
+    try:
+        comparison = _require_exact_keys(
+            comparison,
+            {
+                "comparison_schema",
+                "evidence",
+                "input_report_schema",
+                "operands",
+                "scenarios",
+            },
+            "comparison",
+        )
+        comparison_schema = _require_exact_keys(
+            comparison["comparison_schema"],
+            {"name", "version"},
+            "comparison_schema",
+        )
+        if (
+            comparison_schema["name"] != COMPARISON_SCHEMA_NAME
+            or _strict_int(
+                comparison_schema["version"], "comparison_schema.version", minimum=1
+            )
+            != COMPARISON_SCHEMA_VERSION
+        ):
+            raise BaselineError("comparison schema is unsupported")
+        input_schema = _require_exact_keys(
+            comparison["input_report_schema"],
+            {"name", "version"},
+            "input_report_schema",
+        )
+        if (
+            input_schema["name"] != REPORT_SCHEMA_NAME
+            or _strict_int(
+                input_schema["version"], "input_report_schema.version", minimum=1
+            )
+            != REPORT_SCHEMA_VERSION
+        ):
+            raise BaselineError("input report schema is unsupported")
+        if comparison["evidence"] != COMPARISON_EVIDENCE:
+            raise BaselineError("comparison evidence semantics are unsupported")
+
+        operands = _require_exact_keys(
+            comparison["operands"], {"baseline", "candidate"}, "operands"
+        )
+        baseline_operand = _validate_comparison_operand(
+            operands["baseline"], "operands.baseline"
+        )
+        candidate_operand = _validate_comparison_operand(
+            operands["candidate"], "operands.candidate"
+        )
+        if baseline_operand["producers"] != candidate_operand["producers"]:
+            raise BaselineError("operand producer records do not match")
+        if baseline_operand["run"]["mode"] != candidate_operand["run"]["mode"]:
+            raise BaselineError("operand run modes do not match")
+
+        scenarios = comparison["scenarios"]
+        if not isinstance(scenarios, list) or not scenarios:
+            raise BaselineError("comparison scenarios must be a non-empty list")
+        keys = [
+            _validate_comparison_scenario(scenario, position)
+            for position, scenario in enumerate(scenarios)
+        ]
+        if len(set(keys)) != len(keys):
+            raise BaselineError("comparison scenarios contain duplicate keys")
+        if keys != sorted(keys):
+            raise BaselineError("comparison scenarios are not in canonical key order")
+        if {key[0] for key in keys} != {"criterion_estimate", "tcp_stress"}:
+            raise BaselineError("comparison must contain TCP stress and Criterion scenarios")
+        if not _all_numbers_finite(comparison):
+            raise BaselineError("comparison contains a non-finite or unsupported value")
+    except BaselineError as error:
+        return [str(error)]
+    return []
+
+
+def comparison_json_text(comparison: dict[str, Any]) -> str:
+    errors = validate_comparison_document(comparison)
+    if errors:
+        raise BaselineError("cannot serialize invalid comparison: " + "; ".join(errors))
+    return json.dumps(
+        comparison, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+    ) + "\n"
+
+
+def compare_report_files(
+    repo_root: Path, baseline_report_file: str, candidate_report_file: str
+) -> dict[str, Any]:
+    baseline_report = load_report_file(repo_root, baseline_report_file)
+    candidate_report = load_report_file(repo_root, candidate_report_file)
+    return build_benchmark_comparison(baseline_report, candidate_report)
+
+
 def run_correctness(run: ArtifactRun) -> None:
     for spec in correctness_plan(run.repo_root):
         run.run_command(spec)
@@ -2854,6 +3404,12 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-report", help="validate a benchmark-report JSON document"
     )
     validate_report.add_argument("report_json")
+    compare_report = subparsers.add_parser(
+        "compare-report",
+        help="emit signed observational deltas for two validated benchmark reports",
+    )
+    compare_report.add_argument("baseline_report_json")
+    compare_report.add_argument("candidate_report_json")
     return parser
 
 
@@ -2935,6 +3491,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "validate-report":
             load_report_file(repo_root, args.report_json)
             print(f"benchmark report valid: {args.report_json}")
+            return 0
+        if args.command == "compare-report":
+            comparison = compare_report_files(
+                repo_root,
+                args.baseline_report_json,
+                args.candidate_report_json,
+            )
+            sys.stdout.write(comparison_json_text(comparison))
             return 0
         status, _ = run_mode(args, repo_root)
         return status
