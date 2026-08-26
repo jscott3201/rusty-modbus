@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import math
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -223,6 +224,38 @@ def populate_benchmark_evidence(run: baseline.ArtifactRun) -> None:
         run.run_dir / "criterion" / "parsed-estimates.json", run.criterion_results
     )
     run.environment = environment_fixture(run.runner_label)
+
+
+def shifted_report_fixture(
+    report: dict,
+    *,
+    run_id: str = "candidate-report",
+    runner_label: str = "candidate-runner",
+    throughput_delta: float = 25.0,
+    p99_delta: float = -0.05,
+    criterion_delta: float = 4.0,
+) -> dict:
+    candidate = copy.deepcopy(report)
+    candidate["run"]["run_id"] = run_id
+    source_parts = candidate["source_artifact"]["path"].split("/")
+    source_parts[-1] = run_id
+    candidate["source_artifact"]["path"] = "/".join(source_parts)
+    candidate["runner"]["label"] = runner_label
+    candidate["runner"]["environment"]["runner_label"] = runner_label
+    for scenario in candidate["scenarios"]:
+        if scenario["kind"] == "tcp_stress":
+            for metric_name, delta in (
+                ("throughput", throughput_delta),
+                ("p99_latency", p99_delta),
+            ):
+                statistics = scenario["metrics"][metric_name]["recorded_statistics"]
+                for field in ("min", "median", "mean", "max"):
+                    statistics[field] += delta
+        else:
+            estimate = scenario["metrics"]["mean_estimate"]
+            for field in ("lower", "point", "upper"):
+                estimate[field] += criterion_delta
+    return candidate
 
 
 class BaselineHarnessTests(unittest.TestCase):
@@ -449,6 +482,374 @@ class BaselineHarnessTests(unittest.TestCase):
                 (run.run_dir / "checksums.sha256").read_bytes(), checksum_before
             )
             self.assertEqual(baseline.validate_report_document(report), [])
+
+    def test_comparison_records_only_deterministic_signed_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="comparison-baseline")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            baseline_report = baseline.build_benchmark_report(root, run.run_dir)
+            candidate_report = shifted_report_fixture(baseline_report)
+
+            comparison = baseline.build_benchmark_comparison(
+                baseline_report, candidate_report
+            )
+            self.assertEqual(
+                comparison["comparison_schema"],
+                {"name": "benchmark-comparison", "version": 1},
+            )
+            self.assertEqual(
+                comparison["input_report_schema"],
+                {"name": "benchmark-report", "version": 1},
+            )
+            self.assertEqual(comparison["evidence"], baseline.COMPARISON_EVIDENCE)
+            self.assertEqual(
+                comparison["operands"]["baseline"]["runner"],
+                baseline_report["runner"],
+            )
+            self.assertEqual(
+                comparison["operands"]["candidate"]["runner"],
+                candidate_report["runner"],
+            )
+            stress = next(
+                scenario
+                for scenario in comparison["scenarios"]
+                if scenario["kind"] == "tcp_stress"
+                and scenario["identity"]["operation"] == "read"
+                and scenario["identity"]["in_flight"] == 1
+            )
+            self.assertEqual(
+                stress["observations"]["throughput"]["candidate_minus_baseline"],
+                25.0,
+            )
+            self.assertEqual(
+                stress["observations"]["throughput"]["unit"],
+                "operations_per_second",
+            )
+            self.assertAlmostEqual(
+                stress["observations"]["p99_latency"]["candidate_minus_baseline"],
+                -0.05,
+            )
+            self.assertEqual(stress["observations"]["p99_latency"]["unit"], "ms")
+            criterion = next(
+                scenario
+                for scenario in comparison["scenarios"]
+                if scenario["kind"] == "criterion_estimate"
+            )
+            self.assertEqual(
+                criterion["observations"]["mean_estimate"][
+                    "candidate_minus_baseline"
+                ],
+                4.0,
+            )
+            self.assertEqual(criterion["observations"]["mean_estimate"]["unit"], "ns")
+            self.assertEqual(baseline.validate_comparison_document(comparison), [])
+
+            first = baseline.comparison_json_text(comparison)
+            self.assertEqual(first, baseline.comparison_json_text(comparison))
+            self.assertTrue(first.endswith("\n"))
+            permuted_baseline = copy.deepcopy(baseline_report)
+            permuted_candidate = copy.deepcopy(candidate_report)
+            permuted_baseline["scenarios"].reverse()
+            permuted_candidate["scenarios"] = (
+                permuted_candidate["scenarios"][2:]
+                + permuted_candidate["scenarios"][:2]
+            )
+            self.assertEqual(
+                first,
+                baseline.comparison_json_text(
+                    baseline.build_benchmark_comparison(
+                        permuted_baseline, permuted_candidate
+                    )
+                ),
+            )
+
+            reversed_comparison = baseline.build_benchmark_comparison(
+                candidate_report, baseline_report
+            )
+            for forward, reversed_observation in zip(
+                comparison["scenarios"], reversed_comparison["scenarios"], strict=True
+            ):
+                self.assertEqual(forward["identity"], reversed_observation["identity"])
+                self.assertEqual(forward["kind"], reversed_observation["kind"])
+                for metric_name, observation in forward["observations"].items():
+                    reversed_metric = reversed_observation["observations"][metric_name]
+                    self.assertEqual(observation["unit"], reversed_metric["unit"])
+                    self.assertEqual(observation["baseline"], reversed_metric["candidate"])
+                    self.assertEqual(observation["candidate"], reversed_metric["baseline"])
+                    self.assertEqual(
+                        observation["candidate_minus_baseline"],
+                        -reversed_metric["candidate_minus_baseline"],
+                    )
+
+    def test_comparison_rejects_incompatible_reports_and_incomplete_sets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="comparison-mismatches")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            baseline_report = baseline.build_benchmark_report(root, run.run_dir)
+
+            cases = {
+                "schema": lambda value: value["report_schema"].update({"version": 2}),
+                "mode": lambda value: value["run"].update({"mode": "bench-full"}),
+                "producer": lambda value: value["producers"][-1].update(
+                    {"version": "0.5.2"}
+                ),
+                "scenario-key": lambda value: next(
+                    scenario
+                    for scenario in value["scenarios"]
+                    if scenario["kind"] == "tcp_stress"
+                )["identity"].update({"clients": 2}),
+                "unit": lambda value: next(
+                    scenario
+                    for scenario in value["scenarios"]
+                    if scenario["kind"] == "tcp_stress"
+                )["metrics"]["throughput"].update({"unit": "requests_per_second"}),
+                "metric-shape": lambda value: next(
+                    scenario
+                    for scenario in value["scenarios"]
+                    if scenario["kind"] == "tcp_stress"
+                )["metrics"]["throughput"]["recorded_statistics"].pop("mean"),
+            }
+            for label, mutate in cases.items():
+                with self.subTest(case=label):
+                    candidate = shifted_report_fixture(baseline_report)
+                    mutate(candidate)
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.build_benchmark_comparison(
+                            baseline_report, candidate
+                        )
+
+            confidence_mismatch = shifted_report_fixture(baseline_report)
+            criterion = next(
+                scenario
+                for scenario in confidence_mismatch["scenarios"]
+                if scenario["kind"] == "criterion_estimate"
+            )
+            criterion["metrics"]["mean_estimate"]["confidence_level"] = 0.9
+            with self.assertRaisesRegex(baseline.BaselineError, "confidence levels"):
+                baseline.build_benchmark_comparison(
+                    baseline_report, confidence_mismatch
+                )
+
+            missing = shifted_report_fixture(baseline_report)
+            missing_index = next(
+                index
+                for index, scenario in enumerate(missing["scenarios"])
+                if scenario["kind"] == "tcp_stress"
+            )
+            removed = missing["scenarios"].pop(missing_index)
+            missing["correctness"]["stress_sample_count"] -= removed["identity"][
+                "repetitions"
+            ]
+            self.assertEqual(baseline.validate_report_document(missing), [])
+            with self.assertRaisesRegex(baseline.BaselineError, "scenario sets"):
+                baseline.build_benchmark_comparison(baseline_report, missing)
+
+            extra = shifted_report_fixture(baseline_report)
+            extra_stress = copy.deepcopy(
+                next(
+                    scenario
+                    for scenario in extra["scenarios"]
+                    if scenario["kind"] == "tcp_stress"
+                )
+            )
+            extra_stress["identity"]["clients"] = 2
+            extra["scenarios"].append(extra_stress)
+            extra["correctness"]["stress_sample_count"] += extra_stress["identity"][
+                "repetitions"
+            ]
+            self.assertEqual(baseline.validate_report_document(extra), [])
+            with self.assertRaisesRegex(baseline.BaselineError, "scenario sets"):
+                baseline.build_benchmark_comparison(baseline_report, extra)
+
+            duplicate_criterion = shifted_report_fixture(baseline_report)
+            duplicate = copy.deepcopy(
+                next(
+                    scenario
+                    for scenario in duplicate_criterion["scenarios"]
+                    if scenario["kind"] == "criterion_estimate"
+                )
+            )
+            duplicate["sources"][0]["private_estimates_json"] = (
+                "criterion/raw/02-tcp-throughput/tcp_pipelined/new/estimates.json"
+            )
+            duplicate_criterion["scenarios"].append(duplicate)
+            self.assertEqual(
+                baseline.validate_report_document(duplicate_criterion), []
+            )
+            with self.assertRaisesRegex(baseline.BaselineError, "duplicate criterion"):
+                baseline.build_benchmark_comparison(
+                    baseline_report, duplicate_criterion
+                )
+
+    def test_comparison_rejects_hostile_selectors_and_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="comparison-hostile")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            baseline_report = baseline.build_benchmark_report(root, run.run_dir)
+            candidate_report = shifted_report_fixture(baseline_report)
+
+            for value_label, invalid_value in (
+                ("list", ["tcp_stress"]),
+                ("object", {"kind": "tcp_stress"}),
+            ):
+                with self.subTest(selector=value_label):
+                    malformed = copy.deepcopy(candidate_report)
+                    malformed["scenarios"][0]["kind"] = invalid_value
+                    with self.assertRaises(baseline.BaselineError) as raised:
+                        baseline.build_benchmark_comparison(
+                            baseline_report, malformed
+                        )
+                    self.assertNotIsInstance(raised.exception, (TypeError, KeyError))
+
+            numeric_cases = {
+                "boolean-report-value": True,
+                "infinite-report-value": math.inf,
+                "nan-report-value": math.nan,
+            }
+            for label, invalid_value in numeric_cases.items():
+                with self.subTest(case=label):
+                    malformed = copy.deepcopy(candidate_report)
+                    stress = next(
+                        scenario
+                        for scenario in malformed["scenarios"]
+                        if scenario["kind"] == "tcp_stress"
+                    )
+                    stress["metrics"]["throughput"]["recorded_statistics"][
+                        "mean"
+                    ] = invalid_value
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.build_benchmark_comparison(
+                            baseline_report, malformed
+                        )
+
+            comparison = baseline.build_benchmark_comparison(
+                baseline_report, candidate_report
+            )
+            stress_index = next(
+                index
+                for index, scenario in enumerate(comparison["scenarios"])
+                if scenario["kind"] == "tcp_stress"
+            )
+            comparison_cases = {
+                "boolean": ("baseline", True),
+                "infinite": ("candidate", math.inf),
+                "nan-delta": ("candidate_minus_baseline", math.nan),
+                "wrong-delta": ("candidate_minus_baseline", 0.0),
+            }
+            for label, (field, invalid_value) in comparison_cases.items():
+                with self.subTest(comparison=label):
+                    malformed = copy.deepcopy(comparison)
+                    malformed["scenarios"][stress_index]["observations"][
+                        "throughput"
+                    ][field] = invalid_value
+                    self.assertTrue(
+                        baseline.validate_comparison_document(malformed)
+                    )
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.comparison_json_text(malformed)
+
+            for label, path in (
+                ("comparison-schema", ("comparison_schema", "version")),
+                (
+                    "source-schema",
+                    (
+                        "operands",
+                        "baseline",
+                        "source_artifact",
+                        "schema",
+                        "version",
+                    ),
+                ),
+            ):
+                with self.subTest(boolean_version=label):
+                    malformed = copy.deepcopy(comparison)
+                    target = malformed
+                    for part in path[:-1]:
+                        target = target[part]
+                    target[path[-1]] = True
+                    self.assertTrue(
+                        baseline.validate_comparison_document(malformed)
+                    )
+
+    def test_compare_report_cli_is_json_only_fail_closed_and_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="comparison-cli")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            baseline_report = baseline.build_benchmark_report(root, run.run_dir)
+            candidate_report = shifted_report_fixture(baseline_report)
+            report_dir = root / "reports"
+            report_dir.mkdir()
+            baseline_path = report_dir / "baseline.json"
+            candidate_path = report_dir / "candidate.json"
+            baseline.write_json(baseline_path, baseline_report)
+            baseline.write_json(candidate_path, candidate_report)
+            before = (baseline_path.read_bytes(), candidate_path.read_bytes())
+
+            direct = baseline.compare_report_files(
+                root, "reports/baseline.json", "reports/candidate.json"
+            )
+            script = root / "scripts" / "baseline.py"
+            script.parent.mkdir()
+            shutil.copyfile(Path(baseline.__file__), script)
+            success = subprocess.run(
+                (
+                    sys.executable,
+                    str(script),
+                    "compare-report",
+                    "reports/baseline.json",
+                    "reports/candidate.json",
+                ),
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(success.returncode, 0, success.stderr)
+            self.assertEqual(success.stderr, "")
+            self.assertEqual(success.stdout, baseline.comparison_json_text(direct))
+            self.assertEqual(json.loads(success.stdout), direct)
+
+            invalid_path = report_dir / "invalid.json"
+            invalid_path.write_text("[]\n")
+            failure = subprocess.run(
+                (
+                    sys.executable,
+                    str(script),
+                    "compare-report",
+                    "reports/invalid.json",
+                    "reports/candidate.json",
+                ),
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertEqual(failure.stdout, "")
+            self.assertIn("baseline:", failure.stderr)
+            self.assertEqual(
+                (baseline_path.read_bytes(), candidate_path.read_bytes()), before
+            )
+
+            link = report_dir / "baseline-link.json"
+            try:
+                link.symlink_to(baseline_path.name)
+            except OSError:
+                return
+            with self.assertRaisesRegex(baseline.BaselineError, "symlinks"):
+                baseline.compare_report_files(
+                    root,
+                    "reports/baseline-link.json",
+                    "reports/candidate.json",
+                )
 
     def test_report_render_rejects_overwrite_traversal_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
