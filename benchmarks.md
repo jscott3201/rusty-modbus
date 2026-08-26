@@ -69,6 +69,8 @@ bench-output/baseline-v1/<full-40-character-SHA>/<run-id>/
 ├── criterion/{raw/**,parsed-estimates.json}     # benchmark modes
 ├── summary.json
 ├── summary.csv
+├── benchmark-report-v1.json                    # successful benchmark modes
+├── benchmark-report-v1.md                      # successful benchmark modes
 └── checksums.sha256
 ```
 
@@ -103,7 +105,53 @@ The checksums detect missing or corrupt retained files. They are not a signature
 or attestation: rewriting files and regenerating `checksums.sha256` defeats that
 check.
 
-No performance budget or regression threshold is attached to schema version 1.
+### Machine-readable benchmark report contract
+
+Successful `bench-smoke` and `bench-full` finalization now writes
+`benchmark-report-v1.json` and `benchmark-report-v1.md` before constructing the
+checksum inventory. The workflow already uploads the complete run directory, so
+no measured value controls whether these informational reports are uploaded.
+Correctness artifacts do not contain TCP stress/Criterion scenarios and do not
+produce benchmark reports.
+
+The report uses the independent `benchmark-report` schema version `1`. This does
+not bump, reinterpret, or make the report files mandatory for baseline artifact
+schema version `1`; retained v1 artifacts without reports remain valid. Render a
+report from an existing validated benchmark artifact into a new, repository-local
+directory with placeholder paths as follows:
+
+```bash
+python3 scripts/baseline.py report \
+  bench-output/baseline-v1/<SHA>/<run-id> \
+  --output-dir <new-report-output-dir>
+python3 scripts/baseline.py validate-report \
+  <new-report-output-dir>/benchmark-report-v1.json
+```
+
+The render command validates the source artifact and its checksum inventory,
+does not modify the source, rejects traversal and symlink output paths, and
+refuses an existing output directory. Repeated rendering from identical source
+bytes is byte-identical. The report preserves source timestamps rather than
+generating a render timestamp.
+
+Each report records the full target SHA, run ID, mode, source status, declared
+runner label, recorded environment and tool identity, strict zero-error and
+zero-retry facts, normalized stress/Criterion values, and source-relative raw
+and checksum references. Producer records identify custom stress JSON schema v1
+and the exact Criterion 0.5.1 `new/estimates.json` private-layout adapter. The
+renderer obtains that version from `Cargo.lock` at the artifact's validated full
+target SHA through Git object storage; unavailable, ambiguous, mismatched, or
+unsupported lock evidence is rejected rather than inferred from the current
+checkout. That Criterion layout is not presented as a stable upstream API.
+
+Report evidence is explicitly `observational_only`: artifact validity may be
+`valid`, while performance comparability and runner isolation remain
+`not_proven`, and budget and statistical decisions remain `not_evaluated`.
+Schema v1 defines no performance budget, threshold, verdict, accepted baseline,
+host-isolation policy, or cross-run comparison. The report renderer does not
+compute deltas. Checksums remain an integrity inventory, not a signature or
+attestation.
+
 The measured report below remains the June 2026 baseline; the harness does not
 replace those numbers until a clean, committed-SHA run is recorded.
 

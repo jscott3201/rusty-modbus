@@ -68,6 +68,163 @@ def expected_scenario(**overrides: object) -> dict:
     return value
 
 
+def initialize_git_lock_fixture(
+    root: Path,
+    *,
+    criterion_versions: tuple[str, ...] = ("0.5.1",),
+    include_lock: bool = True,
+) -> str:
+    def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            ("git", *args), cwd=root, check=True, capture_output=True
+        )
+
+    git("init", "--quiet")
+    (root / ".gitignore").write_text("bench-output/\nrendered/\nreports/\n")
+    (root / "fixture.txt").write_text("immutable target fixture\n")
+    if include_lock:
+        lines = ["version = 4", ""]
+        if not criterion_versions:
+            lines.extend(
+                [
+                    "[[package]]",
+                    'name = "fixture"',
+                    'version = "1.0.0"',
+                    "",
+                ]
+            )
+        for version in criterion_versions:
+            lines.extend(
+                [
+                    "[[package]]",
+                    'name = "criterion"',
+                    f'version = "{version}"',
+                    "",
+                ]
+            )
+        (root / "Cargo.lock").write_text("\n".join(lines))
+    git("add", ".")
+    git(
+        "-c",
+        "user.name=Benchmark Report Test",
+        "-c",
+        "user.email=benchmark-report@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "immutable fixture",
+    )
+    return git("rev-parse", "HEAD").stdout.decode().strip()
+
+
+def environment_fixture(runner_label: str = "unit-test") -> dict:
+    return {
+        "schema_version": 1,
+        "collection_status": "complete",
+        "runner": {"label": runner_label, "github": {"RUNNER_OS": "Linux"}},
+        "platform": {
+            "os": "Linux",
+            "release": "fixture",
+            "kernel": "fixture",
+            "architecture": "x86_64",
+        },
+        "cpu": {"model": "fixture", "model_source": "fixture", "logical_count": 2},
+        "power": {"availability": "unavailable", "value": None, "source": None},
+        "tools": {
+            "rustc": {"version": "rustc fixture", "host": "x86_64-unknown-linux-gnu"},
+            "cargo": "cargo fixture",
+            "python": {
+                "version": "3.fixture",
+                "implementation": "CPython",
+                "executable": "/fixture/python3",
+            },
+        },
+        "cargo_metadata": {
+            "workspace_root": "/fixture",
+            "target_directory": "/fixture/target",
+            "workspace_member_count": 1,
+            "packages": [],
+        },
+    }
+
+
+def populate_benchmark_evidence(run: baseline.ArtifactRun) -> None:
+    scenarios = baseline.stress_scenarios("bench-smoke", 1)
+    parsed_dir = run.run_dir / "stress" / "parsed"
+    parsed_dir.mkdir(parents=True)
+    for index, scenario in enumerate(scenarios, 1):
+        sample = stress_fixture(
+            operation=scenario["operation"],
+            in_flight=scenario["in_flight"],
+            warmup_secs=1,
+            throughput_ops_sec=float(100 + index),
+            per_client_ops_sec=float(100 + index),
+        )
+        sample["repetition"] = scenario["repetition"]
+        command_id = f"{index:03d}-stress-{scenario['operation']}-d{scenario['in_flight']}-r1"
+        sample["command_id"] = command_id
+        run.stress_samples.append(sample)
+        label = (
+            f"stress-{scenario['operation']}-d{scenario['in_flight']}-"
+            f"r{scenario['repetition']}"
+        )
+        baseline.write_json(parsed_dir / f"{label}.json", sample)
+
+        command_dir = run.run_dir / "commands" / command_id
+        command_dir.mkdir()
+        stdout_path = command_dir / "command.stdout"
+        stderr_path = command_dir / "command.stderr"
+        raw_sample = dict(sample)
+        raw_sample.pop("command_id")
+        raw_sample.pop("repetition")
+        stdout_path.write_text(json.dumps(raw_sample, sort_keys=True) + "\n")
+        stderr_path.write_text("")
+        command = {
+            "schema_version": 1,
+            "command_id": command_id,
+            "label": label,
+            "argv": ["fixture-stress", "--json"],
+            "cwd": str(run.repo_root),
+            "started_utc": "2026-01-01T00:00:00.000000Z",
+            "ended_utc": "2026-01-01T00:00:01.000000Z",
+            "duration_seconds": 1.0,
+            "exit_code": 0,
+            "status": "passed",
+            "error": None,
+            "env_overrides": {},
+            "stdout_path": stdout_path.relative_to(run.repo_root).as_posix(),
+            "stderr_path": stderr_path.relative_to(run.repo_root).as_posix(),
+        }
+        baseline.write_json(command_dir / "command.json", command)
+        run.command_records.append(command)
+
+    run.stress_aggregates = baseline.aggregate_stress_samples(run.stress_samples, scenarios)
+    criterion_home = run.run_dir / "criterion" / "raw" / "01-tcp-throughput"
+    estimate = criterion_home / "tcp_pipelined" / "new" / "estimates.json"
+    estimate.parent.mkdir(parents=True)
+    baseline.write_json(
+        estimate,
+        {
+            "mean": {
+                "confidence_interval": {
+                    "confidence_level": 0.95,
+                    "lower_bound": 9.0,
+                    "upper_bound": 11.0,
+                },
+                "point_estimate": 10.0,
+                "standard_error": 0.1,
+            }
+        },
+    )
+    run.criterion_results = baseline.parse_criterion_estimates(
+        criterion_home, run.repo_root
+    )
+    baseline.write_json(
+        run.run_dir / "criterion" / "parsed-estimates.json", run.criterion_results
+    )
+    run.environment = environment_fixture(run.runner_label)
+
+
 class BaselineHarnessTests(unittest.TestCase):
     def make_run(
         self,
@@ -76,11 +233,12 @@ class BaselineHarnessTests(unittest.TestCase):
         run_id: str = "test-run",
         dirty: bool = False,
         allow_dirty: bool = False,
+        target_sha: str = SHA,
     ) -> baseline.ArtifactRun:
         run = baseline.ArtifactRun(
             repo_root=root,
             output_root=root / "bench-output",
-            target_sha=SHA,
+            target_sha=target_sha,
             run_id=run_id,
             mode="bench-smoke",
             runner_label="unit-test",
@@ -89,6 +247,26 @@ class BaselineHarnessTests(unittest.TestCase):
         )
         run.create()
         return run
+
+    def make_report_run(
+        self,
+        root: Path,
+        *,
+        run_id: str,
+        criterion_versions: tuple[str, ...] = ("0.5.1",),
+        include_lock: bool = True,
+        target_sha: str | None = None,
+    ) -> baseline.ArtifactRun:
+        fixture_sha = initialize_git_lock_fixture(
+            root,
+            criterion_versions=criterion_versions,
+            include_lock=include_lock,
+        )
+        return self.make_run(
+            root,
+            run_id=run_id,
+            target_sha=target_sha or fixture_sha,
+        )
 
     def test_full_sha_and_clean_tree_are_required(self) -> None:
         self.assertEqual(baseline.validate_full_sha(SHA), SHA)
@@ -210,6 +388,583 @@ class BaselineHarnessTests(unittest.TestCase):
             baseline.write_summary_csv(csv_two, [aggregate], [])
             self.assertEqual(csv_one.read_bytes(), csv_two.read_bytes())
             self.assertEqual(csv_one.read_text().splitlines()[0], ",".join(baseline.CSV_COLUMNS))
+
+    def test_valid_v1_benchmark_artifact_renders_deterministic_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="report-source")
+            populate_benchmark_evidence(run)
+            run.finalize()
+
+            self.assertEqual(baseline.validate_artifact(root, run.run_dir), [])
+            integrated_json = run.run_dir / baseline.REPORT_JSON_NAME
+            integrated_markdown = run.run_dir / baseline.REPORT_MARKDOWN_NAME
+            self.assertTrue(integrated_json.is_file())
+            self.assertTrue(integrated_markdown.is_file())
+            report = baseline.build_benchmark_report(root, run.run_dir)
+            self.assertEqual(integrated_json.read_text(), baseline.report_json_text(report))
+            self.assertEqual(
+                integrated_markdown.read_text(), baseline.render_report_markdown(report)
+            )
+            self.assertEqual(report["report_schema"], {"name": "benchmark-report", "version": 1})
+            self.assertEqual(report["run"]["status"], "valid")
+            self.assertEqual(
+                report["evidence"],
+                {
+                    "artifact_validity": "valid",
+                    "budget_decision": "not_evaluated",
+                    "classification": "observational_only",
+                    "performance_comparability": "not_proven",
+                    "runner_isolation": "not_proven",
+                    "statistical_significance": "not_evaluated",
+                },
+            )
+            self.assertIn(
+                baseline.CRITERION_PRODUCER_ID,
+                {item["id"] for item in report["producers"]},
+            )
+            self.assertTrue(report["correctness"]["zero_errors"])
+            self.assertTrue(report["correctness"]["zero_retries"])
+
+            integrated_json_bytes = integrated_json.read_bytes()
+            integrated_markdown_bytes = integrated_markdown.read_bytes()
+            integrated_json.unlink()
+            integrated_markdown.unlink()
+            baseline.write_checksums(root, run.run_dir)
+            self.assertEqual(baseline.validate_artifact(root, run.run_dir), [])
+            report = baseline.build_benchmark_report(root, run.run_dir)
+
+            checksum_before = (run.run_dir / "checksums.sha256").read_bytes()
+            first_json, first_markdown = baseline.render_report_to_directory(
+                root, run.run_dir, "rendered/first"
+            )
+            second_json, second_markdown = baseline.render_report_to_directory(
+                root, run.run_dir, "rendered/second"
+            )
+            self.assertEqual(first_json.read_bytes(), second_json.read_bytes())
+            self.assertEqual(first_markdown.read_bytes(), second_markdown.read_bytes())
+            self.assertEqual(first_json.read_bytes(), integrated_json_bytes)
+            self.assertEqual(first_markdown.read_bytes(), integrated_markdown_bytes)
+            self.assertEqual(
+                (run.run_dir / "checksums.sha256").read_bytes(), checksum_before
+            )
+            self.assertEqual(baseline.validate_report_document(report), [])
+
+    def test_report_render_rejects_overwrite_traversal_and_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="safe-output")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            baseline.render_report_to_directory(root, run.run_dir, "reports/existing")
+            with self.assertRaisesRegex(baseline.BaselineError, "already exists"):
+                baseline.render_report_to_directory(root, run.run_dir, "reports/existing")
+            with self.assertRaisesRegex(baseline.BaselineError, "path traversal"):
+                baseline.render_report_to_directory(root, run.run_dir, "../outside")
+            with self.assertRaisesRegex(baseline.BaselineError, "source artifact"):
+                baseline.render_report_to_directory(
+                    root, run.run_dir, str(run.run_dir / "rendered")
+                )
+
+            target = root / "symlink-target"
+            target.mkdir()
+            link = root / "report-link"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks are unavailable")
+            with self.assertRaisesRegex(baseline.BaselineError, "symlinks"):
+                baseline.render_report_to_directory(root, run.run_dir, "report-link/new")
+
+    def test_report_rejects_invalid_sources_and_unknown_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+
+            checksum_root = parent / "checksum"
+            checksum_root.mkdir()
+            checksum_run = self.make_report_run(checksum_root, run_id="checksum")
+            populate_benchmark_evidence(checksum_run)
+            checksum_run.finalize()
+            (checksum_run.run_dir / "summary.csv").write_text("tampered\n")
+            with self.assertRaisesRegex(baseline.BaselineError, "checksum mismatch"):
+                baseline.build_benchmark_report(checksum_root, checksum_run.run_dir)
+
+            producer_root = parent / "producer"
+            producer_root.mkdir()
+            producer_run = self.make_report_run(producer_root, run_id="producer")
+            populate_benchmark_evidence(producer_run)
+            producer_run.finalize()
+            provenance_path = producer_run.run_dir / "provenance.json"
+            provenance = json.loads(provenance_path.read_text())
+            provenance["harness_version"] = "unknown"
+            baseline.write_json(provenance_path, provenance)
+            baseline.write_checksums(producer_root, producer_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "producer version"):
+                baseline.build_benchmark_report(producer_root, producer_run.run_dir)
+
+            missing_root = parent / "missing"
+            missing_root.mkdir()
+            missing_run = self.make_report_run(missing_root, run_id="missing")
+            populate_benchmark_evidence(missing_run)
+            missing_run.finalize()
+            criterion = json.loads((missing_run.run_dir / "summary.json").read_text())[
+                "criterion_results"
+            ][0]
+            (missing_root / criterion["source"]).unlink()
+            baseline.write_checksums(missing_root, missing_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "is missing"):
+                baseline.build_benchmark_report(missing_root, missing_run.run_dir)
+
+            partial_root = parent / "partial"
+            partial_root.mkdir()
+            partial_run = self.make_report_run(partial_root, run_id="partial")
+            populate_benchmark_evidence(partial_run)
+            partial_criterion = partial_run.criterion_results[0]
+            (partial_root / partial_criterion["source"]).unlink()
+            with self.assertRaisesRegex(baseline.BaselineError, "report generation failed"):
+                partial_run.finalize()
+            self.assertTrue((partial_run.run_dir / "checksums.sha256").is_file())
+            partial_summary = json.loads((partial_run.run_dir / "summary.json").read_text())
+            self.assertEqual(partial_summary["status"], "failed")
+            self.assertFalse(partial_summary["baseline_valid"])
+
+    def test_report_rejects_malformed_stress_and_criterion_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+
+            stress_root = parent / "stress"
+            stress_root.mkdir()
+            stress_run = self.make_report_run(stress_root, run_id="bad-stress")
+            populate_benchmark_evidence(stress_run)
+            stress_run.finalize()
+            summary_path = stress_run.run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text())
+            sample = summary["stress_samples"][0]
+            sample["errors"] = 1
+            parsed_path = (
+                stress_run.run_dir
+                / "stress"
+                / "parsed"
+                / "stress-read-d1-r1.json"
+            )
+            baseline.write_json(parsed_path, sample)
+            baseline.write_json(summary_path, summary)
+            baseline.write_checksums(stress_root, stress_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "errors must be zero"):
+                baseline.build_benchmark_report(stress_root, stress_run.run_dir)
+
+            criterion_root = parent / "criterion"
+            criterion_root.mkdir()
+            criterion_run = self.make_report_run(criterion_root, run_id="bad-criterion")
+            populate_benchmark_evidence(criterion_run)
+            criterion_run.finalize()
+            summary_path = criterion_run.run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text())
+            result = summary["criterion_results"][0]
+            result["estimates"]["mean"]["point_estimate"] = "not-a-number"
+            source_path = criterion_root / result["source"]
+            baseline.write_json(source_path, result["estimates"])
+            baseline.write_json(summary_path, summary)
+            baseline.write_json(
+                criterion_run.run_dir / "criterion" / "parsed-estimates.json",
+                summary["criterion_results"],
+            )
+            baseline.write_checksums(criterion_root, criterion_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "must be numeric"):
+                baseline.build_benchmark_report(criterion_root, criterion_run.run_dir)
+
+    def test_report_build_rejects_non_scalar_artifact_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="artifact-selectors")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            originals = {
+                name: json.loads((run.run_dir / name).read_text())
+                for name in ("environment.json", "provenance.json", "summary.json")
+            }
+            cases = [
+                (
+                    "power-availability",
+                    "environment.json",
+                    ("power", "availability"),
+                    "runner.environment.power.availability must be a non-empty string",
+                ),
+                (
+                    "provenance-mode",
+                    "provenance.json",
+                    ("mode",),
+                    "provenance.json mode must be a non-empty string",
+                ),
+                (
+                    "summary-mode",
+                    "summary.json",
+                    ("mode",),
+                    "summary.json mode must be a non-empty string",
+                ),
+                (
+                    "summary-status",
+                    "summary.json",
+                    ("status",),
+                    "summary.json status must be a non-empty string",
+                ),
+            ]
+            stress_selector_errors = {
+                "transport": "stress.transport must be a non-empty string",
+                "operation": "stress.operation must be a non-empty string",
+                "in_flight": "stress.in_flight must be an integer >= 1",
+                "clients": "stress.clients must be an integer >= 1",
+                "registers": "stress.registers must be an integer >= 1",
+                "repetition": "stress.repetition must be an integer >= 1",
+                "duration_secs": "stress.duration_secs must be an integer >= 1",
+                "warmup_secs": "stress.warmup_secs must be an integer >= 0",
+                "command_id": "stress.command_id is missing or malformed",
+            }
+            for field, expected_error in stress_selector_errors.items():
+                cases.append(
+                    (
+                        f"stress-{field}",
+                        "summary.json",
+                        ("stress_samples", 0, field),
+                        expected_error,
+                    )
+                )
+
+            for label, document_name, path, expected_error in cases:
+                for value_label, invalid_value in (
+                    ("list", [label]),
+                    ("object", {"selector": label}),
+                ):
+                    with self.subTest(selector=label, value=value_label):
+                        documents = copy.deepcopy(originals)
+                        target = documents[document_name]
+                        for part in path[:-1]:
+                            target = target[part]
+                        target[path[-1]] = invalid_value
+                        for name, document in documents.items():
+                            baseline.write_json(run.run_dir / name, document)
+                        baseline.write_checksums(root, run.run_dir)
+                        with self.assertRaises(baseline.BaselineError) as raised:
+                            baseline.build_benchmark_report(root, run.run_dir)
+                        self.assertIn(expected_error, str(raised.exception))
+
+    def test_report_document_rejects_unknown_schema_and_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="report-validation")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            report = baseline.build_benchmark_report(root, run.run_dir)
+
+            unknown_schema = copy.deepcopy(report)
+            unknown_schema["report_schema"]["version"] = 2
+            self.assertTrue(baseline.validate_report_document(unknown_schema))
+            unknown_producer = copy.deepcopy(report)
+            unknown_producer["producers"][-1]["version"] = "unknown"
+            self.assertTrue(baseline.validate_report_document(unknown_producer))
+
+    def test_report_rejects_non_scalar_selector_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="invalid-report-selectors")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            report = baseline.build_benchmark_report(root, run.run_dir)
+            stress_index = next(
+                index
+                for index, scenario in enumerate(report["scenarios"])
+                if scenario["kind"] == "tcp_stress"
+            )
+            cases = [
+                (
+                    "run-mode",
+                    ("run", "mode"),
+                    "run.mode must be a non-empty string",
+                ),
+                (
+                    "power-availability",
+                    ("runner", "environment", "power", "availability"),
+                    "runner.environment.power.availability must be a non-empty string",
+                ),
+                (
+                    "scenario-kind",
+                    ("scenarios", stress_index, "kind"),
+                    f"scenario {stress_index}.kind must be a non-empty string",
+                ),
+            ]
+            stress_identity_selector_fields = (
+                "clients",
+                "duration_seconds",
+                "in_flight",
+                "operation",
+                "registers",
+                "repetitions",
+                "transport",
+                "warmup_seconds",
+            )
+            for field in stress_identity_selector_fields:
+                scalar_contract = (
+                    "a non-empty string"
+                    if field in {"operation", "transport"}
+                    else "an integer"
+                )
+                minimum = " >= 1" if field in {
+                    "clients",
+                    "in_flight",
+                    "registers",
+                    "repetitions",
+                } else " >= 0" if field in {"duration_seconds", "warmup_seconds"} else ""
+                cases.append(
+                    (
+                        f"stress-identity-{field}",
+                        ("scenarios", stress_index, "identity", field),
+                        f"scenario {stress_index}: identity.{field} must be "
+                        f"{scalar_contract}{minimum}",
+                    )
+                )
+
+            for selector, path, expected_error in cases:
+                for value_label, invalid_value in (
+                    ("list", [selector]),
+                    ("object", {"selector": selector}),
+                ):
+                    with self.subTest(selector=selector, value=value_label):
+                        malformed = copy.deepcopy(report)
+                        target = malformed
+                        for part in path[:-1]:
+                            target = target[part]
+                        target[path[-1]] = invalid_value
+                        self.assertIn(
+                            expected_error,
+                            baseline.validate_report_document(malformed),
+                        )
+
+                        report_path = root / f"malformed-{selector}-{value_label}.json"
+                        baseline.write_json(report_path, malformed)
+                        with self.assertRaises(baseline.BaselineError) as raised:
+                            baseline.load_report_file(root, str(report_path))
+                        self.assertIn(expected_error, str(raised.exception))
+
+                        with self.assertRaises(baseline.BaselineError) as raised:
+                            baseline.report_json_text(malformed)
+                        self.assertIn(expected_error, str(raised.exception))
+
+                        with self.assertRaises(baseline.BaselineError) as raised:
+                            baseline.render_report_markdown(malformed)
+                        self.assertIn(expected_error, str(raised.exception))
+
+                        stderr = io.StringIO()
+                        with mock.patch.object(
+                            baseline, "__file__", str(root / "scripts" / "baseline.py")
+                        ), contextlib.redirect_stdout(
+                            io.StringIO()
+                        ), contextlib.redirect_stderr(stderr):
+                            self.assertEqual(
+                                baseline.main(["validate-report", str(report_path)]), 1
+                            )
+                        self.assertIn(expected_error, stderr.getvalue())
+
+    def test_cli_report_validation_rejects_malformed_render_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="cli-validation")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            report = baseline.build_benchmark_report(root, run.run_dir)
+            stress = next(item for item in report["scenarios"] if item["kind"] == "tcp_stress")
+            criterion = next(
+                item for item in report["scenarios"] if item["kind"] == "criterion_estimate"
+            )
+            cases = {
+                "missing-stress-mean": lambda value: value["scenarios"][
+                    report["scenarios"].index(stress)
+                ]["metrics"]["throughput"]["recorded_statistics"].pop("mean"),
+                "boolean-stress-mean": lambda value: value["scenarios"][
+                    report["scenarios"].index(stress)
+                ]["metrics"]["throughput"]["recorded_statistics"].update({"mean": True}),
+                "nonfinite-stress-max": lambda value: value["scenarios"][
+                    report["scenarios"].index(stress)
+                ]["metrics"]["p99_latency"]["recorded_statistics"].update(
+                    {"max": math.inf}
+                ),
+                "overflow-stress-mean": lambda value: value["scenarios"][
+                    report["scenarios"].index(stress)
+                ]["metrics"]["throughput"]["recorded_statistics"].update(
+                    {"mean": 10**1000}
+                ),
+                "missing-criterion-lower": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].pop("lower"),
+                "string-criterion-upper": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].update({"upper": "11.0"}),
+                "incoherent-criterion-bounds": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].update({"lower": 12.0}),
+                "missing-confidence-level": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].pop("confidence_level"),
+                "boolean-standard-error": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].update({"standard_error": True}),
+                "missing-checksum-reference": lambda value: value["source_artifact"].pop(
+                    "checksum_inventory"
+                ),
+                "missing-source-timestamp": lambda value: value["source_artifact"][
+                    "provenance"
+                ].pop("ended_utc"),
+            }
+            for index, (label, mutate) in enumerate(cases.items()):
+                with self.subTest(case=label):
+                    malformed = copy.deepcopy(report)
+                    mutate(malformed)
+                    report_path = root / f"malformed-{index}.json"
+                    baseline.write_json(report_path, malformed)
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.load_report_file(root, str(report_path))
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.report_json_text(malformed)
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.render_report_markdown(malformed)
+                    with mock.patch.object(
+                        baseline, "__file__", str(root / "scripts" / "baseline.py")
+                    ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                        io.StringIO()
+                    ):
+                        self.assertEqual(
+                            baseline.main(["validate-report", str(report_path)]), 1
+                        )
+
+            valid_path = root / "valid-report.json"
+            baseline.write_json(valid_path, report)
+            loaded = baseline.load_report_file(root, str(valid_path))
+            self.assertEqual(loaded, report)
+            self.assertEqual(
+                baseline.render_report_markdown(loaded),
+                baseline.render_report_markdown(report),
+            )
+            with mock.patch.object(
+                baseline, "__file__", str(root / "scripts" / "baseline.py")
+            ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                self.assertEqual(baseline.main(["validate-report", str(valid_path)]), 0)
+                self.assertEqual(
+                    baseline.main(
+                        [
+                            "report",
+                            run.run_dir.relative_to(root).as_posix(),
+                            "--output-dir",
+                            "cli-render",
+                        ]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    baseline.main(
+                        ["validate-report", "cli-render/benchmark-report-v1.json"]
+                    ),
+                    0,
+                )
+
+    def test_criterion_identity_is_proven_from_target_sha_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            valid_root = parent / "valid"
+            valid_root.mkdir()
+            run = self.make_report_run(valid_root, run_id="lock-proof")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            report = baseline.build_benchmark_report(valid_root, run.run_dir)
+            criterion_producer = next(
+                item
+                for item in report["producers"]
+                if item["id"] == baseline.CRITERION_PRODUCER_ID
+            )
+            self.assertEqual(criterion_producer["version"], "0.5.1")
+            self.assertEqual(
+                baseline.criterion_version_from_target_lock(
+                    valid_root, report["run"]["target_sha"]
+                ),
+                "0.5.1",
+            )
+
+            (valid_root / "Cargo.lock").write_text(
+                'version = 4\n\n[[package]]\nname = "criterion"\nversion = "0.5.2"\n'
+            )
+            subprocess.run(
+                ("git", "add", "Cargo.lock"),
+                cwd=valid_root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                (
+                    "git",
+                    "-c",
+                    "user.name=Benchmark Report Test",
+                    "-c",
+                    "user.email=benchmark-report@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "unsupported lock",
+                ),
+                cwd=valid_root,
+                check=True,
+                capture_output=True,
+            )
+            unsupported_sha = subprocess.run(
+                ("git", "rev-parse", "HEAD"),
+                cwd=valid_root,
+                check=True,
+                capture_output=True,
+            ).stdout.decode().strip()
+            mismatch = copy.deepcopy(report)
+            mismatch["run"]["target_sha"] = unsupported_sha
+            source_parts = mismatch["source_artifact"]["path"].split("/")
+            source_parts[-2] = unsupported_sha
+            mismatch["source_artifact"]["path"] = "/".join(source_parts)
+            mismatch_path = valid_root / "mismatch-report.json"
+            baseline.write_json(mismatch_path, mismatch)
+            with self.assertRaisesRegex(baseline.BaselineError, "does not match"):
+                baseline.load_report_file(valid_root, str(mismatch_path))
+
+            unsupported_root = parent / "unsupported"
+            unsupported_root.mkdir()
+            unsupported_run = self.make_report_run(
+                unsupported_root,
+                run_id="unsupported",
+                criterion_versions=("0.5.2",),
+            )
+            populate_benchmark_evidence(unsupported_run)
+            with self.assertRaisesRegex(baseline.BaselineError, "unsupported"):
+                unsupported_run.finalize()
+
+            ambiguous_root = parent / "ambiguous"
+            ambiguous_root.mkdir()
+            ambiguous_sha = initialize_git_lock_fixture(
+                ambiguous_root, criterion_versions=("0.5.1", "0.5.1")
+            )
+            with self.assertRaisesRegex(baseline.BaselineError, "ambiguous"):
+                baseline.verified_criterion_version(ambiguous_root, ambiguous_sha)
+
+            unlabelled_root = parent / "unlabelled"
+            unlabelled_root.mkdir()
+            unlabelled_sha = initialize_git_lock_fixture(
+                unlabelled_root, criterion_versions=()
+            )
+            with self.assertRaisesRegex(baseline.BaselineError, "does not identify"):
+                baseline.verified_criterion_version(unlabelled_root, unlabelled_sha)
+
+            missing_root = parent / "missing-lock"
+            missing_root.mkdir()
+            missing_sha = initialize_git_lock_fixture(missing_root, include_lock=False)
+            with self.assertRaisesRegex(baseline.BaselineError, "unavailable"):
+                baseline.verified_criterion_version(missing_root, missing_sha)
+
+            with self.assertRaisesRegex(baseline.BaselineError, "unavailable"):
+                baseline.verified_criterion_version(valid_root, "b" * 40)
 
     def test_checksum_inventory_verifies_and_detects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -357,6 +1112,30 @@ class BaselineHarnessTests(unittest.TestCase):
                 baseline.parse_stress_json(
                     json.dumps(stress_fixture(**{field: value})), expected_scenario()
                 )
+
+    def test_stress_hash_selector_fields_reject_non_scalar_values(self) -> None:
+        expected = expected_scenario()
+        expected["repetition"] = 1
+        sample = stress_fixture()
+        sample["repetition"] = 1
+        selector_fields = (
+            "transport",
+            "operation",
+            "in_flight",
+            "clients",
+            "registers",
+            "repetition",
+        )
+        for field in selector_fields:
+            for value_label, invalid_value in (
+                ("list", [field]),
+                ("object", {"selector": field}),
+            ):
+                with self.subTest(selector=field, value=value_label):
+                    malformed = copy.deepcopy(sample)
+                    malformed[field] = invalid_value
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.aggregate_stress_samples([malformed], [expected])
 
     def test_five_repetition_completeness_and_duplicate_detection(self) -> None:
         expected = baseline.stress_scenarios("bench-full", 5)
