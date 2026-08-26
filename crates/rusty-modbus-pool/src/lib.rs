@@ -14,6 +14,6 @@ pub mod health;
 pub mod pool;
 
 pub use config::{BackoffConfig, PoolConfig, PriorityDevice};
-pub use connection::PooledConnection;
+pub use connection::{LeaseInvalidationReason, PooledConnection};
 pub use error::PoolError;
 pub use pool::ConnectionPool;
