@@ -573,6 +573,81 @@ class BaselineHarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(baseline.BaselineError, "must be numeric"):
                 baseline.build_benchmark_report(criterion_root, criterion_run.run_dir)
 
+    def test_report_build_rejects_non_scalar_artifact_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="artifact-selectors")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            originals = {
+                name: json.loads((run.run_dir / name).read_text())
+                for name in ("environment.json", "provenance.json", "summary.json")
+            }
+            cases = [
+                (
+                    "power-availability",
+                    "environment.json",
+                    ("power", "availability"),
+                    "runner.environment.power.availability must be a non-empty string",
+                ),
+                (
+                    "provenance-mode",
+                    "provenance.json",
+                    ("mode",),
+                    "provenance.json mode must be a non-empty string",
+                ),
+                (
+                    "summary-mode",
+                    "summary.json",
+                    ("mode",),
+                    "summary.json mode must be a non-empty string",
+                ),
+                (
+                    "summary-status",
+                    "summary.json",
+                    ("status",),
+                    "summary.json status must be a non-empty string",
+                ),
+            ]
+            stress_selector_errors = {
+                "transport": "stress.transport must be a non-empty string",
+                "operation": "stress.operation must be a non-empty string",
+                "in_flight": "stress.in_flight must be an integer >= 1",
+                "clients": "stress.clients must be an integer >= 1",
+                "registers": "stress.registers must be an integer >= 1",
+                "repetition": "stress.repetition must be an integer >= 1",
+                "duration_secs": "stress.duration_secs must be an integer >= 1",
+                "warmup_secs": "stress.warmup_secs must be an integer >= 0",
+                "command_id": "stress.command_id is missing or malformed",
+            }
+            for field, expected_error in stress_selector_errors.items():
+                cases.append(
+                    (
+                        f"stress-{field}",
+                        "summary.json",
+                        ("stress_samples", 0, field),
+                        expected_error,
+                    )
+                )
+
+            for label, document_name, path, expected_error in cases:
+                for value_label, invalid_value in (
+                    ("list", [label]),
+                    ("object", {"selector": label}),
+                ):
+                    with self.subTest(selector=label, value=value_label):
+                        documents = copy.deepcopy(originals)
+                        target = documents[document_name]
+                        for part in path[:-1]:
+                            target = target[part]
+                        target[path[-1]] = invalid_value
+                        for name, document in documents.items():
+                            baseline.write_json(run.run_dir / name, document)
+                        baseline.write_checksums(root, run.run_dir)
+                        with self.assertRaises(baseline.BaselineError) as raised:
+                            baseline.build_benchmark_report(root, run.run_dir)
+                        self.assertIn(expected_error, str(raised.exception))
+
     def test_report_document_rejects_unknown_schema_and_producer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -588,54 +663,106 @@ class BaselineHarnessTests(unittest.TestCase):
             unknown_producer["producers"][-1]["version"] = "unknown"
             self.assertTrue(baseline.validate_report_document(unknown_producer))
 
-    def test_report_rejects_non_string_scenario_kinds(self) -> None:
+    def test_report_rejects_non_scalar_selector_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            run = self.make_report_run(root, run_id="invalid-scenario-kinds")
+            run = self.make_report_run(root, run_id="invalid-report-selectors")
             populate_benchmark_evidence(run)
             run.finalize()
             report = baseline.build_benchmark_report(root, run.run_dir)
-            scenario_index = 0
-            expected_error = (
-                f"scenario {scenario_index}.kind must be a non-empty string"
+            stress_index = next(
+                index
+                for index, scenario in enumerate(report["scenarios"])
+                if scenario["kind"] == "tcp_stress"
             )
-
-            for label, invalid_kind in (
-                ("list", ["tcp_stress"]),
-                ("object", {"value": "tcp_stress"}),
-            ):
-                with self.subTest(kind=label):
-                    malformed = copy.deepcopy(report)
-                    malformed["scenarios"][scenario_index]["kind"] = invalid_kind
-                    self.assertIn(
-                        expected_error,
-                        baseline.validate_report_document(malformed),
+            cases = [
+                (
+                    "run-mode",
+                    ("run", "mode"),
+                    "run.mode must be a non-empty string",
+                ),
+                (
+                    "power-availability",
+                    ("runner", "environment", "power", "availability"),
+                    "runner.environment.power.availability must be a non-empty string",
+                ),
+                (
+                    "scenario-kind",
+                    ("scenarios", stress_index, "kind"),
+                    f"scenario {stress_index}.kind must be a non-empty string",
+                ),
+            ]
+            stress_identity_selector_fields = (
+                "clients",
+                "duration_seconds",
+                "in_flight",
+                "operation",
+                "registers",
+                "repetitions",
+                "transport",
+                "warmup_seconds",
+            )
+            for field in stress_identity_selector_fields:
+                scalar_contract = (
+                    "a non-empty string"
+                    if field in {"operation", "transport"}
+                    else "an integer"
+                )
+                minimum = " >= 1" if field in {
+                    "clients",
+                    "in_flight",
+                    "registers",
+                    "repetitions",
+                } else " >= 0" if field in {"duration_seconds", "warmup_seconds"} else ""
+                cases.append(
+                    (
+                        f"stress-identity-{field}",
+                        ("scenarios", stress_index, "identity", field),
+                        f"scenario {stress_index}: identity.{field} must be "
+                        f"{scalar_contract}{minimum}",
                     )
+                )
 
-                    report_path = root / f"malformed-kind-{label}.json"
-                    baseline.write_json(report_path, malformed)
-                    with self.assertRaises(baseline.BaselineError) as raised:
-                        baseline.load_report_file(root, str(report_path))
-                    self.assertIn(expected_error, str(raised.exception))
-
-                    with self.assertRaises(baseline.BaselineError) as raised:
-                        baseline.report_json_text(malformed)
-                    self.assertIn(expected_error, str(raised.exception))
-
-                    with self.assertRaises(baseline.BaselineError) as raised:
-                        baseline.render_report_markdown(malformed)
-                    self.assertIn(expected_error, str(raised.exception))
-
-                    stderr = io.StringIO()
-                    with mock.patch.object(
-                        baseline, "__file__", str(root / "scripts" / "baseline.py")
-                    ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
-                        stderr
-                    ):
-                        self.assertEqual(
-                            baseline.main(["validate-report", str(report_path)]), 1
+            for selector, path, expected_error in cases:
+                for value_label, invalid_value in (
+                    ("list", [selector]),
+                    ("object", {"selector": selector}),
+                ):
+                    with self.subTest(selector=selector, value=value_label):
+                        malformed = copy.deepcopy(report)
+                        target = malformed
+                        for part in path[:-1]:
+                            target = target[part]
+                        target[path[-1]] = invalid_value
+                        self.assertIn(
+                            expected_error,
+                            baseline.validate_report_document(malformed),
                         )
-                    self.assertIn(expected_error, stderr.getvalue())
+
+                        report_path = root / f"malformed-{selector}-{value_label}.json"
+                        baseline.write_json(report_path, malformed)
+                        with self.assertRaises(baseline.BaselineError) as raised:
+                            baseline.load_report_file(root, str(report_path))
+                        self.assertIn(expected_error, str(raised.exception))
+
+                        with self.assertRaises(baseline.BaselineError) as raised:
+                            baseline.report_json_text(malformed)
+                        self.assertIn(expected_error, str(raised.exception))
+
+                        with self.assertRaises(baseline.BaselineError) as raised:
+                            baseline.render_report_markdown(malformed)
+                        self.assertIn(expected_error, str(raised.exception))
+
+                        stderr = io.StringIO()
+                        with mock.patch.object(
+                            baseline, "__file__", str(root / "scripts" / "baseline.py")
+                        ), contextlib.redirect_stdout(
+                            io.StringIO()
+                        ), contextlib.redirect_stderr(stderr):
+                            self.assertEqual(
+                                baseline.main(["validate-report", str(report_path)]), 1
+                            )
+                        self.assertIn(expected_error, stderr.getvalue())
 
     def test_cli_report_validation_rejects_malformed_render_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -985,6 +1112,30 @@ class BaselineHarnessTests(unittest.TestCase):
                 baseline.parse_stress_json(
                     json.dumps(stress_fixture(**{field: value})), expected_scenario()
                 )
+
+    def test_stress_hash_selector_fields_reject_non_scalar_values(self) -> None:
+        expected = expected_scenario()
+        expected["repetition"] = 1
+        sample = stress_fixture()
+        sample["repetition"] = 1
+        selector_fields = (
+            "transport",
+            "operation",
+            "in_flight",
+            "clients",
+            "registers",
+            "repetition",
+        )
+        for field in selector_fields:
+            for value_label, invalid_value in (
+                ("list", [field]),
+                ("object", {"selector": field}),
+            ):
+                with self.subTest(selector=field, value=value_label):
+                    malformed = copy.deepcopy(sample)
+                    malformed[field] = invalid_value
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.aggregate_stress_samples([malformed], [expected])
 
     def test_five_repetition_completeness_and_duplicate_detection(self) -> None:
         expected = baseline.stress_scenarios("bench-full", 5)

@@ -953,6 +953,27 @@ def parse_stress_json(payload: bytes | str, expected: dict[str, Any]) -> dict[st
     return value
 
 
+def _stress_selector_key(
+    value: dict[str, Any], label: str, *, include_repetition: bool
+) -> tuple[Any, ...]:
+    transport = _require_nonempty_string(value.get("transport"), f"{label}.transport")
+    operation = _require_nonempty_string(value.get("operation"), f"{label}.operation")
+    if transport != "tcp" or operation not in {"read", "mixed"}:
+        raise BaselineError(f"{label} must use a supported TCP scenario")
+    key = (
+        transport,
+        operation,
+        _strict_int(value.get("in_flight"), f"{label}.in_flight", minimum=1),
+        _strict_int(value.get("clients"), f"{label}.clients", minimum=1),
+        _strict_int(value.get("registers"), f"{label}.registers", minimum=1),
+    )
+    if include_repetition:
+        return key + (
+            _strict_int(value.get("repetition"), f"{label}.repetition", minimum=1),
+        )
+    return key
+
+
 def sample_statistics(values: Sequence[float]) -> dict[str, float | int | None]:
     if not values:
         raise BaselineError("cannot aggregate an empty sample")
@@ -974,28 +995,15 @@ def aggregate_stress_samples(
     samples: Sequence[dict[str, Any]], expected_scenarios: Sequence[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     expected_keys = {
-        (
-            item["transport"],
-            item["operation"],
-            item["in_flight"],
-            item["clients"],
-            item["registers"],
-            item["repetition"],
+        _stress_selector_key(
+            item, "expected stress scenario", include_repetition=True
         )
         for item in expected_scenarios
     }
-    sample_keys = []
-    for item in samples:
-        sample_keys.append(
-            (
-                item["transport"],
-                item["operation"],
-                item["in_flight"],
-                item["clients"],
-                item["registers"],
-                item["repetition"],
-            )
-        )
+    sample_keys = [
+        _stress_selector_key(item, "stress sample", include_repetition=True)
+        for item in samples
+    ]
     duplicates = sorted({item for item in sample_keys if sample_keys.count(item) > 1})
     if duplicates:
         raise BaselineError(f"duplicate stress scenarios: {duplicates}")
@@ -1005,12 +1013,8 @@ def aggregate_stress_samples(
         raise BaselineError(f"stress scenario completeness failure; missing={missing}, extra={extra}")
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for sample in samples:
-        key = (
-            sample["transport"],
-            sample["operation"],
-            sample["in_flight"],
-            sample["clients"],
-            sample["registers"],
+        key = _stress_selector_key(
+            sample, "stress sample", include_repetition=False
         )
         groups.setdefault(key, []).append(sample)
     aggregates = []
@@ -1253,7 +1257,9 @@ def validate_artifact(repo_root: Path, run_dir: Path) -> list[str]:
             errors.append(f"{name} run_id does not match artifact path")
 
         mode = value.get("mode")
-        if mode not in MODES:
+        if not isinstance(mode, str) or not mode:
+            errors.append(f"{name} mode must be a non-empty string")
+        elif mode not in MODES:
             errors.append(f"{name} mode must be one of {', '.join(MODES)}")
 
     if provenance.get("target_sha") != summary.get("target_sha"):
@@ -1278,7 +1284,10 @@ def validate_artifact(repo_root: Path, run_dir: Path) -> list[str]:
         errors.append("provenance.json baseline_eligible must be a boolean")
     if not isinstance(baseline_valid, bool):
         errors.append("summary.json baseline_valid must be a boolean")
-    if status not in {"passed", "failed", "invalid"}:
+    status_is_string = isinstance(status, str) and bool(status)
+    if not status_is_string:
+        errors.append("summary.json status must be a non-empty string")
+    elif status not in {"passed", "failed", "invalid"}:
         errors.append("summary.json status must be passed, failed, or invalid")
     if not isinstance(invalid_reasons, list) or any(
         not isinstance(reason, str) for reason in invalid_reasons
@@ -1290,7 +1299,11 @@ def validate_artifact(repo_root: Path, run_dir: Path) -> list[str]:
     if isinstance(baseline_eligible, bool) and isinstance(baseline_valid, bool):
         if baseline_eligible != baseline_valid:
             errors.append("provenance eligibility and summary validity do not match")
-    if isinstance(baseline_valid, bool) and status in {"passed", "failed", "invalid"}:
+    if (
+        isinstance(baseline_valid, bool)
+        and status_is_string
+        and status in {"passed", "failed", "invalid"}
+    ):
         if baseline_valid != (status == "passed"):
             errors.append("summary.json status does not agree with baseline_valid")
     if baseline_valid is True and invalid_reasons != []:
@@ -1528,11 +1541,7 @@ def _report_stress_scenarios(
         raise BaselineError("summary.json commands must be a list of strings")
 
     for sample in samples:
-        if sample.get("transport") != "tcp" or sample.get("operation") not in {
-            "read",
-            "mixed",
-        }:
-            raise BaselineError("reportable stress samples must use a supported TCP scenario")
+        selector_key = _stress_selector_key(sample, "stress", include_repetition=True)
         expected = {
             field: sample.get(field)
             for field in (
@@ -1546,7 +1555,7 @@ def _report_stress_scenarios(
             )
         }
         parse_stress_json(json.dumps(sample, allow_nan=False), expected)
-        repetition = _strict_int(sample.get("repetition"), "stress.repetition", minimum=1)
+        repetition = selector_key[-1]
         command_id = sample.get("command_id")
         if not isinstance(command_id, str) or not COMMAND_ID.fullmatch(command_id):
             raise BaselineError("stress.command_id is missing or malformed")
@@ -1593,13 +1602,7 @@ def _report_stress_scenarios(
         if raw_sample != summary_raw_sample:
             raise BaselineError(f"stress raw stdout does not match parsed sample: {command_id}")
 
-        key = (
-            sample["transport"],
-            sample["operation"],
-            sample["in_flight"],
-            sample["clients"],
-            sample["registers"],
-        )
+        key = selector_key[:-1]
         sample_sources.setdefault(key, []).append(
             {
                 "command_record": command_source,
@@ -1812,7 +1815,7 @@ def build_benchmark_report(
     run_id = validate_run_id(
         _require_nonempty_string(provenance.get("run_id"), "provenance.json run_id")
     )
-    mode = provenance.get("mode")
+    mode = _require_nonempty_string(provenance.get("mode"), "provenance.json mode")
     if mode not in BENCHMARK_MODES:
         raise BaselineError("benchmark reports require bench-smoke or bench-full artifacts")
     if run_dir.parents[1].name != f"baseline-v{SCHEMA_VERSION}":
@@ -1989,7 +1992,10 @@ def _validate_report_environment_shape(value: Any, runner_label: str) -> None:
         {"availability", "source", "value"},
         "runner.environment.power",
     )
-    if power["availability"] not in {"available", "unavailable"}:
+    availability = _require_nonempty_string(
+        power["availability"], "runner.environment.power.availability"
+    )
+    if availability not in {"available", "unavailable"}:
         raise BaselineError("runner.environment.power.availability is unsupported")
     if power["source"] is not None and not isinstance(power["source"], str):
         raise BaselineError("runner.environment.power.source must be a string or null")
@@ -2161,8 +2167,13 @@ def validate_report_document(report: Any) -> list[str]:
             validate_run_id(_require_nonempty_string(run.get("run_id"), "run.run_id"))
         except BaselineError as error:
             errors.append(str(error))
-        if run.get("mode") not in BENCHMARK_MODES:
-            errors.append("run mode is unsupported")
+        try:
+            run_mode = _require_nonempty_string(run.get("mode"), "run.mode")
+        except BaselineError as error:
+            errors.append(str(error))
+        else:
+            if run_mode not in BENCHMARK_MODES:
+                errors.append("run mode is unsupported")
         if run.get("status") != "valid" or run.get("source_status") != "passed":
             errors.append("run status must distinguish valid report evidence from passed source")
 
@@ -2246,9 +2257,15 @@ def validate_report_document(report: Any) -> list[str]:
                     },
                     f"scenario {index}.identity",
                 )
-                if identity["transport"] != "tcp":
+                transport = _require_nonempty_string(
+                    identity["transport"], "identity.transport"
+                )
+                if transport != "tcp":
                     raise BaselineError("identity must declare TCP")
-                if identity["operation"] not in {"read", "mixed"}:
+                operation = _require_nonempty_string(
+                    identity["operation"], "identity.operation"
+                )
+                if operation not in {"read", "mixed"}:
                     raise BaselineError("identity operation is unsupported")
                 for field in ("clients", "in_flight", "registers", "repetitions"):
                     _strict_int(identity[field], f"identity.{field}", minimum=1)
