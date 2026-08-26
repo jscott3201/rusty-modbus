@@ -138,9 +138,11 @@ Each report records the full target SHA, run ID, mode, source status, declared
 runner label, recorded environment and tool identity, strict zero-error and
 zero-retry facts, normalized stress/Criterion values, and source-relative raw
 and checksum references. Producer records identify custom stress JSON schema v1
-and the exact Criterion 0.5.1 `new/estimates.json` private-layout adapter. That
-Criterion layout is not presented as a stable upstream API; unsupported or
-unlabelled producer versions are rejected.
+and the exact Criterion 0.5.1 `new/estimates.json` private-layout adapter. The
+renderer obtains that version from `Cargo.lock` at the artifact's validated full
+target SHA through Git object storage; unavailable, ambiguous, mismatched, or
+unsupported lock evidence is rejected rather than inferred from the current
+checkout. That Criterion layout is not presented as a stable upstream API.
 
 Report evidence is explicitly `observational_only`: artifact validity may be
 `valid`, while performance comparability and runner isolation remain

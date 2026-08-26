@@ -15,6 +15,7 @@ import statistics
 import subprocess
 import sys
 import time
+import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -29,7 +30,7 @@ REPORT_JSON_NAME = "benchmark-report-v1.json"
 REPORT_MARKDOWN_NAME = "benchmark-report-v1.md"
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
-CRITERION_VERSION = "0.5.1"
+SUPPORTED_CRITERION_VERSION = "0.5.1"
 CRITERION_ADAPTER = "new/estimates.json private layout"
 DEFAULT_OUTPUT_ROOT = "bench-output"
 FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -883,7 +884,10 @@ def _strict_int(value: Any, label: str, *, minimum: int = 0) -> int:
 def _strict_number(value: Any, label: str, *, minimum: float = 0.0) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BaselineError(f"{label} must be numeric")
-    result = float(value)
+    try:
+        result = float(value)
+    except (OverflowError, ValueError) as error:
+        raise BaselineError(f"{label} must be finite and >= {minimum}") from error
     if not math.isfinite(result) or result < minimum:
         raise BaselineError(f"{label} must be finite and >= {minimum}")
     return result
@@ -1364,7 +1368,65 @@ def _require_nonempty_string(value: Any, label: str) -> str:
     return value
 
 
-def _report_producers(*, stress: bool, criterion: bool) -> list[dict[str, str]]:
+def criterion_version_from_target_lock(repo_root: Path, target_sha: str) -> str:
+    target_sha = validate_full_sha(target_sha)
+    try:
+        completed = subprocess.run(
+            ("git", "cat-file", "blob", f"{target_sha}:Cargo.lock"),
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+    except OSError as error:
+        raise BaselineError(f"cannot read target-SHA Cargo.lock evidence: {error}") from error
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise BaselineError(
+            f"target-SHA Cargo.lock evidence is unavailable for {target_sha}: {detail}"
+        )
+    try:
+        lock = tomllib.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise BaselineError(f"target-SHA Cargo.lock evidence is malformed: {error}") from error
+    packages = lock.get("package")
+    if not isinstance(packages, list):
+        raise BaselineError("target-SHA Cargo.lock package inventory is unavailable")
+    matches = [
+        package
+        for package in packages
+        if isinstance(package, dict) and package.get("name") == "criterion"
+    ]
+    if not matches:
+        raise BaselineError("target-SHA Cargo.lock does not identify Criterion")
+    if len(matches) != 1:
+        raise BaselineError("target-SHA Cargo.lock Criterion evidence is ambiguous")
+    version = matches[0].get("version")
+    if not isinstance(version, str) or not version:
+        raise BaselineError("target-SHA Cargo.lock Criterion version is unlabelled")
+    return version
+
+
+def verified_criterion_version(
+    repo_root: Path, target_sha: str, *, declared_version: str | None = None
+) -> str:
+    locked_version = criterion_version_from_target_lock(repo_root, target_sha)
+    if declared_version is not None and declared_version != locked_version:
+        raise BaselineError(
+            "report Criterion version does not match target-SHA Cargo.lock: "
+            f"report={declared_version!r}, lock={locked_version!r}"
+        )
+    if locked_version != SUPPORTED_CRITERION_VERSION:
+        raise BaselineError(
+            "target-SHA Cargo.lock Criterion version is unsupported: "
+            f"{locked_version!r}"
+        )
+    return locked_version
+
+
+def _report_producers(
+    *, stress: bool, criterion: bool, criterion_version: str | None = None
+) -> list[dict[str, str]]:
     producers = [
         {
             "adapter": "baseline artifact schema v1",
@@ -1383,12 +1445,14 @@ def _report_producers(*, stress: bool, criterion: bool) -> list[dict[str, str]]:
             }
         )
     if criterion:
+        if criterion_version is None:
+            raise BaselineError("verified Criterion producer version is required")
         producers.append(
             {
                 "adapter": CRITERION_ADAPTER,
                 "id": CRITERION_PRODUCER_ID,
                 "producer": "Criterion",
-                "version": CRITERION_VERSION,
+                "version": criterion_version,
             }
         )
     return producers
@@ -1663,6 +1727,14 @@ def _report_criterion_scenarios(
         point = _strict_number(mean.get("point_estimate"), f"{source}.mean.point_estimate")
         lower = _strict_number(interval.get("lower_bound"), f"{source}.mean.lower_bound")
         upper = _strict_number(interval.get("upper_bound"), f"{source}.mean.upper_bound")
+        confidence_level = _strict_number(
+            interval.get("confidence_level"), f"{source}.mean.confidence_level"
+        )
+        standard_error = _strict_number(
+            mean.get("standard_error"), f"{source}.mean.standard_error"
+        )
+        if not 0 < confidence_level <= 1:
+            raise BaselineError(f"Criterion confidence level is out of range: {source}")
         if not lower <= point <= upper:
             raise BaselineError(f"Criterion mean estimate bounds are out of order: {source}")
         normalized = result.get("mean_ns")
@@ -1678,8 +1750,10 @@ def _report_criterion_scenarios(
                 "kind": "criterion_estimate",
                 "metrics": {
                     "mean_estimate": {
+                        "confidence_level": confidence_level,
                         "lower": lower,
                         "point": point,
+                        "standard_error": standard_error,
                         "unit": "nanoseconds",
                         "upper": upper,
                     }
@@ -1759,6 +1833,7 @@ def build_benchmark_report(
         provenance.get("ended_utc"), "provenance.json ended_utc"
     )
     recorded_environment = _validate_report_environment(environment)
+    criterion_version = verified_criterion_version(repo_root, target_sha)
     stress_scenarios_report, correctness = _report_stress_scenarios(
         repo_root, run_dir, mode, summary
     )
@@ -1766,7 +1841,11 @@ def build_benchmark_report(
     report = {
         "correctness": correctness,
         "evidence": dict(REPORT_EVIDENCE),
-        "producers": _report_producers(stress=True, criterion=True),
+        "producers": _report_producers(
+            stress=True,
+            criterion=True,
+            criterion_version=criterion_version,
+        ),
         "report_schema": {
             "name": REPORT_SCHEMA_NAME,
             "version": REPORT_SCHEMA_VERSION,
@@ -1806,7 +1885,10 @@ def _all_numbers_finite(value: Any) -> bool:
     if isinstance(value, bool) or value is None or isinstance(value, str):
         return True
     if isinstance(value, (int, float)):
-        return math.isfinite(float(value))
+        try:
+            return math.isfinite(float(value))
+        except (OverflowError, ValueError):
+            return False
     if isinstance(value, list):
         return all(_all_numbers_finite(item) for item in value)
     if isinstance(value, dict):
@@ -1814,14 +1896,185 @@ def _all_numbers_finite(value: Any) -> bool:
     return False
 
 
+def _require_exact_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise BaselineError(f"{label} must be an object")
+    actual = set(value)
+    if actual != expected:
+        raise BaselineError(
+            f"{label} keys must be {sorted(expected)}; "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+    return value
+
+
+def _validate_report_statistics(
+    value: Any, label: str, *, expected_count: int
+) -> None:
+    statistics_value = _require_exact_keys(
+        value,
+        {
+            "coefficient_of_variation",
+            "count",
+            "max",
+            "mean",
+            "median",
+            "min",
+            "sample_stddev",
+        },
+        label,
+    )
+    count = _strict_int(statistics_value["count"], f"{label}.count", minimum=1)
+    if count != expected_count:
+        raise BaselineError(f"{label}.count must equal scenario repetitions")
+    numbers = {
+        field: _strict_number(statistics_value[field], f"{label}.{field}")
+        for field in ("min", "median", "mean", "max", "sample_stddev")
+    }
+    coefficient = statistics_value["coefficient_of_variation"]
+    if coefficient is not None:
+        _strict_number(coefficient, f"{label}.coefficient_of_variation")
+    if not numbers["min"] <= numbers["median"] <= numbers["max"]:
+        raise BaselineError(f"{label} min/median/max are incoherent")
+    if not numbers["min"] <= numbers["mean"] <= numbers["max"]:
+        raise BaselineError(f"{label} mean is outside min/max")
+
+
+def _validate_report_environment_shape(value: Any, runner_label: str) -> None:
+    environment = _require_exact_keys(
+        value,
+        {
+            "cargo_metadata",
+            "collection_status",
+            "cpu",
+            "github",
+            "platform",
+            "power",
+            "runner_label",
+            "tools",
+        },
+        "runner.environment",
+    )
+    if environment["collection_status"] != "complete":
+        raise BaselineError("runner.environment.collection_status must be complete")
+    if environment["runner_label"] != runner_label:
+        raise BaselineError("runner label does not match recorded environment")
+    github = environment["github"]
+    if not isinstance(github, dict) or any(
+        not isinstance(key, str) or not isinstance(item, str)
+        for key, item in github.items()
+    ):
+        raise BaselineError("runner.environment.github must contain string values")
+    platform_value = _require_exact_keys(
+        environment["platform"],
+        {"architecture", "kernel", "os", "release"},
+        "runner.environment.platform",
+    )
+    for field in platform_value:
+        _require_nonempty_string(
+            platform_value[field], f"runner.environment.platform.{field}"
+        )
+    cpu = _require_exact_keys(
+        environment["cpu"],
+        {"logical_count", "model", "model_source"},
+        "runner.environment.cpu",
+    )
+    for field in ("model", "model_source"):
+        if cpu[field] is not None and not isinstance(cpu[field], str):
+            raise BaselineError(f"runner.environment.cpu.{field} must be a string or null")
+    if cpu["logical_count"] is not None:
+        _strict_int(cpu["logical_count"], "runner.environment.cpu.logical_count", minimum=1)
+    power = _require_exact_keys(
+        environment["power"],
+        {"availability", "source", "value"},
+        "runner.environment.power",
+    )
+    if power["availability"] not in {"available", "unavailable"}:
+        raise BaselineError("runner.environment.power.availability is unsupported")
+    if power["source"] is not None and not isinstance(power["source"], str):
+        raise BaselineError("runner.environment.power.source must be a string or null")
+    tools = _require_exact_keys(
+        environment["tools"], {"cargo", "python", "rustc"}, "runner.environment.tools"
+    )
+    _require_nonempty_string(tools["cargo"], "runner.environment.tools.cargo")
+    rustc = _require_exact_keys(
+        tools["rustc"], {"host", "version"}, "runner.environment.tools.rustc"
+    )
+    for field in rustc:
+        _require_nonempty_string(rustc[field], f"runner.environment.tools.rustc.{field}")
+    python = _require_exact_keys(
+        tools["python"],
+        {"executable", "implementation", "version"},
+        "runner.environment.tools.python",
+    )
+    for field in python:
+        _require_nonempty_string(python[field], f"runner.environment.tools.python.{field}")
+    metadata = _require_exact_keys(
+        environment["cargo_metadata"],
+        {"packages", "target_directory", "workspace_member_count", "workspace_root"},
+        "runner.environment.cargo_metadata",
+    )
+    _require_nonempty_string(
+        metadata["target_directory"], "runner.environment.cargo_metadata.target_directory"
+    )
+    _require_nonempty_string(
+        metadata["workspace_root"], "runner.environment.cargo_metadata.workspace_root"
+    )
+    _strict_int(
+        metadata["workspace_member_count"],
+        "runner.environment.cargo_metadata.workspace_member_count",
+    )
+    if not isinstance(metadata["packages"], list):
+        raise BaselineError("runner.environment.cargo_metadata.packages must be a list")
+
+
+def _criterion_report_producer(report: dict[str, Any]) -> dict[str, Any]:
+    producers = report.get("producers")
+    if not isinstance(producers, list):
+        raise BaselineError("producers must be a list")
+    matches = [
+        producer
+        for producer in producers
+        if isinstance(producer, dict) and producer.get("id") == CRITERION_PRODUCER_ID
+    ]
+    if len(matches) != 1:
+        raise BaselineError("report must contain one Criterion producer")
+    return matches[0]
+
+
 def validate_report_document(report: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(report, dict):
         return ["report root must be an object"]
-    if report.get("report_schema") != {
-        "name": REPORT_SCHEMA_NAME,
-        "version": REPORT_SCHEMA_VERSION,
-    }:
+    try:
+        _require_exact_keys(
+            report,
+            {
+                "correctness",
+                "evidence",
+                "producers",
+                "report_schema",
+                "run",
+                "runner",
+                "scenarios",
+                "source_artifact",
+            },
+            "report",
+        )
+    except BaselineError as error:
+        errors.append(str(error))
+    report_schema = report.get("report_schema")
+    try:
+        report_schema = _require_exact_keys(
+            report_schema, {"name", "version"}, "report_schema"
+        )
+        if (
+            report_schema["name"] != REPORT_SCHEMA_NAME
+            or _strict_int(report_schema["version"], "report_schema.version", minimum=1)
+            != REPORT_SCHEMA_VERSION
+        ):
+            raise BaselineError("report schema is unsupported")
+    except BaselineError:
         errors.append(
             f"report_schema must be {REPORT_SCHEMA_NAME} version {REPORT_SCHEMA_VERSION}"
         )
@@ -1831,29 +2084,77 @@ def validate_report_document(report: Any) -> list[str]:
     if not isinstance(source, dict):
         errors.append("source_artifact must be an object")
     else:
-        if source.get("schema") != {
-            "name": "rusty-modbus-baseline-artifact",
-            "version": SCHEMA_VERSION,
-        }:
+        try:
+            _require_exact_keys(
+                source,
+                {"checksum_inventory", "checksum_semantics", "path", "provenance", "schema"},
+                "source_artifact",
+            )
+        except BaselineError as error:
+            errors.append(str(error))
+        try:
+            source_schema = _require_exact_keys(
+                source.get("schema"), {"name", "version"}, "source_artifact.schema"
+            )
+            if (
+                source_schema["name"] != "rusty-modbus-baseline-artifact"
+                or _strict_int(
+                    source_schema["version"], "source_artifact.schema.version", minimum=1
+                )
+                != SCHEMA_VERSION
+            ):
+                raise BaselineError("source artifact schema is unsupported")
+        except BaselineError:
             errors.append("source artifact schema is unsupported")
-        for field in ("path", "checksum_inventory"):
-            try:
-                _relative_parts(source.get(field), f"source_artifact.{field}")
-            except BaselineError as error:
-                errors.append(str(error))
+        try:
+            source_parts = _relative_parts(source.get("path"), "source_artifact.path")
+            if len(source_parts) < 3 or source_parts[-3:] != (
+                f"baseline-v{SCHEMA_VERSION}",
+                report.get("run", {}).get("target_sha")
+                if isinstance(report.get("run"), dict)
+                else None,
+                report.get("run", {}).get("run_id")
+                if isinstance(report.get("run"), dict)
+                else None,
+            ):
+                raise BaselineError("source artifact path does not match report run")
+        except BaselineError as error:
+            errors.append(str(error))
+        if source.get("checksum_inventory") != "checksums.sha256":
+            errors.append("source checksum inventory reference must be checksums.sha256")
         if source.get("checksum_semantics") != "integrity_inventory_not_signature_or_attestation":
             errors.append("source checksum semantics are unsupported")
         provenance = source.get("provenance")
-        if not isinstance(provenance, dict) or (
-            provenance.get("harness_path"), provenance.get("harness_version")
-        ) != (HARNESS_PATH, HARNESS_VERSION):
-            errors.append("source producer provenance is missing or unsupported")
+        try:
+            provenance = _require_exact_keys(
+                provenance,
+                {"ended_utc", "harness_path", "harness_version", "started_utc"},
+                "source_artifact.provenance",
+            )
+            if (provenance["harness_path"], provenance["harness_version"]) != (
+                HARNESS_PATH,
+                HARNESS_VERSION,
+            ):
+                raise BaselineError("source producer provenance is unsupported")
+            _require_nonempty_string(
+                provenance["started_utc"], "source_artifact.provenance.started_utc"
+            )
+            _require_nonempty_string(
+                provenance["ended_utc"], "source_artifact.provenance.ended_utc"
+            )
+        except BaselineError as error:
+            errors.append(str(error))
 
     run = report.get("run")
     if not isinstance(run, dict):
         errors.append("run must be an object")
     else:
         try:
+            _require_exact_keys(
+                run,
+                {"mode", "run_id", "source_status", "status", "target_sha"},
+                "run",
+            )
             validate_full_sha(
                 _require_nonempty_string(run.get("target_sha"), "run.target_sha")
             )
@@ -1866,15 +2167,22 @@ def validate_report_document(report: Any) -> list[str]:
             errors.append("run status must distinguish valid report evidence from passed source")
 
     runner = report.get("runner")
-    if not isinstance(runner, dict) or not isinstance(runner.get("environment"), dict):
-        errors.append("runner and recorded environment are required")
-    else:
-        try:
-            validate_runner_label(
-                _require_nonempty_string(runner.get("label"), "runner.label")
-            )
-        except BaselineError as error:
-            errors.append(str(error))
+    try:
+        runner = _require_exact_keys(runner, {"environment", "label"}, "runner")
+        runner_label = validate_runner_label(
+            _require_nonempty_string(runner["label"], "runner.label")
+        )
+        _validate_report_environment_shape(runner["environment"], runner_label)
+    except BaselineError as error:
+        errors.append(str(error))
+
+    expected_producers = _report_producers(
+        stress=True,
+        criterion=True,
+        criterion_version=SUPPORTED_CRITERION_VERSION,
+    )
+    if report.get("producers") != expected_producers:
+        errors.append("producer identities or adapter versions are unsupported")
 
     scenarios = report.get("scenarios")
     if not isinstance(scenarios, list) or not scenarios:
@@ -1882,6 +2190,9 @@ def validate_report_document(report: Any) -> list[str]:
         scenarios = []
     stress_count = 0
     criterion_count = 0
+    stress_sample_count = 0
+    seen_stress_identities: set[tuple[Any, ...]] = set()
+    seen_criterion_sources: set[str] = set()
     for index, scenario in enumerate(scenarios):
         if not isinstance(scenario, dict):
             errors.append(f"scenario {index} must be an object")
@@ -1910,60 +2221,165 @@ def validate_report_document(report: Any) -> list[str]:
             identity = scenario.get("identity")
             metrics = scenario.get("metrics")
             try:
-                if not isinstance(identity, dict) or identity.get("transport") != "tcp":
+                _require_exact_keys(
+                    scenario,
+                    {"correctness", "identity", "kind", "metrics", "producer_id", "sources"},
+                    f"scenario {index}",
+                )
+                identity = _require_exact_keys(
+                    identity,
+                    {
+                        "clients",
+                        "duration_seconds",
+                        "in_flight",
+                        "operation",
+                        "registers",
+                        "repetitions",
+                        "transport",
+                        "warmup_seconds",
+                    },
+                    f"scenario {index}.identity",
+                )
+                if identity["transport"] != "tcp":
                     raise BaselineError("identity must declare TCP")
-                if identity.get("operation") not in {"read", "mixed"}:
+                if identity["operation"] not in {"read", "mixed"}:
                     raise BaselineError("identity operation is unsupported")
                 for field in ("clients", "in_flight", "registers", "repetitions"):
-                    _strict_int(identity.get(field), f"identity.{field}", minimum=1)
+                    _strict_int(identity[field], f"identity.{field}", minimum=1)
                 for field in ("duration_seconds", "warmup_seconds"):
-                    _strict_int(identity.get(field), f"identity.{field}")
-                if not isinstance(metrics, dict) or (
-                    metrics.get("throughput", {}).get("unit") != "operations_per_second"
-                    or metrics.get("p99_latency", {}).get("unit") != "milliseconds"
+                    _strict_int(identity[field], f"identity.{field}")
+                repetitions = identity["repetitions"]
+                stress_identity = tuple(identity[field] for field in sorted(identity))
+                if stress_identity in seen_stress_identities:
+                    raise BaselineError("duplicate stress scenario identity")
+                seen_stress_identities.add(stress_identity)
+                metrics = _require_exact_keys(
+                    metrics,
+                    {"p99_latency", "throughput"},
+                    f"scenario {index}.metrics",
+                )
+                for field, unit in (
+                    ("throughput", "operations_per_second"),
+                    ("p99_latency", "milliseconds"),
                 ):
-                    raise BaselineError("stress metric units are unsupported")
-                if isinstance(sources, list):
-                    for source_reference in sources:
-                        if not isinstance(source_reference, dict) or set(source_reference) != {
-                            "command_record",
-                            "parsed_sample",
-                            "raw_stdout",
-                            "repetition",
-                        }:
-                            raise BaselineError("stress source reference is malformed")
-                        _strict_int(
-                            source_reference["repetition"],
-                            "stress source repetition",
-                            minimum=1,
-                        )
-                        for field in ("command_record", "parsed_sample", "raw_stdout"):
-                            _relative_parts(
-                                source_reference[field], f"stress source {field}"
-                            )
+                    metric = _require_exact_keys(
+                        metrics[field],
+                        {"recorded_statistics", "unit"},
+                        f"scenario {index}.metrics.{field}",
+                    )
+                    if metric["unit"] != unit:
+                        raise BaselineError(f"{field} metric unit is unsupported")
+                    _validate_report_statistics(
+                        metric["recorded_statistics"],
+                        f"scenario {index}.metrics.{field}.recorded_statistics",
+                        expected_count=repetitions,
+                    )
+                if not isinstance(sources, list) or len(sources) != repetitions:
+                    raise BaselineError("stress source count must equal repetitions")
+                source_repetitions = []
+                for source_reference in sources:
+                    source_reference = _require_exact_keys(
+                        source_reference,
+                        {"command_record", "parsed_sample", "raw_stdout", "repetition"},
+                        f"scenario {index} stress source",
+                    )
+                    repetition = _strict_int(
+                        source_reference["repetition"],
+                        "stress source repetition",
+                        minimum=1,
+                    )
+                    source_repetitions.append(repetition)
+                    command_parts = _relative_parts(
+                        source_reference["command_record"], "stress source command_record"
+                    )
+                    if (
+                        len(command_parts) != 3
+                        or command_parts[0] != "commands"
+                        or command_parts[2] != "command.json"
+                        or not COMMAND_ID.fullmatch(command_parts[1])
+                    ):
+                        raise BaselineError("stress command record reference is malformed")
+                    if source_reference["raw_stdout"] != (
+                        f"commands/{command_parts[1]}/command.stdout"
+                    ):
+                        raise BaselineError("stress raw stdout reference is incoherent")
+                    expected_parsed = (
+                        f"stress/parsed/stress-{identity['operation']}-"
+                        f"d{identity['in_flight']}-r{repetition}.json"
+                    )
+                    if source_reference["parsed_sample"] != expected_parsed:
+                        raise BaselineError("stress parsed sample reference is incoherent")
+                if sorted(source_repetitions) != list(range(1, repetitions + 1)):
+                    raise BaselineError("stress source repetitions are incomplete")
+                stress_sample_count += repetitions
             except (AttributeError, BaselineError) as error:
                 errors.append(f"scenario {index}: {error}")
             correctness = scenario.get("correctness")
-            if not isinstance(correctness, dict) or (
-                correctness.get("total_errors") != 0
-                or correctness.get("retry_attempts") != 0
-                or correctness.get("error_rate") != 0
-                or correctness.get("zero_errors") is not True
-                or correctness.get("zero_retries") is not True
-                or correctness.get("zero_error_rate") is not True
-            ):
+            try:
+                correctness = _require_exact_keys(
+                    correctness,
+                    {
+                        "error_rate",
+                        "retry_attempts",
+                        "total_errors",
+                        "zero_error_rate",
+                        "zero_errors",
+                        "zero_retries",
+                    },
+                    f"scenario {index}.correctness",
+                )
+                if (
+                    _strict_int(correctness["total_errors"], "total_errors") != 0
+                    or _strict_int(correctness["retry_attempts"], "retry_attempts") != 0
+                    or _strict_number(correctness["error_rate"], "error_rate") != 0
+                    or correctness["zero_errors"] is not True
+                    or correctness["zero_retries"] is not True
+                    or correctness["zero_error_rate"] is not True
+                ):
+                    raise BaselineError("strict zero-error facts are required")
+            except BaselineError:
                 errors.append(f"scenario {index} must record strict zero-error facts")
         elif kind == "criterion_estimate":
             identity = scenario.get("identity")
             metrics = scenario.get("metrics")
             try:
-                if not isinstance(identity, dict):
-                    raise BaselineError("Criterion identity is required")
-                _relative_parts(identity.get("benchmark_id"), "Criterion benchmark_id")
-                if not isinstance(metrics, dict) or (
-                    metrics.get("mean_estimate", {}).get("unit") != "nanoseconds"
-                ):
+                _require_exact_keys(
+                    scenario,
+                    {"identity", "kind", "metrics", "producer_id", "sources"},
+                    f"scenario {index}",
+                )
+                identity = _require_exact_keys(
+                    identity, {"benchmark_id"}, f"scenario {index}.identity"
+                )
+                _relative_parts(identity["benchmark_id"], "Criterion benchmark_id")
+                metrics = _require_exact_keys(
+                    metrics, {"mean_estimate"}, f"scenario {index}.metrics"
+                )
+                estimate = _require_exact_keys(
+                    metrics["mean_estimate"],
+                    {
+                        "confidence_level",
+                        "lower",
+                        "point",
+                        "standard_error",
+                        "unit",
+                        "upper",
+                    },
+                    f"scenario {index}.metrics.mean_estimate",
+                )
+                if estimate["unit"] != "nanoseconds":
                     raise BaselineError("Criterion metric unit is unsupported")
+                confidence_level = _strict_number(
+                    estimate["confidence_level"], "Criterion confidence_level"
+                )
+                lower = _strict_number(estimate["lower"], "Criterion lower bound")
+                point = _strict_number(estimate["point"], "Criterion point estimate")
+                upper = _strict_number(estimate["upper"], "Criterion upper bound")
+                _strict_number(estimate["standard_error"], "Criterion standard_error")
+                if not 0 < confidence_level <= 1:
+                    raise BaselineError("Criterion confidence level is out of range")
+                if not lower <= point <= upper:
+                    raise BaselineError("Criterion estimate bounds are incoherent")
                 if (
                     not isinstance(sources, list)
                     or len(sources) != 1
@@ -1971,26 +2387,48 @@ def validate_report_document(report: Any) -> list[str]:
                     or set(sources[0]) != {"private_estimates_json"}
                 ):
                     raise BaselineError("Criterion source reference is malformed")
-                _relative_parts(
+                criterion_source_parts = _relative_parts(
                     sources[0]["private_estimates_json"], "Criterion estimates source"
                 )
+                if (
+                    len(criterion_source_parts) < 6
+                    or criterion_source_parts[:2] != ("criterion", "raw")
+                    or criterion_source_parts[-2:] != ("new", "estimates.json")
+                    or "/".join(criterion_source_parts[3:-2]) != identity["benchmark_id"]
+                ):
+                    raise BaselineError("Criterion private estimates reference is incoherent")
+                criterion_source = PurePosixPath(*criterion_source_parts).as_posix()
+                if criterion_source in seen_criterion_sources:
+                    raise BaselineError("duplicate Criterion source reference")
+                seen_criterion_sources.add(criterion_source)
             except (AttributeError, BaselineError) as error:
                 errors.append(f"scenario {index}: {error}")
 
     if stress_count == 0 or criterion_count == 0:
         errors.append("report must contain both TCP stress and Criterion scenarios")
-    expected_producers = _report_producers(
-        stress=stress_count > 0, criterion=criterion_count > 0
-    )
-    if report.get("producers") != expected_producers:
-        errors.append("producer identities or adapter versions are unsupported")
     correctness = report.get("correctness")
-    if not isinstance(correctness, dict) or (
-        correctness.get("total_errors") != 0
-        or correctness.get("total_retry_attempts") != 0
-        or correctness.get("zero_errors") is not True
-        or correctness.get("zero_retries") is not True
-    ):
+    try:
+        correctness = _require_exact_keys(
+            correctness,
+            {
+                "stress_sample_count",
+                "total_errors",
+                "total_retry_attempts",
+                "zero_errors",
+                "zero_retries",
+            },
+            "correctness",
+        )
+        if (
+            _strict_int(correctness["stress_sample_count"], "stress_sample_count", minimum=1)
+            != stress_sample_count
+            or _strict_int(correctness["total_errors"], "total_errors") != 0
+            or _strict_int(correctness["total_retry_attempts"], "total_retry_attempts") != 0
+            or correctness["zero_errors"] is not True
+            or correctness["zero_retries"] is not True
+        ):
+            raise BaselineError("report correctness facts are incoherent")
+    except BaselineError:
         errors.append("report correctness must record strict zero-error and zero-retry facts")
     if not _all_numbers_finite(report):
         errors.append("report contains a non-finite or unsupported value")
@@ -2012,6 +2450,7 @@ def render_report_markdown(report: dict[str, Any]) -> str:
     run = report["run"]
     evidence = report["evidence"]
     source = report["source_artifact"]
+    criterion_producer = _criterion_report_producer(report)
     lines = [
         "# Benchmark artifact report",
         "",
@@ -2088,19 +2527,22 @@ def render_report_markdown(report: dict[str, Any]) -> str:
             "",
             "## Criterion estimates",
             "",
-            f"Adapter: Criterion {CRITERION_VERSION} `{CRITERION_ADAPTER}`. This is an exact-version ",
+            f"Adapter: Criterion {criterion_producer['version']} "
+            f"`{criterion_producer['adapter']}`. This is an exact-version ",
             "private-layout adapter, not a stable upstream data API.",
             "",
-            "| Benchmark ID | Mean lower (ns) | Mean point (ns) | Mean upper (ns) | Source |",
-            "|---|---:|---:|---:|---|",
+            "| Benchmark ID | Confidence level | Mean lower (ns) | Mean point (ns) | "
+            "Mean upper (ns) | Standard error (ns) | Source |",
+            "|---|---:|---:|---:|---:|---:|---|",
         ]
     )
     for scenario in criterion:
         metric = scenario["metrics"]["mean_estimate"]
         lines.append(
             f"| {_markdown_cell(scenario['identity']['benchmark_id'])} | "
+            f"{_markdown_cell(metric['confidence_level'])} | "
             f"{_markdown_cell(metric['lower'])} | {_markdown_cell(metric['point'])} | "
-            f"{_markdown_cell(metric['upper'])} | "
+            f"{_markdown_cell(metric['upper'])} | {_markdown_cell(metric['standard_error'])} | "
             f"`{_markdown_cell(scenario['sources'][0]['private_estimates_json'])}` |"
         )
 
@@ -2208,6 +2650,12 @@ def load_report_file(repo_root: Path, value: str) -> dict[str, Any]:
     errors = validate_report_document(report)
     if errors:
         raise BaselineError("report validation failed: " + "; ".join(errors))
+    criterion_producer = _criterion_report_producer(report)
+    verified_criterion_version(
+        repo_root,
+        report["run"]["target_sha"],
+        declared_version=criterion_producer["version"],
+    )
     return report
 
 

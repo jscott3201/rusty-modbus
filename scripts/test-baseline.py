@@ -68,6 +68,55 @@ def expected_scenario(**overrides: object) -> dict:
     return value
 
 
+def initialize_git_lock_fixture(
+    root: Path,
+    *,
+    criterion_versions: tuple[str, ...] = ("0.5.1",),
+    include_lock: bool = True,
+) -> str:
+    def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            ("git", *args), cwd=root, check=True, capture_output=True
+        )
+
+    git("init", "--quiet")
+    (root / ".gitignore").write_text("bench-output/\nrendered/\nreports/\n")
+    (root / "fixture.txt").write_text("immutable target fixture\n")
+    if include_lock:
+        lines = ["version = 4", ""]
+        if not criterion_versions:
+            lines.extend(
+                [
+                    "[[package]]",
+                    'name = "fixture"',
+                    'version = "1.0.0"',
+                    "",
+                ]
+            )
+        for version in criterion_versions:
+            lines.extend(
+                [
+                    "[[package]]",
+                    'name = "criterion"',
+                    f'version = "{version}"',
+                    "",
+                ]
+            )
+        (root / "Cargo.lock").write_text("\n".join(lines))
+    git("add", ".")
+    git(
+        "-c",
+        "user.name=Benchmark Report Test",
+        "-c",
+        "user.email=benchmark-report@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "immutable fixture",
+    )
+    return git("rev-parse", "HEAD").stdout.decode().strip()
+
+
 def environment_fixture(runner_label: str = "unit-test") -> dict:
     return {
         "schema_version": 1,
@@ -184,11 +233,12 @@ class BaselineHarnessTests(unittest.TestCase):
         run_id: str = "test-run",
         dirty: bool = False,
         allow_dirty: bool = False,
+        target_sha: str = SHA,
     ) -> baseline.ArtifactRun:
         run = baseline.ArtifactRun(
             repo_root=root,
             output_root=root / "bench-output",
-            target_sha=SHA,
+            target_sha=target_sha,
             run_id=run_id,
             mode="bench-smoke",
             runner_label="unit-test",
@@ -197,6 +247,26 @@ class BaselineHarnessTests(unittest.TestCase):
         )
         run.create()
         return run
+
+    def make_report_run(
+        self,
+        root: Path,
+        *,
+        run_id: str,
+        criterion_versions: tuple[str, ...] = ("0.5.1",),
+        include_lock: bool = True,
+        target_sha: str | None = None,
+    ) -> baseline.ArtifactRun:
+        fixture_sha = initialize_git_lock_fixture(
+            root,
+            criterion_versions=criterion_versions,
+            include_lock=include_lock,
+        )
+        return self.make_run(
+            root,
+            run_id=run_id,
+            target_sha=target_sha or fixture_sha,
+        )
 
     def test_full_sha_and_clean_tree_are_required(self) -> None:
         self.assertEqual(baseline.validate_full_sha(SHA), SHA)
@@ -322,7 +392,7 @@ class BaselineHarnessTests(unittest.TestCase):
     def test_valid_v1_benchmark_artifact_renders_deterministic_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            run = self.make_run(root, run_id="report-source")
+            run = self.make_report_run(root, run_id="report-source")
             populate_benchmark_evidence(run)
             run.finalize()
 
@@ -383,7 +453,7 @@ class BaselineHarnessTests(unittest.TestCase):
     def test_report_render_rejects_overwrite_traversal_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            run = self.make_run(root, run_id="safe-output")
+            run = self.make_report_run(root, run_id="safe-output")
             populate_benchmark_evidence(run)
             run.finalize()
             baseline.render_report_to_directory(root, run.run_dir, "reports/existing")
@@ -412,7 +482,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
             checksum_root = parent / "checksum"
             checksum_root.mkdir()
-            checksum_run = self.make_run(checksum_root, run_id="checksum")
+            checksum_run = self.make_report_run(checksum_root, run_id="checksum")
             populate_benchmark_evidence(checksum_run)
             checksum_run.finalize()
             (checksum_run.run_dir / "summary.csv").write_text("tampered\n")
@@ -421,7 +491,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
             producer_root = parent / "producer"
             producer_root.mkdir()
-            producer_run = self.make_run(producer_root, run_id="producer")
+            producer_run = self.make_report_run(producer_root, run_id="producer")
             populate_benchmark_evidence(producer_run)
             producer_run.finalize()
             provenance_path = producer_run.run_dir / "provenance.json"
@@ -434,7 +504,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
             missing_root = parent / "missing"
             missing_root.mkdir()
-            missing_run = self.make_run(missing_root, run_id="missing")
+            missing_run = self.make_report_run(missing_root, run_id="missing")
             populate_benchmark_evidence(missing_run)
             missing_run.finalize()
             criterion = json.loads((missing_run.run_dir / "summary.json").read_text())[
@@ -447,7 +517,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
             partial_root = parent / "partial"
             partial_root.mkdir()
-            partial_run = self.make_run(partial_root, run_id="partial")
+            partial_run = self.make_report_run(partial_root, run_id="partial")
             populate_benchmark_evidence(partial_run)
             partial_criterion = partial_run.criterion_results[0]
             (partial_root / partial_criterion["source"]).unlink()
@@ -464,7 +534,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
             stress_root = parent / "stress"
             stress_root.mkdir()
-            stress_run = self.make_run(stress_root, run_id="bad-stress")
+            stress_run = self.make_report_run(stress_root, run_id="bad-stress")
             populate_benchmark_evidence(stress_run)
             stress_run.finalize()
             summary_path = stress_run.run_dir / "summary.json"
@@ -485,7 +555,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
             criterion_root = parent / "criterion"
             criterion_root.mkdir()
-            criterion_run = self.make_run(criterion_root, run_id="bad-criterion")
+            criterion_run = self.make_report_run(criterion_root, run_id="bad-criterion")
             populate_benchmark_evidence(criterion_run)
             criterion_run.finalize()
             summary_path = criterion_run.run_dir / "summary.json"
@@ -506,7 +576,7 @@ class BaselineHarnessTests(unittest.TestCase):
     def test_report_document_rejects_unknown_schema_and_producer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            run = self.make_run(root, run_id="report-validation")
+            run = self.make_report_run(root, run_id="report-validation")
             populate_benchmark_evidence(run)
             run.finalize()
             report = baseline.build_benchmark_report(root, run.run_dir)
@@ -517,6 +587,208 @@ class BaselineHarnessTests(unittest.TestCase):
             unknown_producer = copy.deepcopy(report)
             unknown_producer["producers"][-1]["version"] = "unknown"
             self.assertTrue(baseline.validate_report_document(unknown_producer))
+
+    def test_cli_report_validation_rejects_malformed_render_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="cli-validation")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            report = baseline.build_benchmark_report(root, run.run_dir)
+            stress = next(item for item in report["scenarios"] if item["kind"] == "tcp_stress")
+            criterion = next(
+                item for item in report["scenarios"] if item["kind"] == "criterion_estimate"
+            )
+            cases = {
+                "missing-stress-mean": lambda value: value["scenarios"][
+                    report["scenarios"].index(stress)
+                ]["metrics"]["throughput"]["recorded_statistics"].pop("mean"),
+                "boolean-stress-mean": lambda value: value["scenarios"][
+                    report["scenarios"].index(stress)
+                ]["metrics"]["throughput"]["recorded_statistics"].update({"mean": True}),
+                "nonfinite-stress-max": lambda value: value["scenarios"][
+                    report["scenarios"].index(stress)
+                ]["metrics"]["p99_latency"]["recorded_statistics"].update(
+                    {"max": math.inf}
+                ),
+                "overflow-stress-mean": lambda value: value["scenarios"][
+                    report["scenarios"].index(stress)
+                ]["metrics"]["throughput"]["recorded_statistics"].update(
+                    {"mean": 10**1000}
+                ),
+                "missing-criterion-lower": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].pop("lower"),
+                "string-criterion-upper": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].update({"upper": "11.0"}),
+                "incoherent-criterion-bounds": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].update({"lower": 12.0}),
+                "missing-confidence-level": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].pop("confidence_level"),
+                "boolean-standard-error": lambda value: value["scenarios"][
+                    report["scenarios"].index(criterion)
+                ]["metrics"]["mean_estimate"].update({"standard_error": True}),
+                "missing-checksum-reference": lambda value: value["source_artifact"].pop(
+                    "checksum_inventory"
+                ),
+                "missing-source-timestamp": lambda value: value["source_artifact"][
+                    "provenance"
+                ].pop("ended_utc"),
+            }
+            for index, (label, mutate) in enumerate(cases.items()):
+                with self.subTest(case=label):
+                    malformed = copy.deepcopy(report)
+                    mutate(malformed)
+                    report_path = root / f"malformed-{index}.json"
+                    baseline.write_json(report_path, malformed)
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.load_report_file(root, str(report_path))
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.report_json_text(malformed)
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.render_report_markdown(malformed)
+                    with mock.patch.object(
+                        baseline, "__file__", str(root / "scripts" / "baseline.py")
+                    ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                        io.StringIO()
+                    ):
+                        self.assertEqual(
+                            baseline.main(["validate-report", str(report_path)]), 1
+                        )
+
+            valid_path = root / "valid-report.json"
+            baseline.write_json(valid_path, report)
+            loaded = baseline.load_report_file(root, str(valid_path))
+            self.assertEqual(loaded, report)
+            self.assertEqual(
+                baseline.render_report_markdown(loaded),
+                baseline.render_report_markdown(report),
+            )
+            with mock.patch.object(
+                baseline, "__file__", str(root / "scripts" / "baseline.py")
+            ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                self.assertEqual(baseline.main(["validate-report", str(valid_path)]), 0)
+                self.assertEqual(
+                    baseline.main(
+                        [
+                            "report",
+                            run.run_dir.relative_to(root).as_posix(),
+                            "--output-dir",
+                            "cli-render",
+                        ]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    baseline.main(
+                        ["validate-report", "cli-render/benchmark-report-v1.json"]
+                    ),
+                    0,
+                )
+
+    def test_criterion_identity_is_proven_from_target_sha_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            valid_root = parent / "valid"
+            valid_root.mkdir()
+            run = self.make_report_run(valid_root, run_id="lock-proof")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            report = baseline.build_benchmark_report(valid_root, run.run_dir)
+            criterion_producer = next(
+                item
+                for item in report["producers"]
+                if item["id"] == baseline.CRITERION_PRODUCER_ID
+            )
+            self.assertEqual(criterion_producer["version"], "0.5.1")
+            self.assertEqual(
+                baseline.criterion_version_from_target_lock(
+                    valid_root, report["run"]["target_sha"]
+                ),
+                "0.5.1",
+            )
+
+            (valid_root / "Cargo.lock").write_text(
+                'version = 4\n\n[[package]]\nname = "criterion"\nversion = "0.5.2"\n'
+            )
+            subprocess.run(
+                ("git", "add", "Cargo.lock"),
+                cwd=valid_root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                (
+                    "git",
+                    "-c",
+                    "user.name=Benchmark Report Test",
+                    "-c",
+                    "user.email=benchmark-report@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "unsupported lock",
+                ),
+                cwd=valid_root,
+                check=True,
+                capture_output=True,
+            )
+            unsupported_sha = subprocess.run(
+                ("git", "rev-parse", "HEAD"),
+                cwd=valid_root,
+                check=True,
+                capture_output=True,
+            ).stdout.decode().strip()
+            mismatch = copy.deepcopy(report)
+            mismatch["run"]["target_sha"] = unsupported_sha
+            source_parts = mismatch["source_artifact"]["path"].split("/")
+            source_parts[-2] = unsupported_sha
+            mismatch["source_artifact"]["path"] = "/".join(source_parts)
+            mismatch_path = valid_root / "mismatch-report.json"
+            baseline.write_json(mismatch_path, mismatch)
+            with self.assertRaisesRegex(baseline.BaselineError, "does not match"):
+                baseline.load_report_file(valid_root, str(mismatch_path))
+
+            unsupported_root = parent / "unsupported"
+            unsupported_root.mkdir()
+            unsupported_run = self.make_report_run(
+                unsupported_root,
+                run_id="unsupported",
+                criterion_versions=("0.5.2",),
+            )
+            populate_benchmark_evidence(unsupported_run)
+            with self.assertRaisesRegex(baseline.BaselineError, "unsupported"):
+                unsupported_run.finalize()
+
+            ambiguous_root = parent / "ambiguous"
+            ambiguous_root.mkdir()
+            ambiguous_sha = initialize_git_lock_fixture(
+                ambiguous_root, criterion_versions=("0.5.1", "0.5.1")
+            )
+            with self.assertRaisesRegex(baseline.BaselineError, "ambiguous"):
+                baseline.verified_criterion_version(ambiguous_root, ambiguous_sha)
+
+            unlabelled_root = parent / "unlabelled"
+            unlabelled_root.mkdir()
+            unlabelled_sha = initialize_git_lock_fixture(
+                unlabelled_root, criterion_versions=()
+            )
+            with self.assertRaisesRegex(baseline.BaselineError, "does not identify"):
+                baseline.verified_criterion_version(unlabelled_root, unlabelled_sha)
+
+            missing_root = parent / "missing-lock"
+            missing_root.mkdir()
+            missing_sha = initialize_git_lock_fixture(missing_root, include_lock=False)
+            with self.assertRaisesRegex(baseline.BaselineError, "unavailable"):
+                baseline.verified_criterion_version(missing_root, missing_sha)
+
+            with self.assertRaisesRegex(baseline.BaselineError, "unavailable"):
+                baseline.verified_criterion_version(valid_root, "b" * 40)
 
     def test_checksum_inventory_verifies_and_detects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
