@@ -8,6 +8,7 @@ use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_pool::{
     BackoffConfig, ConnectionPool, LeaseInvalidationReason, PoolConfig, PoolError, PriorityDevice,
 };
+use rusty_modbus_tcp::TransportError;
 use rusty_modbus_tcp::config::{TcpConfig, TcpServerConfig};
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
@@ -182,6 +183,42 @@ async fn invalidating_non_priority_releases_capacity_without_returning_idle() {
     assert_eq!(pool.idle_count(), 0);
 
     drop(conn);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+}
+
+#[tokio::test]
+async fn transport_error_suggestions_do_not_mutate_a_checked_out_lease() {
+    let addr = echo_server().await;
+    let pool = ConnectionPool::new(pool_config_for(addr));
+    let mut conn = pool.get(addr).await.unwrap();
+
+    let suggested =
+        LeaseInvalidationReason::suggested_for_transport_error(&TransportError::Disconnected);
+    let no_suggestion =
+        LeaseInvalidationReason::suggested_for_transport_error(&TransportError::AccessDenied);
+
+    assert_eq!(suggested, Some(LeaseInvalidationReason::Transport));
+    assert_eq!(no_suggestion, None);
+    assert_eq!(conn.invalidation_reason(), None);
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+    assert_eq!(conn.addr(), addr);
+
+    let pdu = [0x03, 0x00, 0x00, 0x00, 0x01];
+    conn.sink().send(make_frame(1, 0xFF, &pdu)).await.unwrap();
+    let response = conn.stream().recv().await.unwrap();
+    assert_eq!(&response.pdu[..], &pdu);
+    assert_eq!(conn.invalidation_reason(), None);
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    conn.invalidate(suggested.expect("transport error should suggest invalidation"));
+
+    assert_eq!(
+        conn.invalidation_reason(),
+        Some(LeaseInvalidationReason::Transport)
+    );
     assert_eq!(pool.active_count(), 0);
     assert_eq!(pool.idle_count(), 0);
 }
