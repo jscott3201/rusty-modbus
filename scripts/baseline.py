@@ -23,11 +23,29 @@ from typing import Any, Sequence
 SCHEMA_VERSION = 1
 HARNESS_VERSION = "1"
 HARNESS_PATH = "scripts/baseline.py"
+REPORT_SCHEMA_NAME = "benchmark-report"
+REPORT_SCHEMA_VERSION = 1
+REPORT_JSON_NAME = "benchmark-report-v1.json"
+REPORT_MARKDOWN_NAME = "benchmark-report-v1.md"
+STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
+CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
+CRITERION_VERSION = "0.5.1"
+CRITERION_ADAPTER = "new/estimates.json private layout"
 DEFAULT_OUTPUT_ROOT = "bench-output"
 FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 RUNNER_LABEL = re.compile(r"[^\x00-\x1f\x7f]{1,128}\Z")
+COMMAND_ID = re.compile(r"[0-9]{3}-[a-z0-9-]+\Z")
 MODES = ("correctness", "bench-smoke", "bench-full")
+BENCHMARK_MODES = ("bench-smoke", "bench-full")
+REPORT_EVIDENCE = {
+    "artifact_validity": "valid",
+    "budget_decision": "not_evaluated",
+    "classification": "observational_only",
+    "performance_comparability": "not_proven",
+    "runner_isolation": "not_proven",
+    "statistical_significance": "not_evaluated",
+}
 GITHUB_ENV_ALLOWLIST = (
     "GITHUB_ACTIONS",
     "GITHUB_JOB",
@@ -449,6 +467,7 @@ class ArtifactRun:
     def finalize(self) -> None:
         if self.finalized:
             return
+        report_error: BaselineError | None = None
         self.provenance["ended_utc"] = utc_now()
         self.provenance["baseline_eligible"] = not self.dirty and not self.errors
         write_json(self.run_dir / "provenance.json", self.provenance)
@@ -483,8 +502,30 @@ class ArtifactRun:
         write_summary_csv(
             self.run_dir / "summary.csv", self.stress_aggregates, self.criterion_results
         )
+        if (
+            status == "passed"
+            and self.mode in BENCHMARK_MODES
+            and self.stress_samples
+            and self.criterion_results
+        ):
+            try:
+                report = build_benchmark_report(
+                    self.repo_root, self.run_dir, require_artifact_checksums=False
+                )
+                write_report_pair(self.run_dir, report)
+            except (BaselineError, OSError) as error:
+                report_error = BaselineError(f"benchmark report generation failed: {error}")
+                self.add_error(report_error)
+                self.provenance["baseline_eligible"] = False
+                write_json(self.run_dir / "provenance.json", self.provenance)
+                summary["status"] = "failed"
+                summary["baseline_valid"] = False
+                summary["invalid_reasons"] = self.errors
+                write_json(self.run_dir / "summary.json", summary)
         write_checksums(self.repo_root, self.run_dir)
         self.finalized = True
+        if report_error is not None:
+            raise report_error
 
 
 def allowlisted_runner_environment(environ: dict[str, str] | None = None) -> dict[str, str]:
@@ -1264,6 +1305,912 @@ def validate_artifact(repo_root: Path, run_dir: Path) -> list[str]:
     return errors
 
 
+def _read_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BaselineError(f"cannot read {label}: {error}") from error
+    if not isinstance(value, dict):
+        raise BaselineError(f"{label} root must be an object")
+    return value
+
+
+def _relative_parts(value: str, label: str) -> tuple[str, ...]:
+    if not isinstance(value, str) or not value:
+        raise BaselineError(f"{label} must be a non-empty relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise BaselineError(f"{label} must be a traversal-free relative path")
+    return path.parts
+
+
+def _reject_symlink_components(path: Path, root: Path, label: str) -> None:
+    root = root.resolve()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as error:
+        raise BaselineError(f"{label} must be inside the repository") from error
+    current = root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise BaselineError(f"{label} must not use symlinks: {current}")
+
+
+def _artifact_file(run_dir: Path, relative: str, label: str) -> tuple[Path, str]:
+    parts = _relative_parts(relative, label)
+    path = run_dir.joinpath(*parts)
+    _reject_symlink_components(path, run_dir, label)
+    if not path.is_file():
+        raise BaselineError(f"{label} is missing: {relative}")
+    return path, PurePosixPath(*parts).as_posix()
+
+
+def _stored_artifact_file(
+    repo_root: Path, run_dir: Path, value: Any, label: str
+) -> tuple[Path, str]:
+    parts = _relative_parts(value, label)
+    path = repo_root.joinpath(*parts)
+    try:
+        relative = path.relative_to(run_dir)
+    except ValueError as error:
+        raise BaselineError(f"{label} must stay inside the source artifact") from error
+    return _artifact_file(run_dir, relative.as_posix(), label)
+
+
+def _require_nonempty_string(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise BaselineError(f"{label} must be a non-empty string")
+    return value
+
+
+def _report_producers(*, stress: bool, criterion: bool) -> list[dict[str, str]]:
+    producers = [
+        {
+            "adapter": "baseline artifact schema v1",
+            "id": "rusty-modbus-baseline-harness-v1",
+            "producer": HARNESS_PATH,
+            "version": HARNESS_VERSION,
+        }
+    ]
+    if stress:
+        producers.append(
+            {
+                "adapter": "custom stress JSON schema v1",
+                "id": STRESS_PRODUCER_ID,
+                "producer": "rusty-modbus stress-test",
+                "version": "1",
+            }
+        )
+    if criterion:
+        producers.append(
+            {
+                "adapter": CRITERION_ADAPTER,
+                "id": CRITERION_PRODUCER_ID,
+                "producer": "Criterion",
+                "version": CRITERION_VERSION,
+            }
+        )
+    return producers
+
+
+def _validate_report_environment(environment: dict[str, Any]) -> dict[str, Any]:
+    if environment.get("schema_version") != SCHEMA_VERSION:
+        raise BaselineError(f"environment.json schema_version must be {SCHEMA_VERSION}")
+    if environment.get("collection_status") != "complete":
+        raise BaselineError("environment.json collection_status must be complete")
+    runner = environment.get("runner")
+    if not isinstance(runner, dict):
+        raise BaselineError("environment.json runner must be an object")
+    label = validate_runner_label(
+        _require_nonempty_string(runner.get("label"), "environment.json runner.label")
+    )
+    github = runner.get("github")
+    if not isinstance(github, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in github.items()
+    ):
+        raise BaselineError("environment.json runner.github must contain string values")
+    for field in ("platform", "cpu", "power", "tools", "cargo_metadata"):
+        if not isinstance(environment.get(field), dict):
+            raise BaselineError(f"environment.json {field} must be an object")
+    tools = environment["tools"]
+    rustc = tools.get("rustc")
+    python = tools.get("python")
+    if not isinstance(rustc, dict) or not isinstance(python, dict):
+        raise BaselineError("environment.json rustc and python tools must be objects")
+    _require_nonempty_string(rustc.get("version"), "environment.json rustc.version")
+    _require_nonempty_string(rustc.get("host"), "environment.json rustc.host")
+    _require_nonempty_string(tools.get("cargo"), "environment.json tools.cargo")
+    for field in ("version", "implementation", "executable"):
+        _require_nonempty_string(
+            python.get(field), f"environment.json tools.python.{field}"
+        )
+    return {
+        "cargo_metadata": environment["cargo_metadata"],
+        "collection_status": "complete",
+        "cpu": environment["cpu"],
+        "github": dict(sorted(github.items())),
+        "platform": environment["platform"],
+        "power": environment["power"],
+        "tools": tools,
+        "runner_label": label,
+    }
+
+
+def _report_stress_scenarios(
+    repo_root: Path,
+    run_dir: Path,
+    mode: str,
+    summary: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    samples = summary.get("stress_samples")
+    aggregates = summary.get("stress_aggregates")
+    if not isinstance(samples, list) or not samples:
+        raise BaselineError("summary.json stress_samples must be a non-empty list")
+    if not isinstance(aggregates, list) or not aggregates:
+        raise BaselineError("summary.json stress_aggregates must be a non-empty list")
+    if any(not isinstance(item, dict) for item in samples + aggregates):
+        raise BaselineError("summary.json stress entries must be objects")
+
+    durations: set[int] = set()
+    warmups: set[int] = set()
+    repetitions: list[int] = []
+    sample_sources: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    summary_commands = summary.get("commands")
+    if not isinstance(summary_commands, list) or any(
+        not isinstance(item, str) for item in summary_commands
+    ):
+        raise BaselineError("summary.json commands must be a list of strings")
+
+    for sample in samples:
+        if sample.get("transport") != "tcp" or sample.get("operation") not in {
+            "read",
+            "mixed",
+        }:
+            raise BaselineError("reportable stress samples must use a supported TCP scenario")
+        expected = {
+            field: sample.get(field)
+            for field in (
+                "transport",
+                "operation",
+                "in_flight",
+                "clients",
+                "registers",
+                "duration_secs",
+                "warmup_secs",
+            )
+        }
+        parse_stress_json(json.dumps(sample, allow_nan=False), expected)
+        repetition = _strict_int(sample.get("repetition"), "stress.repetition", minimum=1)
+        command_id = sample.get("command_id")
+        if not isinstance(command_id, str) or not COMMAND_ID.fullmatch(command_id):
+            raise BaselineError("stress.command_id is missing or malformed")
+        if command_id not in summary_commands:
+            raise BaselineError(f"stress command is absent from summary.json: {command_id}")
+
+        durations.add(sample["duration_secs"])
+        warmups.add(sample["warmup_secs"])
+        repetitions.append(repetition)
+        parsed_relative = (
+            f"stress/parsed/stress-{sample['operation']}-d{sample['in_flight']}-"
+            f"r{repetition}.json"
+        )
+        parsed_path, parsed_source = _artifact_file(
+            run_dir, parsed_relative, "stress parsed source"
+        )
+        if _read_json_object(parsed_path, parsed_relative) != sample:
+            raise BaselineError(f"stress parsed source does not match summary: {parsed_relative}")
+
+        command_relative = f"commands/{command_id}/command.json"
+        command_path, command_source = _artifact_file(
+            run_dir, command_relative, "stress command record"
+        )
+        command = _read_json_object(command_path, command_relative)
+        if (
+            command.get("schema_version") != SCHEMA_VERSION
+            or command.get("command_id") != command_id
+            or command.get("status") != "passed"
+        ):
+            raise BaselineError(f"stress command record is not a passed v1 record: {command_id}")
+        stdout_path, stdout_source = _stored_artifact_file(
+            repo_root,
+            run_dir,
+            command.get("stdout_path"),
+            f"{command_id} stdout_path",
+        )
+        expected_stdout = run_dir / "commands" / command_id / "command.stdout"
+        if stdout_path != expected_stdout:
+            raise BaselineError(f"stress command stdout path mismatch: {command_id}")
+        raw_sample = parse_stress_json(stdout_path.read_bytes(), expected)
+        summary_raw_sample = dict(sample)
+        summary_raw_sample.pop("command_id")
+        summary_raw_sample.pop("repetition")
+        if raw_sample != summary_raw_sample:
+            raise BaselineError(f"stress raw stdout does not match parsed sample: {command_id}")
+
+        key = (
+            sample["transport"],
+            sample["operation"],
+            sample["in_flight"],
+            sample["clients"],
+            sample["registers"],
+        )
+        sample_sources.setdefault(key, []).append(
+            {
+                "command_record": command_source,
+                "parsed_sample": parsed_source,
+                "raw_stdout": stdout_source,
+                "repetition": repetition,
+            }
+        )
+
+    if len(durations) != 1 or len(warmups) != 1:
+        raise BaselineError("stress samples must use one duration and warmup")
+    repetition_count = max(repetitions)
+    expected_scenarios = stress_scenarios(mode, repetition_count)
+    canonical_aggregates = aggregate_stress_samples(samples, expected_scenarios)
+    if aggregates != canonical_aggregates:
+        raise BaselineError("summary.json stress_aggregates do not match strict sample aggregation")
+
+    scenarios = []
+    for aggregate in canonical_aggregates:
+        key = (
+            aggregate["transport"],
+            aggregate["operation"],
+            aggregate["in_flight"],
+            aggregate["clients"],
+            aggregate["registers"],
+        )
+        sources = sorted(sample_sources[key], key=lambda item: item["repetition"])
+        scenarios.append(
+            {
+                "correctness": {
+                    "error_rate": 0.0,
+                    "retry_attempts": aggregate["retry_attempts"],
+                    "total_errors": aggregate["total_errors"],
+                    "zero_error_rate": True,
+                    "zero_errors": aggregate["total_errors"] == 0,
+                    "zero_retries": aggregate["retry_attempts"] == 0,
+                },
+                "identity": {
+                    "clients": aggregate["clients"],
+                    "duration_seconds": next(iter(durations)),
+                    "in_flight": aggregate["in_flight"],
+                    "operation": aggregate["operation"],
+                    "registers": aggregate["registers"],
+                    "repetitions": aggregate["repetitions"],
+                    "transport": aggregate["transport"],
+                    "warmup_seconds": next(iter(warmups)),
+                },
+                "kind": "tcp_stress",
+                "metrics": {
+                    "p99_latency": {
+                        "recorded_statistics": aggregate["p99_ms"],
+                        "unit": "milliseconds",
+                    },
+                    "throughput": {
+                        "recorded_statistics": aggregate["throughput_ops_sec"],
+                        "unit": "operations_per_second",
+                    },
+                },
+                "producer_id": STRESS_PRODUCER_ID,
+                "sources": sources,
+            }
+        )
+    correctness = {
+        "stress_sample_count": len(samples),
+        "total_errors": sum(item["errors"] for item in samples),
+        "total_retry_attempts": sum(item["retry_attempts"] for item in samples),
+        "zero_errors": all(item["errors"] == 0 and item["error_rate"] == 0 for item in samples),
+        "zero_retries": all(item["retry_attempts"] == 0 for item in samples),
+    }
+    return scenarios, correctness
+
+
+def _report_criterion_scenarios(
+    repo_root: Path, run_dir: Path, summary: dict[str, Any]
+) -> list[dict[str, Any]]:
+    results = summary.get("criterion_results")
+    if not isinstance(results, list) or not results:
+        raise BaselineError("summary.json criterion_results must be a non-empty list")
+    if any(not isinstance(item, dict) for item in results):
+        raise BaselineError("summary.json Criterion entries must be objects")
+    parsed_path, _ = _artifact_file(
+        run_dir, "criterion/parsed-estimates.json", "Criterion parsed estimates"
+    )
+    try:
+        parsed_results = json.loads(parsed_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BaselineError(f"cannot read Criterion parsed estimates: {error}") from error
+    if parsed_results != results:
+        raise BaselineError("Criterion parsed estimates do not match summary.json")
+
+    seen_sources: set[str] = set()
+    scenarios = []
+    for result in sorted(
+        results, key=lambda item: (str(item.get("benchmark_id")), str(item.get("source")))
+    ):
+        benchmark_id = _require_nonempty_string(
+            result.get("benchmark_id"), "Criterion benchmark_id"
+        )
+        _relative_parts(benchmark_id, "Criterion benchmark_id")
+        source_path, source = _stored_artifact_file(
+            repo_root, run_dir, result.get("source"), "Criterion estimates source"
+        )
+        if source in seen_sources:
+            raise BaselineError(f"duplicate Criterion source: {source}")
+        seen_sources.add(source)
+        source_parts = PurePosixPath(source).parts
+        if (
+            len(source_parts) < 6
+            or source_parts[:2] != ("criterion", "raw")
+            or source_parts[-2:] != ("new", "estimates.json")
+            or "/".join(source_parts[3:-2]) != benchmark_id
+        ):
+            raise BaselineError(
+                "Criterion source must match the exact new/estimates.json private layout"
+            )
+        estimates = result.get("estimates")
+        if not isinstance(estimates, dict) or _read_json_object(
+            source_path, f"Criterion source {source}"
+        ) != estimates:
+            raise BaselineError(f"Criterion source does not match parsed estimates: {source}")
+        mean = estimates.get("mean")
+        interval = mean.get("confidence_interval") if isinstance(mean, dict) else None
+        if not isinstance(mean, dict) or not isinstance(interval, dict):
+            raise BaselineError(f"Criterion mean estimate is missing: {source}")
+        point = _strict_number(mean.get("point_estimate"), f"{source}.mean.point_estimate")
+        lower = _strict_number(interval.get("lower_bound"), f"{source}.mean.lower_bound")
+        upper = _strict_number(interval.get("upper_bound"), f"{source}.mean.upper_bound")
+        if not lower <= point <= upper:
+            raise BaselineError(f"Criterion mean estimate bounds are out of order: {source}")
+        normalized = result.get("mean_ns")
+        if not isinstance(normalized, dict) or normalized != {
+            "lower": lower,
+            "point": point,
+            "upper": upper,
+        }:
+            raise BaselineError(f"Criterion normalized mean does not match source: {source}")
+        scenarios.append(
+            {
+                "identity": {"benchmark_id": benchmark_id},
+                "kind": "criterion_estimate",
+                "metrics": {
+                    "mean_estimate": {
+                        "lower": lower,
+                        "point": point,
+                        "unit": "nanoseconds",
+                        "upper": upper,
+                    }
+                },
+                "producer_id": CRITERION_PRODUCER_ID,
+                "sources": [{"private_estimates_json": source}],
+            }
+        )
+    return scenarios
+
+
+def build_benchmark_report(
+    repo_root: Path,
+    run_dir: Path,
+    *,
+    require_artifact_checksums: bool = True,
+) -> dict[str, Any]:
+    repo_root = repo_root.resolve()
+    run_dir = run_dir.resolve()
+    try:
+        artifact_path = run_dir.relative_to(repo_root).as_posix()
+    except ValueError as error:
+        raise BaselineError("artifact directory must be inside the repository") from error
+    if require_artifact_checksums:
+        errors = validate_artifact(repo_root, run_dir)
+        if errors:
+            raise BaselineError("artifact validation failed: " + "; ".join(errors))
+
+    environment = _read_json_object(run_dir / "environment.json", "environment.json")
+    provenance = _read_json_object(run_dir / "provenance.json", "provenance.json")
+    summary = _read_json_object(run_dir / "summary.json", "summary.json")
+    for name, document in (
+        ("environment.json", environment),
+        ("provenance.json", provenance),
+        ("summary.json", summary),
+    ):
+        if document.get("schema_version") != SCHEMA_VERSION:
+            raise BaselineError(f"{name} schema_version must be {SCHEMA_VERSION}")
+    if (
+        provenance.get("harness_version") != HARNESS_VERSION
+        or provenance.get("harness_path") != HARNESS_PATH
+    ):
+        raise BaselineError("unsupported or unlabelled artifact harness producer version")
+    if provenance.get("dirty") is not False or provenance.get("baseline_eligible") is not True:
+        raise BaselineError("report source must record a clean, eligible worktree")
+    if (
+        summary.get("status") != "passed"
+        or summary.get("baseline_valid") is not True
+        or summary.get("invalid_reasons") != []
+    ):
+        raise BaselineError("report source artifact must be valid")
+
+    target_sha = validate_full_sha(
+        _require_nonempty_string(provenance.get("target_sha"), "provenance.json target_sha")
+    )
+    run_id = validate_run_id(
+        _require_nonempty_string(provenance.get("run_id"), "provenance.json run_id")
+    )
+    mode = provenance.get("mode")
+    if mode not in BENCHMARK_MODES:
+        raise BaselineError("benchmark reports require bench-smoke or bench-full artifacts")
+    if run_dir.parents[1].name != f"baseline-v{SCHEMA_VERSION}":
+        raise BaselineError(f"artifact path must use baseline-v{SCHEMA_VERSION}")
+    if run_dir.parent.name != target_sha or run_dir.name != run_id:
+        raise BaselineError("artifact path, target SHA, or run ID do not match")
+    for field, expected in (
+        ("target_sha", target_sha),
+        ("run_id", run_id),
+        ("mode", mode),
+    ):
+        if summary.get(field) != expected:
+            raise BaselineError(f"summary.json {field} does not match provenance.json")
+    started_utc = _require_nonempty_string(
+        provenance.get("started_utc"), "provenance.json started_utc"
+    )
+    ended_utc = _require_nonempty_string(
+        provenance.get("ended_utc"), "provenance.json ended_utc"
+    )
+    recorded_environment = _validate_report_environment(environment)
+    stress_scenarios_report, correctness = _report_stress_scenarios(
+        repo_root, run_dir, mode, summary
+    )
+    criterion_scenarios = _report_criterion_scenarios(repo_root, run_dir, summary)
+    report = {
+        "correctness": correctness,
+        "evidence": dict(REPORT_EVIDENCE),
+        "producers": _report_producers(stress=True, criterion=True),
+        "report_schema": {
+            "name": REPORT_SCHEMA_NAME,
+            "version": REPORT_SCHEMA_VERSION,
+        },
+        "run": {
+            "mode": mode,
+            "run_id": run_id,
+            "source_status": summary["status"],
+            "status": "valid",
+            "target_sha": target_sha,
+        },
+        "runner": {
+            "environment": recorded_environment,
+            "label": recorded_environment["runner_label"],
+        },
+        "scenarios": stress_scenarios_report + criterion_scenarios,
+        "source_artifact": {
+            "checksum_inventory": "checksums.sha256",
+            "checksum_semantics": "integrity_inventory_not_signature_or_attestation",
+            "path": artifact_path,
+            "provenance": {
+                "ended_utc": ended_utc,
+                "harness_path": HARNESS_PATH,
+                "harness_version": HARNESS_VERSION,
+                "started_utc": started_utc,
+            },
+            "schema": {"name": "rusty-modbus-baseline-artifact", "version": SCHEMA_VERSION},
+        },
+    }
+    report_errors = validate_report_document(report)
+    if report_errors:
+        raise BaselineError("generated report is invalid: " + "; ".join(report_errors))
+    return report
+
+
+def _all_numbers_finite(value: Any) -> bool:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return True
+    if isinstance(value, (int, float)):
+        return math.isfinite(float(value))
+    if isinstance(value, list):
+        return all(_all_numbers_finite(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _all_numbers_finite(item) for key, item in value.items())
+    return False
+
+
+def validate_report_document(report: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(report, dict):
+        return ["report root must be an object"]
+    if report.get("report_schema") != {
+        "name": REPORT_SCHEMA_NAME,
+        "version": REPORT_SCHEMA_VERSION,
+    }:
+        errors.append(
+            f"report_schema must be {REPORT_SCHEMA_NAME} version {REPORT_SCHEMA_VERSION}"
+        )
+    if report.get("evidence") != REPORT_EVIDENCE:
+        errors.append("report evidence classification is missing or unsupported")
+    source = report.get("source_artifact")
+    if not isinstance(source, dict):
+        errors.append("source_artifact must be an object")
+    else:
+        if source.get("schema") != {
+            "name": "rusty-modbus-baseline-artifact",
+            "version": SCHEMA_VERSION,
+        }:
+            errors.append("source artifact schema is unsupported")
+        for field in ("path", "checksum_inventory"):
+            try:
+                _relative_parts(source.get(field), f"source_artifact.{field}")
+            except BaselineError as error:
+                errors.append(str(error))
+        if source.get("checksum_semantics") != "integrity_inventory_not_signature_or_attestation":
+            errors.append("source checksum semantics are unsupported")
+        provenance = source.get("provenance")
+        if not isinstance(provenance, dict) or (
+            provenance.get("harness_path"), provenance.get("harness_version")
+        ) != (HARNESS_PATH, HARNESS_VERSION):
+            errors.append("source producer provenance is missing or unsupported")
+
+    run = report.get("run")
+    if not isinstance(run, dict):
+        errors.append("run must be an object")
+    else:
+        try:
+            validate_full_sha(
+                _require_nonempty_string(run.get("target_sha"), "run.target_sha")
+            )
+            validate_run_id(_require_nonempty_string(run.get("run_id"), "run.run_id"))
+        except BaselineError as error:
+            errors.append(str(error))
+        if run.get("mode") not in BENCHMARK_MODES:
+            errors.append("run mode is unsupported")
+        if run.get("status") != "valid" or run.get("source_status") != "passed":
+            errors.append("run status must distinguish valid report evidence from passed source")
+
+    runner = report.get("runner")
+    if not isinstance(runner, dict) or not isinstance(runner.get("environment"), dict):
+        errors.append("runner and recorded environment are required")
+    else:
+        try:
+            validate_runner_label(
+                _require_nonempty_string(runner.get("label"), "runner.label")
+            )
+        except BaselineError as error:
+            errors.append(str(error))
+
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        errors.append("scenarios must be a non-empty list")
+        scenarios = []
+    stress_count = 0
+    criterion_count = 0
+    for index, scenario in enumerate(scenarios):
+        if not isinstance(scenario, dict):
+            errors.append(f"scenario {index} must be an object")
+            continue
+        kind = scenario.get("kind")
+        producer_id = scenario.get("producer_id")
+        expected_producer = {
+            "tcp_stress": STRESS_PRODUCER_ID,
+            "criterion_estimate": CRITERION_PRODUCER_ID,
+        }.get(kind)
+        if expected_producer is None or producer_id != expected_producer:
+            errors.append(f"scenario {index} has an unsupported kind or producer")
+        else:
+            stress_count += kind == "tcp_stress"
+            criterion_count += kind == "criterion_estimate"
+        if not isinstance(scenario.get("identity"), dict) or not isinstance(
+            scenario.get("metrics"), dict
+        ):
+            errors.append(f"scenario {index} identity and metrics are required")
+        sources = scenario.get("sources")
+        if not isinstance(sources, list) or not sources or any(
+            not isinstance(item, dict) for item in sources
+        ):
+            errors.append(f"scenario {index} source references are required")
+        if kind == "tcp_stress":
+            identity = scenario.get("identity")
+            metrics = scenario.get("metrics")
+            try:
+                if not isinstance(identity, dict) or identity.get("transport") != "tcp":
+                    raise BaselineError("identity must declare TCP")
+                if identity.get("operation") not in {"read", "mixed"}:
+                    raise BaselineError("identity operation is unsupported")
+                for field in ("clients", "in_flight", "registers", "repetitions"):
+                    _strict_int(identity.get(field), f"identity.{field}", minimum=1)
+                for field in ("duration_seconds", "warmup_seconds"):
+                    _strict_int(identity.get(field), f"identity.{field}")
+                if not isinstance(metrics, dict) or (
+                    metrics.get("throughput", {}).get("unit") != "operations_per_second"
+                    or metrics.get("p99_latency", {}).get("unit") != "milliseconds"
+                ):
+                    raise BaselineError("stress metric units are unsupported")
+                if isinstance(sources, list):
+                    for source_reference in sources:
+                        if not isinstance(source_reference, dict) or set(source_reference) != {
+                            "command_record",
+                            "parsed_sample",
+                            "raw_stdout",
+                            "repetition",
+                        }:
+                            raise BaselineError("stress source reference is malformed")
+                        _strict_int(
+                            source_reference["repetition"],
+                            "stress source repetition",
+                            minimum=1,
+                        )
+                        for field in ("command_record", "parsed_sample", "raw_stdout"):
+                            _relative_parts(
+                                source_reference[field], f"stress source {field}"
+                            )
+            except (AttributeError, BaselineError) as error:
+                errors.append(f"scenario {index}: {error}")
+            correctness = scenario.get("correctness")
+            if not isinstance(correctness, dict) or (
+                correctness.get("total_errors") != 0
+                or correctness.get("retry_attempts") != 0
+                or correctness.get("error_rate") != 0
+                or correctness.get("zero_errors") is not True
+                or correctness.get("zero_retries") is not True
+                or correctness.get("zero_error_rate") is not True
+            ):
+                errors.append(f"scenario {index} must record strict zero-error facts")
+        elif kind == "criterion_estimate":
+            identity = scenario.get("identity")
+            metrics = scenario.get("metrics")
+            try:
+                if not isinstance(identity, dict):
+                    raise BaselineError("Criterion identity is required")
+                _relative_parts(identity.get("benchmark_id"), "Criterion benchmark_id")
+                if not isinstance(metrics, dict) or (
+                    metrics.get("mean_estimate", {}).get("unit") != "nanoseconds"
+                ):
+                    raise BaselineError("Criterion metric unit is unsupported")
+                if (
+                    not isinstance(sources, list)
+                    or len(sources) != 1
+                    or not isinstance(sources[0], dict)
+                    or set(sources[0]) != {"private_estimates_json"}
+                ):
+                    raise BaselineError("Criterion source reference is malformed")
+                _relative_parts(
+                    sources[0]["private_estimates_json"], "Criterion estimates source"
+                )
+            except (AttributeError, BaselineError) as error:
+                errors.append(f"scenario {index}: {error}")
+
+    if stress_count == 0 or criterion_count == 0:
+        errors.append("report must contain both TCP stress and Criterion scenarios")
+    expected_producers = _report_producers(
+        stress=stress_count > 0, criterion=criterion_count > 0
+    )
+    if report.get("producers") != expected_producers:
+        errors.append("producer identities or adapter versions are unsupported")
+    correctness = report.get("correctness")
+    if not isinstance(correctness, dict) or (
+        correctness.get("total_errors") != 0
+        or correctness.get("total_retry_attempts") != 0
+        or correctness.get("zero_errors") is not True
+        or correctness.get("zero_retries") is not True
+    ):
+        errors.append("report correctness must record strict zero-error and zero-retry facts")
+    if not _all_numbers_finite(report):
+        errors.append("report contains a non-finite or unsupported value")
+    return errors
+
+
+def _markdown_cell(value: Any) -> str:
+    if isinstance(value, float):
+        rendered = json.dumps(value, allow_nan=False)
+    else:
+        rendered = str(value)
+    return rendered.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
+def render_report_markdown(report: dict[str, Any]) -> str:
+    errors = validate_report_document(report)
+    if errors:
+        raise BaselineError("cannot render invalid report: " + "; ".join(errors))
+    run = report["run"]
+    evidence = report["evidence"]
+    source = report["source_artifact"]
+    lines = [
+        "# Benchmark artifact report",
+        "",
+        "This report is observational only. It preserves recorded artifact values; it does not ",
+        "establish host isolation, performance comparability, a budget decision, statistical ",
+        "significance, or performance acceptance.",
+        "",
+        "## Evidence status",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| Report schema | `{REPORT_SCHEMA_NAME}` v{REPORT_SCHEMA_VERSION} |",
+        f"| Source artifact schema | `rusty-modbus-baseline-artifact` v{SCHEMA_VERSION} |",
+        f"| Artifact validity | `{evidence['artifact_validity']}` |",
+        f"| Classification | `{evidence['classification']}` |",
+        f"| Performance comparability | `{evidence['performance_comparability']}` |",
+        f"| Runner isolation | `{evidence['runner_isolation']}` |",
+        f"| Budget decision | `{evidence['budget_decision']}` |",
+        f"| Statistical significance | `{evidence['statistical_significance']}` |",
+        "",
+        "## Source run",
+        "",
+        "| Field | Recorded value |",
+        "|---|---|",
+        f"| Target SHA | `{run['target_sha']}` |",
+        f"| Run ID | `{_markdown_cell(run['run_id'])}` |",
+        f"| Mode | `{run['mode']}` |",
+        f"| Report status | `{run['status']}` |",
+        f"| Source status | `{run['source_status']}` |",
+        f"| Runner label | `{_markdown_cell(report['runner']['label'])}` |",
+        f"| Source artifact | `{_markdown_cell(source['path'])}` |",
+        f"| Source started UTC | `{_markdown_cell(source['provenance']['started_utc'])}` |",
+        f"| Source ended UTC | `{_markdown_cell(source['provenance']['ended_utc'])}` |",
+        "",
+        "## Producer adapters",
+        "",
+        "| Producer | Version | Adapter |",
+        "|---|---|---|",
+    ]
+    for producer in report["producers"]:
+        lines.append(
+            f"| {_markdown_cell(producer['producer'])} | {_markdown_cell(producer['version'])} "
+            f"| {_markdown_cell(producer['adapter'])} |"
+        )
+
+    stress = [item for item in report["scenarios"] if item["kind"] == "tcp_stress"]
+    lines.extend(
+        [
+            "",
+            "## TCP stress scenarios",
+            "",
+            "| Operation | In-flight | Clients | Registers | Repetitions | "
+            "Throughput mean (ops/s) | p99 mean (ms) | Errors | Retries |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for scenario in stress:
+        identity = scenario["identity"]
+        metrics = scenario["metrics"]
+        correctness = scenario["correctness"]
+        lines.append(
+            f"| {_markdown_cell(identity['operation'])} | {identity['in_flight']} | "
+            f"{identity['clients']} | {identity['registers']} | {identity['repetitions']} | "
+            f"{_markdown_cell(metrics['throughput']['recorded_statistics']['mean'])} | "
+            f"{_markdown_cell(metrics['p99_latency']['recorded_statistics']['mean'])} | "
+            f"{correctness['total_errors']} | {correctness['retry_attempts']} |"
+        )
+
+    criterion = [
+        item for item in report["scenarios"] if item["kind"] == "criterion_estimate"
+    ]
+    lines.extend(
+        [
+            "",
+            "## Criterion estimates",
+            "",
+            f"Adapter: Criterion {CRITERION_VERSION} `{CRITERION_ADAPTER}`. This is an exact-version ",
+            "private-layout adapter, not a stable upstream data API.",
+            "",
+            "| Benchmark ID | Mean lower (ns) | Mean point (ns) | Mean upper (ns) | Source |",
+            "|---|---:|---:|---:|---|",
+        ]
+    )
+    for scenario in criterion:
+        metric = scenario["metrics"]["mean_estimate"]
+        lines.append(
+            f"| {_markdown_cell(scenario['identity']['benchmark_id'])} | "
+            f"{_markdown_cell(metric['lower'])} | {_markdown_cell(metric['point'])} | "
+            f"{_markdown_cell(metric['upper'])} | "
+            f"`{_markdown_cell(scenario['sources'][0]['private_estimates_json'])}` |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Recorded runner environment",
+            "",
+            "```json",
+            json.dumps(
+                report["runner"]["environment"],
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+                allow_nan=False,
+            ),
+            "```",
+            "",
+            "## Integrity inventory",
+            "",
+            f"Source-relative checksum inventory: `{source['checksum_inventory']}`. Checksums are an ",
+            "integrity inventory, not a signature or attestation.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def report_json_text(report: dict[str, Any]) -> str:
+    errors = validate_report_document(report)
+    if errors:
+        raise BaselineError("cannot serialize invalid report: " + "; ".join(errors))
+    return json.dumps(
+        report, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+    ) + "\n"
+
+
+def write_report_pair(directory: Path, report: dict[str, Any]) -> tuple[Path, Path]:
+    json_path = directory / REPORT_JSON_NAME
+    markdown_path = directory / REPORT_MARKDOWN_NAME
+    for path in (json_path, markdown_path):
+        if path.exists() or path.is_symlink():
+            raise BaselineError(f"report output already exists: {path}")
+    json_text = report_json_text(report)
+    markdown_text = render_report_markdown(report)
+    with json_path.open("x", encoding="utf-8", newline="\n") as handle:
+        handle.write(json_text)
+    with markdown_path.open("x", encoding="utf-8", newline="\n") as handle:
+        handle.write(markdown_text)
+    return json_path, markdown_path
+
+
+def resolve_report_output_dir(
+    repo_root: Path, run_dir: Path, value: str
+) -> Path:
+    repo_root = repo_root.resolve()
+    raw = Path(value)
+    if ".." in raw.parts:
+        raise BaselineError("report output directory must not contain path traversal")
+    candidate = raw if raw.is_absolute() else repo_root / raw
+    try:
+        candidate.relative_to(repo_root)
+    except ValueError as error:
+        raise BaselineError("report output directory must be inside the repository") from error
+    _reject_symlink_components(candidate, repo_root, "report output directory")
+    resolved = candidate.resolve()
+    try:
+        relative = resolved.relative_to(repo_root)
+    except ValueError as error:
+        raise BaselineError("report output directory must be inside the repository") from error
+    if not relative.parts:
+        raise BaselineError("report output directory must not be the repository root")
+    run_dir = run_dir.resolve()
+    if resolved == run_dir or run_dir in resolved.parents:
+        raise BaselineError("read-only report output must not mutate the source artifact")
+    if candidate.exists() or candidate.is_symlink():
+        raise BaselineError(f"report output directory already exists: {candidate}")
+    return resolved
+
+
+def render_report_to_directory(
+    repo_root: Path, run_dir: Path, output_dir: str
+) -> tuple[Path, Path]:
+    report = build_benchmark_report(repo_root, run_dir)
+    destination = resolve_report_output_dir(repo_root, run_dir, output_dir)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.mkdir()
+    return write_report_pair(destination, report)
+
+
+def load_report_file(repo_root: Path, value: str) -> dict[str, Any]:
+    repo_root = repo_root.resolve()
+    raw = Path(value)
+    if ".." in raw.parts:
+        raise BaselineError("report path must not contain path traversal")
+    path = raw if raw.is_absolute() else repo_root / raw
+    try:
+        path.relative_to(repo_root)
+    except ValueError as error:
+        raise BaselineError("report path must be inside the repository") from error
+    _reject_symlink_components(path, repo_root, "report path")
+    if not path.is_file():
+        raise BaselineError(f"report file does not exist: {path}")
+    report = _read_json_object(path, "benchmark report")
+    errors = validate_report_document(report)
+    if errors:
+        raise BaselineError("report validation failed: " + "; ".join(errors))
+    return report
+
+
 def run_correctness(run: ArtifactRun) -> None:
     for spec in correctness_plan(run.repo_root):
         run.run_command(spec)
@@ -1418,8 +2365,24 @@ def build_parser() -> argparse.ArgumentParser:
     full.add_argument("--duration", type=duration_arg, default=5)
     full.add_argument("--warmup", type=warmup_arg, default=1)
     full.add_argument("--repetitions", type=repetitions_arg, default=5)
-    validate = subparsers.add_parser("validate")
+    validate = subparsers.add_parser(
+        "validate", help="validate a retained baseline artifact and checksum inventory"
+    )
     validate.add_argument("run_dir")
+    report = subparsers.add_parser(
+        "report",
+        help="validate a benchmark artifact and render observational JSON and Markdown",
+    )
+    report.add_argument("run_dir")
+    report.add_argument(
+        "--output-dir",
+        required=True,
+        help="new repository-local directory; never overwrites or mutates the source artifact",
+    )
+    validate_report = subparsers.add_parser(
+        "validate-report", help="validate a benchmark-report JSON document"
+    )
+    validate_report.add_argument("report_json")
     return parser
 
 
@@ -1487,6 +2450,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"baseline artifact: {error}", file=sys.stderr)
                 return 1
             print(f"baseline artifact valid: {run_dir.resolve().relative_to(repo_root)}")
+            return 0
+        if args.command == "report":
+            run_dir = Path(args.run_dir)
+            if not run_dir.is_absolute():
+                run_dir = repo_root / run_dir
+            json_path, markdown_path = render_report_to_directory(
+                repo_root, run_dir, args.output_dir
+            )
+            print(f"benchmark report JSON: {json_path.relative_to(repo_root)}")
+            print(f"benchmark report Markdown: {markdown_path.relative_to(repo_root)}")
+            return 0
+        if args.command == "validate-report":
+            load_report_file(repo_root, args.report_json)
+            print(f"benchmark report valid: {args.report_json}")
             return 0
         status, _ = run_mode(args, repo_root)
         return status

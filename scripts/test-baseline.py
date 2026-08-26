@@ -68,6 +68,114 @@ def expected_scenario(**overrides: object) -> dict:
     return value
 
 
+def environment_fixture(runner_label: str = "unit-test") -> dict:
+    return {
+        "schema_version": 1,
+        "collection_status": "complete",
+        "runner": {"label": runner_label, "github": {"RUNNER_OS": "Linux"}},
+        "platform": {
+            "os": "Linux",
+            "release": "fixture",
+            "kernel": "fixture",
+            "architecture": "x86_64",
+        },
+        "cpu": {"model": "fixture", "model_source": "fixture", "logical_count": 2},
+        "power": {"availability": "unavailable", "value": None, "source": None},
+        "tools": {
+            "rustc": {"version": "rustc fixture", "host": "x86_64-unknown-linux-gnu"},
+            "cargo": "cargo fixture",
+            "python": {
+                "version": "3.fixture",
+                "implementation": "CPython",
+                "executable": "/fixture/python3",
+            },
+        },
+        "cargo_metadata": {
+            "workspace_root": "/fixture",
+            "target_directory": "/fixture/target",
+            "workspace_member_count": 1,
+            "packages": [],
+        },
+    }
+
+
+def populate_benchmark_evidence(run: baseline.ArtifactRun) -> None:
+    scenarios = baseline.stress_scenarios("bench-smoke", 1)
+    parsed_dir = run.run_dir / "stress" / "parsed"
+    parsed_dir.mkdir(parents=True)
+    for index, scenario in enumerate(scenarios, 1):
+        sample = stress_fixture(
+            operation=scenario["operation"],
+            in_flight=scenario["in_flight"],
+            warmup_secs=1,
+            throughput_ops_sec=float(100 + index),
+            per_client_ops_sec=float(100 + index),
+        )
+        sample["repetition"] = scenario["repetition"]
+        command_id = f"{index:03d}-stress-{scenario['operation']}-d{scenario['in_flight']}-r1"
+        sample["command_id"] = command_id
+        run.stress_samples.append(sample)
+        label = (
+            f"stress-{scenario['operation']}-d{scenario['in_flight']}-"
+            f"r{scenario['repetition']}"
+        )
+        baseline.write_json(parsed_dir / f"{label}.json", sample)
+
+        command_dir = run.run_dir / "commands" / command_id
+        command_dir.mkdir()
+        stdout_path = command_dir / "command.stdout"
+        stderr_path = command_dir / "command.stderr"
+        raw_sample = dict(sample)
+        raw_sample.pop("command_id")
+        raw_sample.pop("repetition")
+        stdout_path.write_text(json.dumps(raw_sample, sort_keys=True) + "\n")
+        stderr_path.write_text("")
+        command = {
+            "schema_version": 1,
+            "command_id": command_id,
+            "label": label,
+            "argv": ["fixture-stress", "--json"],
+            "cwd": str(run.repo_root),
+            "started_utc": "2026-01-01T00:00:00.000000Z",
+            "ended_utc": "2026-01-01T00:00:01.000000Z",
+            "duration_seconds": 1.0,
+            "exit_code": 0,
+            "status": "passed",
+            "error": None,
+            "env_overrides": {},
+            "stdout_path": stdout_path.relative_to(run.repo_root).as_posix(),
+            "stderr_path": stderr_path.relative_to(run.repo_root).as_posix(),
+        }
+        baseline.write_json(command_dir / "command.json", command)
+        run.command_records.append(command)
+
+    run.stress_aggregates = baseline.aggregate_stress_samples(run.stress_samples, scenarios)
+    criterion_home = run.run_dir / "criterion" / "raw" / "01-tcp-throughput"
+    estimate = criterion_home / "tcp_pipelined" / "new" / "estimates.json"
+    estimate.parent.mkdir(parents=True)
+    baseline.write_json(
+        estimate,
+        {
+            "mean": {
+                "confidence_interval": {
+                    "confidence_level": 0.95,
+                    "lower_bound": 9.0,
+                    "upper_bound": 11.0,
+                },
+                "point_estimate": 10.0,
+                "standard_error": 0.1,
+            }
+        },
+    )
+    run.criterion_results = baseline.parse_criterion_estimates(
+        criterion_home, run.repo_root
+    )
+    baseline.write_json(
+        run.run_dir / "criterion" / "parsed-estimates.json", run.criterion_results
+    )
+    run.environment = environment_fixture(run.runner_label)
+
+
 class BaselineHarnessTests(unittest.TestCase):
     def make_run(
         self,
@@ -210,6 +318,205 @@ class BaselineHarnessTests(unittest.TestCase):
             baseline.write_summary_csv(csv_two, [aggregate], [])
             self.assertEqual(csv_one.read_bytes(), csv_two.read_bytes())
             self.assertEqual(csv_one.read_text().splitlines()[0], ",".join(baseline.CSV_COLUMNS))
+
+    def test_valid_v1_benchmark_artifact_renders_deterministic_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_run(root, run_id="report-source")
+            populate_benchmark_evidence(run)
+            run.finalize()
+
+            self.assertEqual(baseline.validate_artifact(root, run.run_dir), [])
+            integrated_json = run.run_dir / baseline.REPORT_JSON_NAME
+            integrated_markdown = run.run_dir / baseline.REPORT_MARKDOWN_NAME
+            self.assertTrue(integrated_json.is_file())
+            self.assertTrue(integrated_markdown.is_file())
+            report = baseline.build_benchmark_report(root, run.run_dir)
+            self.assertEqual(integrated_json.read_text(), baseline.report_json_text(report))
+            self.assertEqual(
+                integrated_markdown.read_text(), baseline.render_report_markdown(report)
+            )
+            self.assertEqual(report["report_schema"], {"name": "benchmark-report", "version": 1})
+            self.assertEqual(report["run"]["status"], "valid")
+            self.assertEqual(
+                report["evidence"],
+                {
+                    "artifact_validity": "valid",
+                    "budget_decision": "not_evaluated",
+                    "classification": "observational_only",
+                    "performance_comparability": "not_proven",
+                    "runner_isolation": "not_proven",
+                    "statistical_significance": "not_evaluated",
+                },
+            )
+            self.assertIn(
+                baseline.CRITERION_PRODUCER_ID,
+                {item["id"] for item in report["producers"]},
+            )
+            self.assertTrue(report["correctness"]["zero_errors"])
+            self.assertTrue(report["correctness"]["zero_retries"])
+
+            integrated_json_bytes = integrated_json.read_bytes()
+            integrated_markdown_bytes = integrated_markdown.read_bytes()
+            integrated_json.unlink()
+            integrated_markdown.unlink()
+            baseline.write_checksums(root, run.run_dir)
+            self.assertEqual(baseline.validate_artifact(root, run.run_dir), [])
+            report = baseline.build_benchmark_report(root, run.run_dir)
+
+            checksum_before = (run.run_dir / "checksums.sha256").read_bytes()
+            first_json, first_markdown = baseline.render_report_to_directory(
+                root, run.run_dir, "rendered/first"
+            )
+            second_json, second_markdown = baseline.render_report_to_directory(
+                root, run.run_dir, "rendered/second"
+            )
+            self.assertEqual(first_json.read_bytes(), second_json.read_bytes())
+            self.assertEqual(first_markdown.read_bytes(), second_markdown.read_bytes())
+            self.assertEqual(first_json.read_bytes(), integrated_json_bytes)
+            self.assertEqual(first_markdown.read_bytes(), integrated_markdown_bytes)
+            self.assertEqual(
+                (run.run_dir / "checksums.sha256").read_bytes(), checksum_before
+            )
+            self.assertEqual(baseline.validate_report_document(report), [])
+
+    def test_report_render_rejects_overwrite_traversal_and_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_run(root, run_id="safe-output")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            baseline.render_report_to_directory(root, run.run_dir, "reports/existing")
+            with self.assertRaisesRegex(baseline.BaselineError, "already exists"):
+                baseline.render_report_to_directory(root, run.run_dir, "reports/existing")
+            with self.assertRaisesRegex(baseline.BaselineError, "path traversal"):
+                baseline.render_report_to_directory(root, run.run_dir, "../outside")
+            with self.assertRaisesRegex(baseline.BaselineError, "source artifact"):
+                baseline.render_report_to_directory(
+                    root, run.run_dir, str(run.run_dir / "rendered")
+                )
+
+            target = root / "symlink-target"
+            target.mkdir()
+            link = root / "report-link"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks are unavailable")
+            with self.assertRaisesRegex(baseline.BaselineError, "symlinks"):
+                baseline.render_report_to_directory(root, run.run_dir, "report-link/new")
+
+    def test_report_rejects_invalid_sources_and_unknown_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+
+            checksum_root = parent / "checksum"
+            checksum_root.mkdir()
+            checksum_run = self.make_run(checksum_root, run_id="checksum")
+            populate_benchmark_evidence(checksum_run)
+            checksum_run.finalize()
+            (checksum_run.run_dir / "summary.csv").write_text("tampered\n")
+            with self.assertRaisesRegex(baseline.BaselineError, "checksum mismatch"):
+                baseline.build_benchmark_report(checksum_root, checksum_run.run_dir)
+
+            producer_root = parent / "producer"
+            producer_root.mkdir()
+            producer_run = self.make_run(producer_root, run_id="producer")
+            populate_benchmark_evidence(producer_run)
+            producer_run.finalize()
+            provenance_path = producer_run.run_dir / "provenance.json"
+            provenance = json.loads(provenance_path.read_text())
+            provenance["harness_version"] = "unknown"
+            baseline.write_json(provenance_path, provenance)
+            baseline.write_checksums(producer_root, producer_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "producer version"):
+                baseline.build_benchmark_report(producer_root, producer_run.run_dir)
+
+            missing_root = parent / "missing"
+            missing_root.mkdir()
+            missing_run = self.make_run(missing_root, run_id="missing")
+            populate_benchmark_evidence(missing_run)
+            missing_run.finalize()
+            criterion = json.loads((missing_run.run_dir / "summary.json").read_text())[
+                "criterion_results"
+            ][0]
+            (missing_root / criterion["source"]).unlink()
+            baseline.write_checksums(missing_root, missing_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "is missing"):
+                baseline.build_benchmark_report(missing_root, missing_run.run_dir)
+
+            partial_root = parent / "partial"
+            partial_root.mkdir()
+            partial_run = self.make_run(partial_root, run_id="partial")
+            populate_benchmark_evidence(partial_run)
+            partial_criterion = partial_run.criterion_results[0]
+            (partial_root / partial_criterion["source"]).unlink()
+            with self.assertRaisesRegex(baseline.BaselineError, "report generation failed"):
+                partial_run.finalize()
+            self.assertTrue((partial_run.run_dir / "checksums.sha256").is_file())
+            partial_summary = json.loads((partial_run.run_dir / "summary.json").read_text())
+            self.assertEqual(partial_summary["status"], "failed")
+            self.assertFalse(partial_summary["baseline_valid"])
+
+    def test_report_rejects_malformed_stress_and_criterion_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+
+            stress_root = parent / "stress"
+            stress_root.mkdir()
+            stress_run = self.make_run(stress_root, run_id="bad-stress")
+            populate_benchmark_evidence(stress_run)
+            stress_run.finalize()
+            summary_path = stress_run.run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text())
+            sample = summary["stress_samples"][0]
+            sample["errors"] = 1
+            parsed_path = (
+                stress_run.run_dir
+                / "stress"
+                / "parsed"
+                / "stress-read-d1-r1.json"
+            )
+            baseline.write_json(parsed_path, sample)
+            baseline.write_json(summary_path, summary)
+            baseline.write_checksums(stress_root, stress_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "errors must be zero"):
+                baseline.build_benchmark_report(stress_root, stress_run.run_dir)
+
+            criterion_root = parent / "criterion"
+            criterion_root.mkdir()
+            criterion_run = self.make_run(criterion_root, run_id="bad-criterion")
+            populate_benchmark_evidence(criterion_run)
+            criterion_run.finalize()
+            summary_path = criterion_run.run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text())
+            result = summary["criterion_results"][0]
+            result["estimates"]["mean"]["point_estimate"] = "not-a-number"
+            source_path = criterion_root / result["source"]
+            baseline.write_json(source_path, result["estimates"])
+            baseline.write_json(summary_path, summary)
+            baseline.write_json(
+                criterion_run.run_dir / "criterion" / "parsed-estimates.json",
+                summary["criterion_results"],
+            )
+            baseline.write_checksums(criterion_root, criterion_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "must be numeric"):
+                baseline.build_benchmark_report(criterion_root, criterion_run.run_dir)
+
+    def test_report_document_rejects_unknown_schema_and_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_run(root, run_id="report-validation")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            report = baseline.build_benchmark_report(root, run.run_dir)
+
+            unknown_schema = copy.deepcopy(report)
+            unknown_schema["report_schema"]["version"] = 2
+            self.assertTrue(baseline.validate_report_document(unknown_schema))
+            unknown_producer = copy.deepcopy(report)
+            unknown_producer["producers"][-1]["version"] = "unknown"
+            self.assertTrue(baseline.validate_report_document(unknown_producer))
 
     def test_checksum_inventory_verifies_and_detects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
