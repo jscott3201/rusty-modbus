@@ -2197,7 +2197,13 @@ def validate_report_document(report: Any) -> list[str]:
         if not isinstance(scenario, dict):
             errors.append(f"scenario {index} must be an object")
             continue
-        kind = scenario.get("kind")
+        try:
+            kind = _require_nonempty_string(
+                scenario.get("kind"), f"scenario {index}.kind"
+            )
+        except BaselineError as error:
+            errors.append(str(error))
+            continue
         producer_id = scenario.get("producer_id")
         expected_producer = {
             "tcp_stress": STRESS_PRODUCER_ID,

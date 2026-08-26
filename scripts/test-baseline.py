@@ -588,6 +588,55 @@ class BaselineHarnessTests(unittest.TestCase):
             unknown_producer["producers"][-1]["version"] = "unknown"
             self.assertTrue(baseline.validate_report_document(unknown_producer))
 
+    def test_report_rejects_non_string_scenario_kinds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(root, run_id="invalid-scenario-kinds")
+            populate_benchmark_evidence(run)
+            run.finalize()
+            report = baseline.build_benchmark_report(root, run.run_dir)
+            scenario_index = 0
+            expected_error = (
+                f"scenario {scenario_index}.kind must be a non-empty string"
+            )
+
+            for label, invalid_kind in (
+                ("list", ["tcp_stress"]),
+                ("object", {"value": "tcp_stress"}),
+            ):
+                with self.subTest(kind=label):
+                    malformed = copy.deepcopy(report)
+                    malformed["scenarios"][scenario_index]["kind"] = invalid_kind
+                    self.assertIn(
+                        expected_error,
+                        baseline.validate_report_document(malformed),
+                    )
+
+                    report_path = root / f"malformed-kind-{label}.json"
+                    baseline.write_json(report_path, malformed)
+                    with self.assertRaises(baseline.BaselineError) as raised:
+                        baseline.load_report_file(root, str(report_path))
+                    self.assertIn(expected_error, str(raised.exception))
+
+                    with self.assertRaises(baseline.BaselineError) as raised:
+                        baseline.report_json_text(malformed)
+                    self.assertIn(expected_error, str(raised.exception))
+
+                    with self.assertRaises(baseline.BaselineError) as raised:
+                        baseline.render_report_markdown(malformed)
+                    self.assertIn(expected_error, str(raised.exception))
+
+                    stderr = io.StringIO()
+                    with mock.patch.object(
+                        baseline, "__file__", str(root / "scripts" / "baseline.py")
+                    ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                        stderr
+                    ):
+                        self.assertEqual(
+                            baseline.main(["validate-report", str(report_path)]), 1
+                        )
+                    self.assertIn(expected_error, stderr.getvalue())
+
     def test_cli_report_validation_rejects_malformed_render_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
