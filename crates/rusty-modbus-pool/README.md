@@ -75,6 +75,43 @@ require an explicit `LeaseInvalidationReason::Cancelled` because it may not
 produce a `TransportError`. This API therefore does not by itself resolve the
 tracked F-017 and F-018 recovery gaps.
 
+## Retiring high-level client handoff
+
+Enable the opt-in `client` feature to consume a checked-out raw TCP lease as a
+high-level client:
+
+```toml
+rusty-modbus-pool = { version = "0.1.1", features = ["client"] }
+```
+
+```rust,no_run
+use rusty_modbus_pool::{ClientConfig, ConnectionPool};
+
+# async fn example(pool: ConnectionPool, addr: std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+let client = pool
+    .get(addr)
+    .await?
+    .into_retiring_client(ClientConfig::default());
+# client.shutdown().await;
+# Ok(())
+# }
+```
+
+`PooledConnection::into_retiring_client` transfers both TCP halves and the
+active capacity charge to the existing `ModbusClient` transaction engine. This
+is a conservative borrower-isolation fence: after both client-owned halves are
+gone, capacity is released exactly once, waiters are notified, and the
+connection is retired instead of inserted into idle. It always retires,
+including after a healthy session and during pool shutdown. Safe reuse of a
+healthy client session is intentionally not provided.
+
+The fence prevents a timed-out, cancelled, or delayed response from one handed-
+off session from reaching a later pool borrower on the same TCP connection. It
+does not actively probe liveness, prove stream synchronization, or close the
+tracked F-017/F-018 recovery gaps. Without the `client` feature, the optional
+client dependency and handoff API are absent, and existing raw lease behavior
+is unchanged. The facade crate's `pool` feature enables this handoff.
+
 ## License
 
 Licensed under the [MIT license](LICENSE). MSRV: Rust 1.95.

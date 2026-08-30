@@ -9,6 +9,11 @@ use tokio::time::Instant;
 
 use rusty_modbus_tcp::{TcpRecvStream, TcpSink};
 
+#[cfg(feature = "client")]
+use rusty_modbus_client::{ClientConfig, ModbusClient};
+#[cfg(feature = "client")]
+use rusty_modbus_tcp::transport::TransportSink;
+
 use crate::pool::{PoolEntry, PoolInner};
 
 /// Caller-supplied classification for why a checked-out connection was retired.
@@ -96,6 +101,45 @@ impl PooledConnection {
             capacity_changed,
             invalidation_reason: None,
         }
+    }
+
+    /// Hand this raw TCP lease to a high-level client that always retires it.
+    ///
+    /// This opt-in safety fence transfers both TCP halves and the active pool
+    /// capacity charge to the returned [`ModbusClient`]. The charge is released
+    /// exactly once, after both client-owned transport halves are gone. The TCP
+    /// connection is never inserted into the idle pool, including after a
+    /// healthy session or a concurrent pool shutdown, and capacity waiters are
+    /// notified after retirement.
+    ///
+    /// Always retiring prevents a timed-out, cancelled, or delayed response from
+    /// this client session from crossing a pool borrower boundary. It does not
+    /// probe liveness, prove protocol synchronization, make a healthy client
+    /// session reusable, or close the tracked F-017/F-018 recovery gaps.
+    ///
+    /// This method is available only with the `client` crate feature. Ordinary
+    /// raw leases retain their existing return-to-idle behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this lease was already invalidated, or if called without an
+    /// active Tokio runtime in which to start the client-owned tasks. Unwinding
+    /// either case still retires any transport and releases its active charge.
+    #[cfg(feature = "client")]
+    pub fn into_retiring_client(
+        mut self,
+        config: ClientConfig,
+    ) -> ModbusClient<impl TransportSink + 'static> {
+        let entry = self
+            .entry
+            .take()
+            .expect("connection already returned or invalidated");
+        crate::client_handoff::into_client(
+            entry,
+            Arc::clone(&self.pool),
+            Arc::clone(&self.capacity_changed),
+            config,
+        )
     }
 
     /// Immediately retire this connection instead of returning it to the pool.

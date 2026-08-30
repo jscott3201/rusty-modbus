@@ -1864,6 +1864,7 @@ version = "0.1.1"
 dependencies = [
  "bytes",
  "parking_lot",
+ "rusty-modbus-client",
  "rusty-modbus-frame",
  "rusty-modbus-tcp",
  "rusty-modbus-types",
