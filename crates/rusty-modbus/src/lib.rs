@@ -14,7 +14,7 @@
 //! | `server`  | no      | Modbus server with pluggable data store |
 //! | `gateway` | no      | TCP ↔ RTU bridge gateway |
 //! | `tls`     | no      | TLS 1.3 transport (Modbus/TCP Security V36) |
-//! | `pool`    | no      | Connection pooling |
+//! | `pool`    | no      | Connection pooling + conservative retiring client handoff |
 //! | `full`    | no      | All features above |
 
 #![forbid(unsafe_code)]

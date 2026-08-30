@@ -33,7 +33,7 @@ rtu-tcp = ["rtu"]
 tls = ["dep:rusty-modbus-tls"]
 server = ["dep:rusty-modbus-server"]
 gateway = ["dep:rusty-modbus-gateway", "rtu"]
-pool = ["dep:rusty-modbus-pool"]
+pool = ["dep:rusty-modbus-pool", "rusty-modbus-pool/client"]
 full = ["tcp", "rtu", "rtu-serial", "rtu-tcp", "tls", "server", "gateway", "pool"]
 
 [dev-dependencies]
