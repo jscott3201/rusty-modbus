@@ -45,19 +45,21 @@ not report idle connections or expose a separate public pending metric.
 
 `ConnectionPool::shutdown()` remains synchronous and nonblocking. It
 idempotently seals admission, clears idle connections, wakes capacity waiters,
-and requests cancellation of the pool-owned health-check and priority-maintenance
-tasks. `Drop` calls only this synchronous path, so dropping a pool does not wait
-and remains safe without an active runtime.
+publishes one sticky cooperative stop to every pool-owned priority-maintenance
+task, and hard-aborts the health-check task. It does not hard-abort priority
+maintenance. `Drop` calls only this synchronous path, so dropping a pool does not
+wait and remains safe without an active runtime.
 
 Await `ConnectionPool::shutdown_and_wait()` inside a live Tokio runtime when the
 caller needs proof that those pool-owned tasks have terminated and their
-cancellation destructors have run. One lazy detached coordinator joins all of
-their handles and publishes sticky completion. Concurrent callers share that
-completion, repeated calls return promptly, and cancelling any public waiter
-does not detach the handles or prevent a later caller from observing completion.
-This also proves rollback of any reservation owned by a cancelled priority-
-maintenance task, whether it is connecting, backing off, or waiting on the
-standing-policy fallback.
+cancellation destructors have run. One lazy detached coordinator hard-aborts and
+joins health, joins priority maintenance without aborting it, and publishes
+sticky completion. Concurrent callers share that completion, repeated calls
+return promptly, and cancelling any public waiter does not detach the handles or
+prevent a later caller from observing completion. This also proves cooperative
+exit and rollback of any reservation owned by a stopped priority-maintenance
+task, whether it is connecting, backing off, or waiting on the standing-policy
+fallback.
 
 The wait boundary deliberately excludes checked-out raw leases, reusable client
 sessions, and caller-owned pending demand connector futures. It neither waits
