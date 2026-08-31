@@ -2,7 +2,7 @@
   "schema_version": 1,
   "baseline": {
     "repository": "jscott3201/rusty-modbus",
-    "base_sha": "47f723d2f5913847972192160baccdff735c9a3d",
+    "base_sha": "3441f41bfbd1ce32b28a5408c3d78207c1b84f92",
     "base_ref": "dev",
     "as_of": "2026-08-31",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
@@ -2200,6 +2200,9 @@
           "path": "crates/rusty-modbus-pool/src/pool.rs"
         },
         {
+          "path": "crates/rusty-modbus-pool/src/config.rs"
+        },
+        {
           "path": "crates/rusty-modbus-pool/src/connection.rs"
         },
         {
@@ -2226,7 +2229,7 @@
         "spec_tcp_transport"
       ],
       "evidence_gap": {
-        "detail": "PRs #119-#127 add manual invalidation and classification, bounded acquisition, always-retiring and verdict-gated client handoff, bounded tracing, passive idle TCP observation, and raw Drop retirement. Active liveness and protocol proof, the post-observation race, automatic reconnect and replenishment after retirement, gateway composition, exact creation-bound evidence, public metrics, and benchmarks remain incomplete.",
+        "detail": "PRs #119-#133 add manual invalidation and classification, conservative return paths, bounded acquisition and priority pre-connect reservation before awaiting connection establishment, bounded tracing, passive idle TCP observation, pool-owned task shutdown-and-wait, default-off one-idle replenishment per distinct configured priority address within its cap, and default-off read-only FC01-FC04 probes of a configured target on idle priority sessions. Probes do not retry; timeout, exception, protocol or transport error, and maintenance cancellation conservatively retire the session, while success is only a point-in-time typed request/response observation. No generic/default active-liveness guarantee, permanent protocol-synchronization or future-silence proof, closure of the passive post-observation race, broader/non-priority reconnect and health evidence, equivalent gateway/TLS composition, public pool metrics, exact broader creation-bound evidence, or uncontended benchmarks is established.",
         "owner": "maintainers",
         "follow_up": "PR-403"
       },
@@ -2235,13 +2238,13 @@
           "profile": "tcp-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Current return paths retire raw leases and unsafe or ambiguous client outcomes, while only pristine sessions with an exact ReuseEligible verdict and successful recovery can return to idle. Bounded acquisition and passive checkout and sweep observation are implemented, but active liveness and protocol proof, the post-observation race, reconnect and replenishment after retirement, exact creation-bound evidence, public metrics, and benchmarks remain incomplete."
+          "reason": "Current return paths are conservative: raw leases and unsafe or ambiguous client outcomes retire, while only pristine sessions with an exact ReuseEligible verdict and successful transport recovery return idle. Evidence through #133 also covers bounded acquisition and priority pre-connect reservation before awaiting connection establishment, passive checkout and sweep observation, explicit health/priority-maintenance shutdown-and-wait with cooperative priority/probe cleanup, opt-in one-idle replenishment per distinct configured priority address within its cap, and opt-in non-retrying read-only FC01-FC04 probes of a configured target on idle priority sessions. Timeout, exception, protocol, transport, and cancellation outcomes retire, while success is only a point-in-time typed request/response observation; generic/default liveness, permanent synchronization or future silence, the passive post-observation race, broader/non-priority reconnect and health, public metrics, exact broader creation bounds, and uncontended benchmarks remain incomplete."
         },
         {
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "The pool and client layers now provide conservative return paths, bounded acquisition, and passive idle observation, but equivalent gateway composition is not established. Active liveness and protocol proof, the post-observation race, reconnect and replenishment after retirement, exact creation-bound evidence, public metrics, and benchmarks also remain incomplete."
+          "reason": "Pool/client evidence through #133 covers conservative return paths, bounded acquisition and priority pre-connect reservation before awaiting connection establishment, passive idle observation, explicit health/priority-maintenance shutdown-and-wait with cooperative priority/probe cleanup, opt-in one-idle priority replenishment, and opt-in non-retrying read-only FC01-FC04 probes of a configured target on idle priority sessions. Timeout, exception, protocol, transport, and cancellation outcomes retire, while success is only a point-in-time typed request/response observation. Equivalent gateway/TLS composition is not established, nor are generic/default liveness, permanent synchronization or future silence, closure of the passive post-observation race, broader/non-priority reconnect and health evidence, public metrics, exact broader creation bounds, or uncontended benchmarks."
         }
       ]
     },
@@ -5130,7 +5133,7 @@
       "priority": "P2",
       "confidence": "Verified source finding",
       "status": "mitigated",
-      "status_reason": "Mitigated by passive checkout and sweep inspection that catches decoder-buffered or socket-queued bytes, peer EOF, socket errors, and mismatched halves without consuming bytes, waiting, or writing. NoAdverseSignal proves neither liveness nor protocol synchronization or future silence; the post-observation race remains, and active probes, reconnect and replenishment after retirement, gateway integration, public metrics, and broader evidence remain outstanding.",
+      "status_reason": "Mitigated by passive checkout and sweep inspection; bounded demand acquisition and priority pre-connect reservation before awaiting connection establishment; explicit shutdown-and-wait for pool-owned health and maintenance tasks, including cooperative priority/probe cleanup and client child-task joins; opt-in one-idle priority replenishment; and opt-in read-only FC01-FC04 probes of a configured target on idle priority sessions. Probes do not retry and conservatively retire timeout, exception, protocol, transport, or maintenance-cancellation outcomes; success is only a point-in-time typed request/response observation. NoAdverseSignal and successful probes prove neither generic/default active liveness, permanent protocol synchronization, nor future silence; the passive post-observation race, broader/non-priority reconnect and health evidence, equivalent gateway/TLS composition, public pool metrics, exact broader creation-bound evidence, and uncontended benchmarks remain outstanding.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-403"
