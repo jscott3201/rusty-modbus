@@ -36,6 +36,41 @@ capacity wait changes no accounting; cancelling a later pending connection uses
 the reservation guard to release its charge. Pool shutdown wakes blocked
 waiters, which return `PoolError::ShuttingDown` when shutdown is observed.
 
+## Passive idle TCP validation
+
+Before checkout charges an idle entry active, the pool passively inspects each
+same-address candidate. The periodic health sweep performs the same inspection
+for every idle priority and non-priority entry. It checks bytes already buffered
+by the framed decoder, then performs one non-consuming `poll_peek` on the socket.
+Queued input is adverse even when it could decode as a valid Modbus frame. Peer
+EOF, a socket error, and defensively mismatched transport halves are also
+adverse. The exact idle connection is retired without consuming or logging its
+bytes; checkout continues to another candidate or a normal new reservation.
+
+Priority connections remain protected from age and capacity eviction, but a
+priority idle transport with a known adverse signal is retired. Clean/unknown
+priority entries remain idle regardless of age. Clean/unknown non-priority
+entries remain only until their normal idle timeout or LRU capacity eviction.
+Passive retirement preserves the separate priority and non-priority budgets and
+wakes capacity waiters when capacity may have become available.
+
+This is an instantaneous observation only: it sends no probe or other socket
+write, consumes no receive byte, and never waits for readiness. A no-adverse-
+signal result does not prove peer liveness or protocol synchronization. Input can
+arrive after validation and before or during the next borrow. In particular, a
+late response that is already observable before checkout is retired rather than
+handed to the next borrower, but a response racing after validation remains
+possible. That race and raw lease drop's default return-to-idle behavior are why
+this work does not close F-017, F-018, or TCP-013 and does not add automatic
+reconnect or backoff behavior.
+
+Each passive retirement emits one `DEBUG` event with target
+`rusty_modbus_pool::idle_validation` and message
+`idle_tcp_connection_passively_retired`. Its bounded fields are `reason`
+(`queued_input`, `peer_closed`, `socket_error`, `mismatched_halves`, or `other`),
+`trigger` (`checkout` or `health_sweep`), and boolean `is_priority`. Addresses,
+payload bytes, Unit IDs, and error text are not recorded.
+
 ## Manual lease invalidation
 
 Checked-out connections return to the idle pool on drop by default. Callers must

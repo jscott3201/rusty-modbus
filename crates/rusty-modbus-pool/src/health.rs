@@ -7,10 +7,13 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
-use crate::pool::PoolInner;
+use crate::pool::{
+    IdleEntryInspection, IdleValidationTrigger, PoolInner, finish_passive_retirements,
+    inspect_idle_entry,
+};
 
-/// Spawn a background task that periodically evicts idle connections
-/// that have exceeded the idle timeout.
+/// Spawn a background task that periodically validates idle connections and
+/// age-evicts expired non-priority entries.
 pub(crate) fn spawn_health_check(
     inner: Arc<Mutex<PoolInner>>,
     capacity_changed: Arc<Notify>,
@@ -32,7 +35,13 @@ pub(crate) fn spawn_health_check(
     })
 }
 
-/// Run one idle-eviction pass. Returns `false` once shutdown is sticky.
+/// Run one passive idle-validation and age-eviction pass.
+///
+/// This synchronous pass never awaits socket readiness. It retires any idle
+/// priority or non-priority entry with an immediately observable adverse signal,
+/// retains no-adverse-signal priority entries regardless of age, and age-evicts
+/// expired no-adverse-signal non-priority entries. Returns `false` once shutdown
+/// is sticky.
 pub(crate) fn run_health_check(
     inner: &Mutex<PoolInner>,
     capacity_changed: &Notify,
@@ -44,17 +53,36 @@ pub(crate) fn run_health_check(
         return false;
     }
 
-    // Remove non-priority connections that have been idle too long.
-    let idle_before = pool.idle.len();
-    pool.idle.retain(|entry| {
-        if entry.is_priority {
-            return true;
+    let idle = std::mem::take(&mut pool.idle);
+    let mut retained = Vec::with_capacity(idle.len());
+    let mut age_evictions = Vec::new();
+    let mut passive_retirements = Vec::new();
+
+    for entry in idle {
+        match inspect_idle_entry(entry) {
+            IdleEntryInspection::Retain(entry)
+                if entry.is_priority || now.duration_since(entry.last_used) < idle_timeout =>
+            {
+                retained.push(entry);
+            }
+            IdleEntryInspection::Retain(entry) => age_evictions.push(entry),
+            IdleEntryInspection::Retire(entry, observation) => {
+                passive_retirements.push((entry, observation));
+            }
         }
-        now.duration_since(entry.last_used) < idle_timeout
-    });
-    let capacity_freed = pool.idle.len() < idle_before;
+    }
+    pool.idle = retained;
     drop(pool);
-    if capacity_freed {
+
+    let passively_freed = !passive_retirements.is_empty();
+    let age_freed = !age_evictions.is_empty();
+    drop(age_evictions);
+    finish_passive_retirements(
+        passive_retirements,
+        IdleValidationTrigger::HealthSweep,
+        capacity_changed,
+    );
+    if !passively_freed && age_freed {
         capacity_changed.notify_waiters();
     }
     true

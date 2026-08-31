@@ -1,7 +1,9 @@
 //! Connection pool for Modbus/TCP transports.
 //!
 //! Two-pool model per TCP Guide §4.2.1: priority connections (configured devices,
-//! never evicted) and non-priority connections (evicted oldest-first when full).
+//! never age- or capacity-evicted) and non-priority connections (evicted
+//! oldest-first when full). Idle connections in either pool are passively retired
+//! when buffered input, peer EOF, or a socket error is immediately observable.
 //! Enable the opt-in `client` feature to consume a raw [`PooledConnection`] as
 //! either a conservatively retiring high-level client or a verdict-gated
 //! [`PooledClientSession`]. Raw leases keep their default return-to-idle behavior.

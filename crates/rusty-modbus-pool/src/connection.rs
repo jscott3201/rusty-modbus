@@ -193,10 +193,12 @@ impl PooledConnection {
     /// stream synchronization ambiguous and the lease must not be reused.
     ///
     /// Reasons are caller classifications only. The pool does not automatically
-    /// detect transport or protocol health, map errors to reasons, invalidate a
-    /// lease, probe liveness, or prove stream synchronization. Callers may opt
-    /// into [`LeaseInvalidationReason::suggested_for_transport_error`] and then
-    /// decide whether to invalidate the currently held lease.
+    /// classify or invalidate a checked-out lease, probe liveness, or prove
+    /// stream synchronization. After a raw lease returns to idle, checkout and
+    /// health sweeps separately retire it if a passive observation finds buffered
+    /// input, peer EOF, or a socket error. Callers may opt into
+    /// [`LeaseInvalidationReason::suggested_for_transport_error`] and then decide
+    /// whether to invalidate the currently held lease.
     pub fn invalidate(&mut self, reason: LeaseInvalidationReason) {
         if self.invalidation_reason.is_some() {
             return;
