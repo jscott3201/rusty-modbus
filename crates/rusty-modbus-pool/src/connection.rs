@@ -16,6 +16,9 @@ use rusty_modbus_tcp::transport::TransportSink;
 
 use crate::pool::{PoolEntry, PoolInner};
 
+#[cfg(feature = "client")]
+use crate::client_handoff::PooledClientSession;
+
 /// Caller-supplied classification for why a checked-out connection was retired.
 ///
 /// The pool does not automatically infer these reasons or treat them as proof of
@@ -135,6 +138,43 @@ impl PooledConnection {
             .take()
             .expect("connection already returned or invalidated");
         crate::client_handoff::into_client(
+            entry,
+            Arc::clone(&self.pool),
+            Arc::clone(&self.capacity_changed),
+            config,
+        )
+    }
+
+    /// Hand this raw TCP lease to an opt-in verdict-gated client session.
+    ///
+    /// The returned wrapper owns both TCP halves and the active pool capacity
+    /// charge. Borrow its high-level client through [`PooledClientSession::client`]
+    /// and consume it with [`PooledClientSession::shutdown_and_return`]. Only a
+    /// completed graceful shutdown whose final local verdict is exactly
+    /// [`rusty_modbus_client::SessionReuseVerdict::ReuseEligible`] can return the
+    /// connection to idle. Drop, abort, cancellation, ambiguity, recovery failure,
+    /// and pool shutdown all retire it instead.
+    ///
+    /// This local synchronization-safety contract assumes a conforming peer does
+    /// not invent future duplicate traffic after all valid requests complete. It
+    /// is not an active liveness probe or proof of permanent future silence, and
+    /// does not close the tracked F-017/F-018 recovery gaps.
+    ///
+    /// This method is available only with the `client` crate feature. Ordinary
+    /// raw leases and [`Self::into_retiring_client`] retain their existing behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this lease was already invalidated, or if called without an
+    /// active Tokio runtime in which to start the client-owned tasks. Unwinding
+    /// either case still retires any transport and releases its active charge.
+    #[cfg(feature = "client")]
+    pub fn into_reusable_client(mut self, config: ClientConfig) -> PooledClientSession {
+        let entry = self
+            .entry
+            .take()
+            .expect("connection already returned or invalidated");
+        crate::client_handoff::into_reusable_session(
             entry,
             Arc::clone(&self.pool),
             Arc::clone(&self.capacity_changed),

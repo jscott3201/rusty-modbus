@@ -112,6 +112,49 @@ tracked F-017/F-018 recovery gaps. Without the `client` feature, the optional
 client dependency and handoff API are absent, and existing raw lease behavior
 is unchanged. The facade crate's `pool` feature enables this handoff.
 
+## Verdict-gated reusable client handoff
+
+The same opt-in `client` feature also provides a narrower reusable wrapper:
+
+```rust,no_run
+use rusty_modbus_pool::{ClientConfig, ConnectionPool, PooledClientReturnOutcome};
+
+# async fn example(pool: ConnectionPool, addr: std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+let session = pool
+    .get(addr)
+    .await?
+    .into_reusable_client(ClientConfig::default());
+
+let values = session
+    .client()
+    .read_holding_registers(rusty_modbus_types::UnitId(1), 0, 1)
+    .await?;
+assert_eq!(values.len(), 1);
+
+match session.shutdown_and_return().await {
+    PooledClientReturnOutcome::ReturnedToIdle => {}
+    outcome => eprintln!("TCP session retired: {outcome:?}"),
+}
+# Ok(())
+# }
+```
+
+`PooledConnection::into_reusable_client` keeps ownership in the pool while
+exposing borrowed access to the normal high-level client API. Only consuming
+`shutdown_and_return` can reinsert the TCP connection, and only after graceful
+shutdown joins all client tasks and the final local `SessionReuseVerdict` is
+exactly `ReuseEligible`. Timeout, post-dispatch cancellation, malformed,
+mismatched, unknown, duplicate, or typed-invalid responses, reader failure,
+abort, an incomplete shutdown, wrapper drop, recovery failure, and pool shutdown
+all retire the connection and release capacity without inserting it into idle.
+
+This is a local synchronization-safety contract, not a peer-health guarantee. It
+assumes a conforming peer does not invent a future duplicate after all valid
+requests complete. There is no active probe, quiet-period test, peer-liveness
+proof, or guarantee of permanent future silence. This opt-in return path does
+not close the tracked F-017/F-018 recovery gaps. The existing
+`into_retiring_client` method remains the conservative always-retiring default.
+
 ## License
 
 Licensed under the [MIT license](LICENSE). MSRV: Rust 1.95.
