@@ -47,13 +47,14 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::ReadFileRecord(r) => Ok(r),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Write file records (FC 0x15).
@@ -91,12 +92,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::WriteFileRecord(r) => Ok(r),
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 }

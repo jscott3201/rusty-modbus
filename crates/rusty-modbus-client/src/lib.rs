@@ -14,8 +14,10 @@ pub mod error;
 mod lifecycle;
 mod methods;
 pub(crate) mod reader;
+mod session;
 pub(crate) mod transaction;
 
 pub use client::ModbusClient;
 pub use config::{ClientConfig, RetryConfig};
 pub use error::ClientError;
+pub use session::{SessionRetirementReason, SessionReuseVerdict};

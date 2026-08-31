@@ -53,15 +53,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 )
                 .await?;
 
-            let pdu_data = match response {
-                OwnedResponsePdu::EncapsulatedInterface(mei) => mei.data,
-                OwnedResponsePdu::Exception(exc) => return Err(ClientError::Exception(exc)),
-                _ => {
-                    return Err(ClientError::Codec(
-                        rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
-                    ));
-                }
-            };
+            let pdu_data = self.finish_typed_response(match response {
+                OwnedResponsePdu::EncapsulatedInterface(mei) => Ok(mei.data),
+                OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
+                _ => Err(ClientError::Codec(
+                    rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
+                )),
+            })?;
 
             // OwnedEncapsulatedInterfaceResponse.data starts after FC+MEI bytes.
             // The codec decoder expects data starting at the MEI type byte.
@@ -70,8 +68,9 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             decode_buf.push(0x0E);
             decode_buf.extend_from_slice(&pdu_data);
 
-            let dev_id = ReadDeviceIdentificationResponse::decode(&decode_buf)
-                .map_err(ClientError::Codec)?;
+            let dev_id = self.finish_typed_response(
+                ReadDeviceIdentificationResponse::decode(&decode_buf).map_err(ClientError::Codec),
+            )?;
             response_pages += 1;
 
             for obj in dev_id.objects() {
@@ -88,15 +87,19 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 break;
             }
             if response_pages >= MAX_BASIC_DEVICE_ID_RESPONSE_PAGES {
-                return Err(ClientError::DeviceIdentificationPaginationLimit {
-                    limit: MAX_BASIC_DEVICE_ID_RESPONSE_PAGES,
-                });
+                return self.finish_typed_response(Err(
+                    ClientError::DeviceIdentificationPaginationLimit {
+                        limit: MAX_BASIC_DEVICE_ID_RESPONSE_PAGES,
+                    },
+                ));
             }
             if dev_id.next_object_id <= request_object_id {
-                return Err(ClientError::InvalidDeviceIdentificationContinuation {
-                    previous_object_id: request_object_id,
-                    next_object_id: dev_id.next_object_id,
-                });
+                return self.finish_typed_response(Err(
+                    ClientError::InvalidDeviceIdentificationContinuation {
+                        previous_object_id: request_object_id,
+                        next_object_id: dev_id.next_object_id,
+                    },
+                ));
             }
             next_object_id = dev_id.next_object_id;
         }

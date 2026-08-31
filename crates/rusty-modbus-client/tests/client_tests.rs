@@ -8,7 +8,10 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use bytes::Bytes;
-use rusty_modbus_client::{ClientConfig, ClientError, ModbusClient, RetryConfig};
+use rusty_modbus_client::{
+    ClientConfig, ClientError, ModbusClient, RetryConfig, SessionRetirementReason,
+    SessionReuseVerdict,
+};
 use rusty_modbus_codec::EncodeError;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::TransportError;
@@ -16,7 +19,7 @@ use rusty_modbus_tcp::config::TcpServerConfig;
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_types::{ExceptionCode, MbapHeader, UnitId};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 enum SendOutcome {
     Success,
@@ -63,6 +66,21 @@ impl Drop for ControlledStream {
     fn drop(&mut self) {
         self.dropped
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct InitialTimeoutStream {
+    inner: ControlledStream,
+    timeout_observed: Option<oneshot::Sender<()>>,
+}
+
+impl TransportStream for InitialTimeoutStream {
+    async fn recv(&mut self) -> Result<Frame, TransportError> {
+        if let Some(observed) = self.timeout_observed.take() {
+            let _ = observed.send(());
+            return Err(TransportError::Timeout);
+        }
+        self.inner.recv().await
     }
 }
 
@@ -365,6 +383,15 @@ async fn read_holding_registers() {
         .unwrap();
 
     assert_eq!(regs, vec![0x1234, 0x5678]);
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::NotQuiescent
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
 }
 
 #[tokio::test]
@@ -654,6 +681,10 @@ async fn unicast_send_failure_reclaims_only_its_transaction() {
     controls.outcome_tx.send(SendOutcome::Failure).unwrap();
     let result = client.read_holding_registers(UnitId(1), 0, 1).await;
     assert!(matches!(result, Err(ClientError::Transport(_))));
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::SendFailed)
+    );
     let failed_request = controls.sent_rx.try_recv().unwrap();
     assert_eq!(failed_request.unit_id(), 1);
 
@@ -674,6 +705,10 @@ async fn unicast_send_failure_reclaims_only_its_transaction() {
         .unwrap();
 
     assert_eq!(request.await.unwrap(), vec![0x002A]);
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::SendFailed)
+    );
 }
 
 #[tokio::test]
@@ -894,6 +929,15 @@ async fn replay_safe_response_timeout_retries_then_succeeds() {
 
     assert_eq!(request.await.unwrap(), vec![0x002A]);
     assert_no_sent_frame(&mut controls);
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::RequestTimedOut)
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::RequestTimedOut)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -1280,8 +1324,16 @@ async fn zero_active_shutdown_joins_background_tasks_before_return() {
     let (sink, stream, controls) = controlled_transport();
     let client = ModbusClient::from_transport(sink, stream, default_config());
 
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::NotQuiescent
+    );
     client.shutdown().await;
 
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
     assert!(
         controls
             .stream_dropped
@@ -1322,6 +1374,10 @@ async fn shutdown_keeps_reader_alive_while_admitted_request_drains() {
     assert!(request.is_finished());
     assert_eq!(request.await.unwrap().unwrap(), vec![0x002A]);
     shutdown.await.unwrap();
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
 }
 
 #[tokio::test]
@@ -1432,6 +1488,67 @@ async fn dropping_registered_requests_reclaims_exact_slots_immediately() {
     assert_eq!(next.await.unwrap(), vec![0x002A]);
 }
 
+#[tokio::test]
+async fn dropping_while_waiting_for_sink_before_dispatch_remains_reuse_eligible() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let config = ClientConfig {
+        max_in_flight: 2,
+        shutdown_timeout: Duration::from_secs(1),
+        ..default_config()
+    };
+    let client = ModbusClient::from_transport(sink, stream, config);
+
+    let mut first = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(first.as_mut()).await.is_none());
+    let first_frame = controls.sent_rx.try_recv().unwrap();
+
+    let mut waiting = Box::pin(client.read_input_registers(UnitId(1), 0, 1));
+    assert!(poll_once(waiting.as_mut()).await.is_none());
+    assert_no_sent_frame(&mut controls);
+    drop(waiting);
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &first_frame,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+    assert_eq!(first.await.unwrap(), vec![0x002A]);
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::NotQuiescent
+    );
+
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
+}
+
+#[tokio::test]
+async fn dropping_after_frame_observation_retires_session() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    assert_eq!(controls.sent_rx.try_recv().unwrap().pdu[0], 0x03);
+    drop(request);
+
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::DispatchCancelled)
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::DispatchCancelled)
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn shutdown_deadline_hard_cancels_registered_request_and_ignores_late_response() {
     let (sink, stream, mut controls) = controlled_transport();
@@ -1466,6 +1583,10 @@ async fn shutdown_deadline_hard_cancels_registered_request_and_ignores_late_resp
         Err(ClientError::ShuttingDown)
     ));
     shutdown.await.unwrap();
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::ShutdownDeadlineExceeded)
+    );
     assert!(
         controls
             .response_tx
@@ -1608,12 +1729,20 @@ async fn abort_is_idempotent_rejects_new_calls_and_shutdown_still_joins() {
 
     client.abort();
     client.abort();
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::Aborted)
+    );
     let result = client.read_holding_registers(UnitId(1), 0, 1).await;
     assert!(matches!(result, Err(ClientError::NotConnected)));
     assert_no_sent_frame(&mut controls);
 
     client.shutdown().await;
     client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::Aborted)
+    );
     assert!(
         controls
             .stream_dropped
@@ -1729,6 +1858,15 @@ async fn invalid_request_arguments_return_encode_errors_before_send() {
         7,
         245,
     );
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::NotQuiescent
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1823,6 +1961,170 @@ async fn idle_reader_survives_read_timeout() {
         .await
         .unwrap();
     assert_eq!(regs, vec![0x1234, 0x5678]);
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::NotQuiescent
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
+}
+
+#[tokio::test]
+async fn synchronized_idle_reader_timeout_does_not_retire_session() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let (timeout_observed_tx, timeout_observed_rx) = oneshot::channel();
+    let stream = InitialTimeoutStream {
+        inner: stream,
+        timeout_observed: Some(timeout_observed_tx),
+    };
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    timeout_observed_rx.await.unwrap();
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &sent,
+            Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        ))
+        .unwrap();
+    assert_eq!(request.await.unwrap(), vec![0x002A]);
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::NotQuiescent
+    );
+
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
+}
+
+#[tokio::test]
+async fn malformed_matching_response_retires_session() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &sent,
+            Bytes::from_static(&[0x03, 0x02, 0x00]),
+        ))
+        .unwrap();
+
+    assert!(matches!(request.await, Err(ClientError::Codec(_))));
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::MalformedResponse)
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::MalformedResponse)
+    );
+}
+
+#[tokio::test]
+async fn wrong_unit_response_retires_session() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let sent = controls.sent_rx.try_recv().unwrap();
+    let transaction_id = match sent.header {
+        FrameHeader::Mbap(header) => header.transaction_id.get(),
+        FrameHeader::Rtu { .. } => panic!("expected MBAP request"),
+    };
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(transaction_id, 2, 4)),
+            pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        request.await,
+        Err(ClientError::UnexpectedResponseUnitId {
+            expected: 1,
+            got: 2
+        })
+    ));
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::UnexpectedResponseUnit)
+    );
+}
+
+#[tokio::test]
+async fn unknown_response_retires_session() {
+    let (sink, stream, controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+    controls
+        .response_tx
+        .send(Frame {
+            header: FrameHeader::Mbap(MbapHeader::new(41, 1, 4)),
+            pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+        })
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if client.session_reuse_verdict()
+                == SessionReuseVerdict::Retire(SessionRetirementReason::UnknownOrDuplicateResponse)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reader should classify the unknown response promptly");
+
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::UnknownOrDuplicateResponse)
+    );
+}
+
+#[tokio::test]
+async fn idle_reader_disconnect_retires_session() {
+    let (sink, stream, controls) = controlled_transport();
+    let client = ModbusClient::from_transport(sink, stream, default_config());
+    drop(controls.response_tx);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while client.is_connected() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reader should observe the disconnect promptly");
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::ReaderDisconnected)
+    );
+
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::ReaderDisconnected)
+    );
 }
 
 /// A server returning fewer coil bytes than the requested quantity needs must
@@ -1845,6 +2147,15 @@ async fn short_coil_response_is_error_not_panic() {
     assert!(
         matches!(result, Err(ClientError::ShortResponse { .. })),
         "expected ShortResponse, got {result:?}"
+    );
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::TypedResponseDataInvalid)
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::TypedResponseDataInvalid)
     );
 }
 
@@ -1873,6 +2184,15 @@ async fn wrong_function_code_is_rejected() {
             })
         ),
         "expected UnexpectedResponse, got {result:?}"
+    );
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::UnexpectedResponseFunction)
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::UnexpectedResponseFunction)
     );
 }
 
@@ -2007,6 +2327,15 @@ async fn write_single_register_rejects_mismatched_echo() {
         "address",
         0x0001,
         0x0002,
+    );
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::TypedResponseEchoMismatch)
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::TypedResponseEchoMismatch)
     );
 }
 

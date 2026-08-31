@@ -44,7 +44,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::ReadFifoQueue(fifo) => Ok(fifo
                 .fifo_values
                 .chunks_exact(2)
@@ -54,6 +54,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 }

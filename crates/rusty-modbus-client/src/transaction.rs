@@ -3,6 +3,7 @@
 //! Manages up to 16 concurrent in-flight transactions, matched by Transaction ID.
 //! Uses a fixed-size ring indexed by `transaction_id % MAX_SLOTS` to avoid `HashMap` overhead.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use bytes::Bytes;
@@ -14,6 +15,7 @@ use tokio::sync::{Notify, oneshot};
 use tokio::time::Instant;
 
 use crate::error::ClientError;
+use crate::session::{SessionRetirementReason, SessionReuseSafety};
 
 /// Maximum number of concurrent in-flight transactions.
 pub(crate) const MAX_SLOTS: usize = 16;
@@ -69,6 +71,7 @@ pub(crate) struct TransactionManager {
     next_id: AtomicU16,
     slots: [Mutex<Option<PendingTransaction>>; MAX_SLOTS],
     deadline_changed: Notify,
+    reuse_safety: Arc<SessionReuseSafety>,
     #[cfg(test)]
     scheduler_scans: std::sync::atomic::AtomicUsize,
 }
@@ -80,9 +83,15 @@ impl TransactionManager {
             next_id: AtomicU16::new(1), // Keep 0 reserved; some devices treat it specially.
             slots: std::array::from_fn(|_| Mutex::new(None)),
             deadline_changed: Notify::new(),
+            reuse_safety: Arc::new(SessionReuseSafety::new()),
             #[cfg(test)]
             scheduler_scans: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Clone the one client-wide reuse-safety authority.
+    pub(crate) fn reuse_safety(&self) -> Arc<SessionReuseSafety> {
+        Arc::clone(&self.reuse_safety)
     }
 
     fn next_transaction_id(&self) -> TransactionId {
@@ -194,6 +203,8 @@ impl TransactionManager {
         let mut slot = self.slots[slot_idx].lock();
 
         if slot.as_ref().is_none_or(|pending| pending.txn_id != txn_id) {
+            self.reuse_safety
+                .retire(SessionRetirementReason::UnknownOrDuplicateResponse);
             return CompletionOutcome::UnknownOrDuplicate;
         }
 
@@ -202,10 +213,12 @@ impl TransactionManager {
         drop(slot);
         self.deadline_changed.notify_one();
         if expired {
+            self.reuse_safety
+                .retire(SessionRetirementReason::ResponseExpired);
             let _ = pending.sender.send(Err(ClientError::Timeout));
             return CompletionOutcome::Expired;
         }
-        deliver_response(pending, response_unit_id, pdu)
+        deliver_response(&self.reuse_safety, pending, response_unit_id, pdu)
     }
 
     /// Correlate an RTU response with the oldest outstanding transaction.
@@ -236,30 +249,38 @@ impl TransactionManager {
             }
         }
         let Some((idx, _)) = oldest else {
+            self.reuse_safety
+                .retire(SessionRetirementReason::UnknownOrDuplicateResponse);
             return CompletionOutcome::UnknownOrDuplicate;
         };
 
         let mut slot = self.slots[idx].lock();
         let Some(pending) = slot.as_ref() else {
+            self.reuse_safety
+                .retire(SessionRetirementReason::UnknownOrDuplicateResponse);
             return CompletionOutcome::UnknownOrDuplicate;
         };
         if pending.deadline <= Instant::now() {
             let pending = slot.take().expect("pending transaction checked above");
             drop(slot);
             self.deadline_changed.notify_one();
+            self.reuse_safety
+                .retire(SessionRetirementReason::ResponseExpired);
             let _ = pending.sender.send(Err(ClientError::Timeout));
             return CompletionOutcome::Expired;
         }
         let expected = pending.expected.unit_id.0;
         let got = response_unit_id.0;
         if expected != got {
+            self.reuse_safety
+                .retire(SessionRetirementReason::UnexpectedResponseUnit);
             return CompletionOutcome::UnitMismatch { expected, got };
         }
 
         let pending = slot.take().expect("pending transaction checked above");
         drop(slot);
         self.deadline_changed.notify_one();
-        deliver_response(pending, response_unit_id, pdu)
+        deliver_response(&self.reuse_safety, pending, response_unit_id, pdu)
     }
 
     /// Remove one exact pending transaction after a local send failure.
@@ -306,6 +327,8 @@ impl TransactionManager {
             let mut slot = slot.lock();
             if slot.as_ref().is_some_and(|pending| pending.deadline <= now) {
                 let pending = slot.take().expect("due transaction checked above");
+                self.reuse_safety
+                    .retire(SessionRetirementReason::RequestTimedOut);
                 let _ = pending.sender.send(Err(ClientError::Timeout));
                 expired = true;
             } else if let Some(deadline) = slot.as_ref().map(|pending| pending.deadline)
@@ -373,6 +396,7 @@ impl Drop for TransactionRegistration<'_> {
 }
 
 fn deliver_response(
+    reuse_safety: &SessionReuseSafety,
     pending: PendingTransaction,
     response_unit_id: UnitId,
     pdu: Bytes,
@@ -380,6 +404,7 @@ fn deliver_response(
     let expected_unit_id = pending.expected.unit_id.0;
     let got_unit_id = response_unit_id.0;
     if expected_unit_id != got_unit_id {
+        reuse_safety.retire(SessionRetirementReason::UnexpectedResponseUnit);
         let _ = pending
             .sender
             .send(Err(ClientError::UnexpectedResponseUnitId {
@@ -395,6 +420,7 @@ fn deliver_response(
     let response = match OwnedResponsePdu::from_pdu(pdu) {
         Ok(response) => response,
         Err(error) => {
+            reuse_safety.retire(SessionRetirementReason::MalformedResponse);
             let _ = pending.sender.send(Err(ClientError::Codec(error)));
             return CompletionOutcome::CodecRejected(error);
         }
@@ -403,6 +429,7 @@ fn deliver_response(
     let expected = pending.expected.function_code.code();
     let got = response.function_code();
     if got != expected && got != (expected | 0x80) {
+        reuse_safety.retire(SessionRetirementReason::UnexpectedResponseFunction);
         let _ = pending
             .sender
             .send(Err(ClientError::UnexpectedResponse { expected, got }));
