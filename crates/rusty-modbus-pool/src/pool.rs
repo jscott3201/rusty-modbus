@@ -167,8 +167,8 @@ impl PoolInner {
         }
     }
 
-    /// Decrement the active counter when a connection is returned or a pending
-    /// connect attempt fails.
+    /// Decrement the active counter when a connection retires, returns to idle,
+    /// or a pending connect attempt fails.
     pub(crate) fn release_active(&mut self, is_priority: bool, addr: SocketAddr) {
         if is_priority {
             if let Some(c) = self.active_priority.get_mut(&addr) {
@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(pool.idle_count(), 0);
         drop(connection);
         assert_eq!(pool.active_count(), 0);
-        assert_eq!(pool.idle_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
     }
 
     #[tokio::test]
@@ -1154,8 +1154,8 @@ mod tests {
         assert_eq!(pool.active_count(), 1);
         drop(reused);
         assert_eq!(pool.active_count(), 0);
-        assert_eq!(pool.idle_count(), 1);
-        assert_eq!(pool.inner.lock().non_priority_total(), 1);
+        assert_eq!(pool.idle_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 0);
     }
 
     #[tokio::test]
@@ -1240,10 +1240,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn healthy_return_wakes_non_priority_waiter_for_reuse() {
+    async fn raw_drop_wakes_non_priority_waiter_for_fresh_connection() {
         let addr = test_addr(15_100);
         let pool = Arc::new(ConnectionPool::new(test_config(1)));
         let first = acquired_connection(&pool, addr).await;
+        let replacement_halves = connected_halves().await;
 
         let waiting_pool = Arc::clone(&pool);
         let waiter = tokio::spawn(async move {
@@ -1251,7 +1252,7 @@ mod tests {
                 .get_with_acquisition_timeout_and_connector(
                     addr,
                     Duration::from_secs(5),
-                    || async { Err(TransportError::Disconnected) },
+                    move || async move { Ok(replacement_halves) },
                 )
                 .await
         });
@@ -1260,17 +1261,17 @@ mod tests {
 
         drop(first);
 
-        let reused = waiter
+        let fresh = waiter
             .await
             .expect("waiter task should complete")
-            .expect("returned lease should be reused without running the connector");
-        assert_eq!(reused.addr(), addr);
+            .expect("raw retirement should release capacity for a fresh connection");
+        assert_eq!(fresh.addr(), addr);
         assert_eq!(pool.active_count(), 1);
         assert_eq!(pool.idle_count(), 0);
 
-        drop(reused);
+        drop(fresh);
         assert_eq!(pool.active_count(), 0);
-        assert_eq!(pool.idle_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
     }
 
     #[tokio::test]
@@ -1316,7 +1317,7 @@ mod tests {
         drop(first);
         drop(replacement);
         assert_eq!(pool.active_count(), 0);
-        assert_eq!(pool.idle_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
     }
 
     #[tokio::test]
@@ -1331,6 +1332,7 @@ mod tests {
         let pool = Arc::new(ConnectionPool::new(config));
         let priority = acquired_connection(&pool, priority_addr).await;
         let non_priority = acquired_connection(&pool, non_priority_addr).await;
+        let replacement_halves = connected_halves().await;
 
         let waiting_pool = Arc::clone(&pool);
         let waiter = tokio::spawn(async move {
@@ -1338,20 +1340,20 @@ mod tests {
                 .get_with_acquisition_timeout_and_connector(
                     priority_addr,
                     Duration::from_secs(5),
-                    || async { Err(TransportError::Disconnected) },
+                    move || async move { Ok(replacement_halves) },
                 )
                 .await
         });
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished());
 
-        // A non-priority return broadcasts, but cannot satisfy this device's
+        // A non-priority retirement broadcasts, but cannot satisfy this device's
         // separate priority budget.
         drop(non_priority);
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished());
         assert_eq!(pool.active_count(), 1);
-        assert_eq!(pool.idle_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
 
         drop(priority);
         let acquired = waiter
@@ -1360,7 +1362,7 @@ mod tests {
             .expect("device return should satisfy its own waiter");
         assert_eq!(acquired.addr(), priority_addr);
         assert_eq!(pool.active_count(), 1);
-        assert_eq!(pool.idle_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
     }
 
     #[tokio::test]
@@ -1606,7 +1608,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multiple_waiters_and_returns_do_not_strand_available_capacity() {
+    async fn multiple_waiters_and_raw_retirements_do_not_strand_available_capacity() {
         const WAITERS: usize = 8;
 
         let addr = test_addr(15_117);
@@ -1622,7 +1624,7 @@ mod tests {
                     .get_with_acquisition_timeout_and_connector(
                         addr,
                         Duration::from_secs(5),
-                        || async { Err(TransportError::Disconnected) },
+                        || async { Ok(connected_halves().await) },
                     )
                     .await?;
                 tokio::task::yield_now().await;
@@ -1640,11 +1642,11 @@ mod tests {
             waiter
                 .await
                 .expect("waiter task should complete")
-                .expect("each waiter should eventually reuse released capacity");
+                .expect("each waiter should eventually reserve released capacity");
         }
         assert_eq!(pool.active_count(), 0);
-        assert_eq!(pool.idle_count(), 2);
-        assert_eq!(pool.inner.lock().non_priority_total(), 2);
+        assert_eq!(pool.idle_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 0);
     }
 
     #[tokio::test]
@@ -1828,9 +1830,8 @@ mod tests {
 
         let inner = pool.inner.lock();
         assert_eq!(inner.active_non_priority, 0);
-        assert_eq!(inner.idle.len(), 1);
-        assert_eq!(inner.idle[0].addr, replacement_addr);
-        assert_eq!(inner.non_priority_total(), 1);
+        assert!(inner.idle.is_empty());
+        assert_eq!(inner.non_priority_total(), 0);
     }
 
     #[tokio::test]

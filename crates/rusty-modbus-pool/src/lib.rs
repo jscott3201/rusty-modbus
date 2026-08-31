@@ -4,9 +4,9 @@
 //! never age- or capacity-evicted) and non-priority connections (evicted
 //! oldest-first when full). Idle connections in either pool are passively retired
 //! when buffered input, peer EOF, or a socket error is immediately observable.
-//! Enable the opt-in `client` feature to consume a raw [`PooledConnection`] as
-//! either a conservatively retiring high-level client or a verdict-gated
-//! [`PooledClientSession`]. Raw leases keep their default return-to-idle behavior.
+//! Raw [`PooledConnection`] leases always retire on drop. Enable the opt-in
+//! `client` feature and hand a pristine lease to [`PooledClientSession`] for the
+//! only checked-out-lease path that can return a connection to idle.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::all, clippy::pedantic)]
@@ -27,6 +27,9 @@ pub use pool::ConnectionPool;
 
 #[cfg(feature = "client")]
 pub use client_handoff::{PooledClientReturnOutcome, PooledClientSession};
+
+#[cfg(feature = "client")]
+pub use error::ReusableClientHandoffError;
 
 #[cfg(feature = "client")]
 pub use rusty_modbus_client::{ClientConfig, ClientError, RetryConfig};

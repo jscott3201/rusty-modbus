@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tokio::sync::Notify;
-use tokio::time::Instant;
 
 use rusty_modbus_tcp::{TcpRecvStream, TcpSink};
 
@@ -18,6 +17,8 @@ use crate::pool::{PoolEntry, PoolInner};
 
 #[cfg(feature = "client")]
 use crate::client_handoff::PooledClientSession;
+#[cfg(feature = "client")]
+use crate::error::ReusableClientHandoffError;
 
 /// Caller-supplied classification for why a checked-out connection was retired.
 ///
@@ -81,15 +82,19 @@ impl LeaseInvalidationReason {
 
 /// A connection checked out from the pool.
 ///
-/// A healthy connection automatically returns to the pool when dropped. Call
-/// [`invalidate`](Self::invalidate) to retire its transport halves immediately
-/// instead. Access the transport halves via [`sink()`](Self::sink) and
-/// [`stream()`](Self::stream).
+/// Dropping a raw lease always retires its exact transport and releases its
+/// capacity charge; it never returns the connection to idle. With the `client`
+/// feature, a pristine lease can instead enter the verdict-gated
+/// [`PooledClientSession`] reuse path through
+/// [`into_reusable_client`](Self::into_reusable_client). Calling
+/// [`sink`](Self::sink) or [`stream`](Self::stream) permanently disqualifies that
+/// lease from reusable handoff. [`addr`](Self::addr) does not.
 pub struct PooledConnection {
     entry: Option<PoolEntry>,
     pool: Arc<Mutex<PoolInner>>,
     capacity_changed: Arc<Notify>,
     invalidation_reason: Option<LeaseInvalidationReason>,
+    raw_accessed: bool,
 }
 
 impl PooledConnection {
@@ -103,6 +108,7 @@ impl PooledConnection {
             pool,
             capacity_changed,
             invalidation_reason: None,
+            raw_accessed: false,
         }
     }
 
@@ -120,8 +126,9 @@ impl PooledConnection {
     /// probe liveness, prove protocol synchronization, make a healthy client
     /// session reusable, or close the tracked F-017/F-018 recovery gaps.
     ///
-    /// This method is available only with the `client` crate feature. Ordinary
-    /// raw leases retain their existing return-to-idle behavior.
+    /// This method remains available after direct raw-half access because its
+    /// transport can never return to idle. Prior raw access does not establish
+    /// that starting a new operation is semantically safe.
     ///
     /// # Panics
     ///
@@ -160,43 +167,57 @@ impl PooledConnection {
     /// is not an active liveness probe or proof of permanent future silence, and
     /// does not close the tracked F-017/F-018 recovery gaps.
     ///
-    /// This method is available only with the `client` crate feature. Ordinary
-    /// raw leases and [`Self::into_retiring_client`] retain their existing behavior.
+    /// Calling [`Self::sink`] or [`Self::stream`] before this method permanently
+    /// disqualifies the lease. On rejection the transport retires and its active
+    /// capacity charge is released exactly once. Calling [`Self::addr`] does not
+    /// disqualify the handoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReusableClientHandoffError::RawTransportAccessed`] after either
+    /// raw half was accessed, or [`ReusableClientHandoffError::LeaseUnavailable`]
+    /// if the lease was already retired.
     ///
     /// # Panics
     ///
-    /// Panics if this lease was already invalidated, or if called without an
-    /// active Tokio runtime in which to start the client-owned tasks. Unwinding
-    /// either case still retires any transport and releases its active charge.
+    /// Panics if called without an active Tokio runtime in which to start the
+    /// client-owned tasks. Unwinding still retires the transport and releases its
+    /// active charge.
     #[cfg(feature = "client")]
-    pub fn into_reusable_client(mut self, config: ClientConfig) -> PooledClientSession {
-        let entry = self
-            .entry
-            .take()
-            .expect("connection already returned or invalidated");
-        crate::client_handoff::into_reusable_session(
+    pub fn into_reusable_client(
+        mut self,
+        config: ClientConfig,
+    ) -> Result<PooledClientSession, ReusableClientHandoffError> {
+        if self.raw_accessed {
+            let _ = self.retire_entry();
+            return Err(ReusableClientHandoffError::RawTransportAccessed);
+        }
+
+        let Some(entry) = self.entry.take() else {
+            return Err(ReusableClientHandoffError::LeaseUnavailable);
+        };
+        Ok(crate::client_handoff::into_reusable_session(
             entry,
             Arc::clone(&self.pool),
             Arc::clone(&self.capacity_changed),
             config,
-        )
+        ))
     }
 
-    /// Immediately retire this connection instead of returning it to the pool.
+    /// Immediately retire this connection and record a caller classification.
     ///
     /// The first call releases the lease's active pool capacity and drops its TCP
     /// transport halves without placing the connection in the idle pool. The
     /// first `reason` is sticky; later calls are no-ops.
     ///
-    /// Callers must invalidate after a timeout or cancellation when I/O may have
-    /// occurred, or whenever transport, framing, or protocol behavior leaves
-    /// stream synchronization ambiguous and the lease must not be reused.
+    /// Callers may invalidate after a timeout, cancellation, transport failure,
+    /// or protocol ambiguity to classify the observation and release capacity
+    /// before drop. Raw drop retires safely even without this classification.
     ///
-    /// Reasons are caller classifications only. The pool does not automatically
-    /// classify or invalidate a checked-out lease, probe liveness, or prove
-    /// stream synchronization. After a raw lease returns to idle, checkout and
-    /// health sweeps separately retire it if a passive observation finds buffered
-    /// input, peer EOF, or a socket error. Callers may opt into
+    /// Reasons are caller classifications only. Default raw drop retirement does
+    /// not invent an invalidation reason. The pool does not automatically classify
+    /// a checked-out lease, probe liveness, or prove stream synchronization.
+    /// Callers may opt into
     /// [`LeaseInvalidationReason::suggested_for_transport_error`] and then decide
     /// whether to invalidate the currently held lease.
     pub fn invalidate(&mut self, reason: LeaseInvalidationReason) {
@@ -204,21 +225,11 @@ impl PooledConnection {
             return;
         }
 
-        let Some(entry) = self.entry.take() else {
+        if self.entry.is_none() {
             return;
-        };
-        self.invalidation_reason = Some(reason);
-
-        let is_priority = entry.is_priority;
-        let addr = entry.addr;
-        {
-            let mut inner = self.pool.lock();
-            inner.release_active(is_priority, addr);
         }
-
-        // Retire the TCP halves only after releasing the pool mutex.
-        drop(entry);
-        self.capacity_changed.notify_waiters();
+        self.invalidation_reason = Some(reason);
+        let _ = self.retire_entry();
     }
 
     /// The caller's first invalidation reason, or `None` if none was recorded.
@@ -235,6 +246,7 @@ impl PooledConnection {
     ///
     /// Panics if the connection has already been returned to the pool or invalidated.
     pub fn sink(&mut self) -> &mut TcpSink {
+        self.raw_accessed = true;
         &mut self
             .entry
             .as_mut()
@@ -248,6 +260,7 @@ impl PooledConnection {
     ///
     /// Panics if the connection has already been returned to the pool or invalidated.
     pub fn stream(&mut self) -> &mut TcpRecvStream {
+        self.raw_accessed = true;
         &mut self
             .entry
             .as_mut()
@@ -267,19 +280,34 @@ impl PooledConnection {
             .expect("connection already returned or invalidated")
             .addr
     }
+
+    /// Retire one exact checked-out entry and release its active charge.
+    fn retire_entry(&mut self) -> Option<bool> {
+        let entry = self.entry.take()?;
+        let is_priority = entry.is_priority;
+        let addr = entry.addr;
+        {
+            let mut inner = self.pool.lock();
+            inner.release_active(is_priority, addr);
+        }
+
+        // Retire the TCP halves only after releasing the pool mutex.
+        drop(entry);
+        self.capacity_changed.notify_waiters();
+        Some(is_priority)
+    }
 }
 
 impl Drop for PooledConnection {
     fn drop(&mut self) {
-        if let Some(mut entry) = self.entry.take() {
-            entry.last_used = Instant::now();
-            let mut inner = self.pool.lock();
-            inner.release_active(entry.is_priority, entry.addr);
-            if !inner.shutting_down {
-                inner.idle.push(entry);
-            }
-            drop(inner);
-            self.capacity_changed.notify_waiters();
+        if let Some(is_priority) = self.retire_entry() {
+            tracing::debug!(
+                target: "rusty_modbus_pool::raw_lease",
+                trigger = "drop",
+                raw_accessed = self.raw_accessed,
+                is_priority,
+                "pooled_raw_connection_retired"
+            );
         }
     }
 }
@@ -289,6 +317,7 @@ impl std::fmt::Debug for PooledConnection {
         f.debug_struct("PooledConnection")
             .field("addr", &self.entry.as_ref().map(|e| e.addr))
             .field("invalidation_reason", &self.invalidation_reason)
+            .field("raw_accessed", &self.raw_accessed)
             .finish_non_exhaustive()
     }
 }
