@@ -18,11 +18,25 @@ pub struct PoolConfig {
     pub priority_devices: Vec<PriorityDevice>,
     /// Pre-connect to priority devices at pool creation time. Default: `true`.
     pub pre_connect: bool,
+    /// Maintain at least one idle TCP connection per distinct configured priority
+    /// address whenever its per-device capacity and connectivity permit. Default:
+    /// `false`.
+    ///
+    /// Enabling this also starts the initial priority warm-up when
+    /// [`Self::pre_connect`] is `false`. The standing task uses the first matching
+    /// [`PriorityDevice`] entry's capacity, reconnects with [`Self::backoff`], and
+    /// uses [`Self::health_check_interval`] as a safety-only reevaluation fallback.
+    /// It performs no active liveness probe.
+    ///
+    /// Adding this public field is source-breaking for exhaustive `PoolConfig`
+    /// struct literals. Callers should set it explicitly or include
+    /// `..PoolConfig::default()` so future configuration fields remain compatible.
+    pub priority_replenishment: bool,
     /// Idle timeout before a non-priority connection is eligible for eviction. Default: 300s.
     pub idle_timeout: Duration,
     /// Interval for passive idle validation and non-priority age eviction. Default: 60s.
     pub health_check_interval: Duration,
-    /// Initial priority pre-connect retry backoff configuration.
+    /// Priority warm-up and replenishment retry backoff configuration.
     pub backoff: BackoffConfig,
     /// Underlying TCP transport configuration.
     pub tcp_config: TcpConfig,
@@ -34,6 +48,7 @@ impl Default for PoolConfig {
             max_connections: 64,
             priority_devices: Vec::new(),
             pre_connect: true,
+            priority_replenishment: false,
             idle_timeout: Duration::from_mins(5),
             health_check_interval: Duration::from_mins(1),
             backoff: BackoffConfig::default(),

@@ -38,14 +38,14 @@ the reservation guard to release its charge. Pool shutdown wakes blocked
 waiters, which return `PoolError::ShuttingDown` when shutdown is observed.
 
 `active_count()` reports active accounting charges, including capacity reserved
-while a demand or initial priority pre-connect TCP connector is pending. It does
+while a demand or priority-maintenance TCP connector is pending. It does
 not report idle connections or expose a separate public pending metric.
 
 ## Pool shutdown and bounded quiescence
 
 `ConnectionPool::shutdown()` remains synchronous and nonblocking. It
 idempotently seals admission, clears idle connections, wakes capacity waiters,
-and requests cancellation of the pool-owned health-check and initial pre-connect
+and requests cancellation of the pool-owned health-check and priority-maintenance
 tasks. `Drop` calls only this synchronous path, so dropping a pool does not wait
 and remains safe without an active runtime.
 
@@ -55,8 +55,9 @@ cancellation destructors have run. One lazy detached coordinator joins all of
 their handles and publishes sticky completion. Concurrent callers share that
 completion, repeated calls return promptly, and cancelling any public waiter
 does not detach the handles or prevent a later caller from observing completion.
-This also proves rollback of any reservation owned by a cancelled initial
-pre-connect task.
+This also proves rollback of any reservation owned by a cancelled priority-
+maintenance task, whether it is connecting, backing off, or waiting on the
+standing-policy fallback.
 
 The wait boundary deliberately excludes checked-out raw leases, reusable client
 sessions, and caller-owned pending demand connector futures. It neither waits
@@ -65,26 +66,56 @@ reached zero. Runtime teardown can cancel runtime tasks and therefore cannot
 promise this asynchronous completion; use the nonblocking `shutdown()`/`Drop`
 path there.
 
-## Initial priority pre-connect
+## Priority warm-up and opt-in replenishment
 
-Pre-connect is a one-time initial warm-up, not standing replenishment. Pool
-creation starts at most one task per distinct configured priority address. Before
-each TCP attempt, that task reserves one charge from the address's
-`PriorityDevice::max_connections` budget under the same pool lock used by demand
-acquisition. A zero cap starts no TCP attempt. Connector failure, cancellation,
-or shutdown releases the exact charge and wakes capacity waiters before any
-backoff retry. Every retry must reserve again; if demand has filled the budget,
-the warm-up task exits instead of opening another connection.
+`PoolConfig::priority_replenishment` is `false` by default. Enabling it maintains
+**at least one idle TCP connection** for each distinct configured priority address
+whenever that address's per-device capacity and connectivity permit. This is an
+idle target, not a fill-to-cap policy, and pre-existing surplus idle entries are
+not retired. The configuration truth table is:
 
-A successful attempt atomically changes its pending active charge into one idle
-priority entry and wakes waiters. A timed demand waiter can then claim that idle
-transport without opening another connection. A fail-fast `get` racing the
-in-flight pre-connect reservation can return `PoolError::Exhausted`, because the
-pending attempt already consumes the per-address budget.
+| `pre_connect` | `priority_replenishment` | Priority background behavior |
+|---|---|---|
+| `false` | `false` | No priority background task |
+| `true` | `false` | One-time initial warm-up; exits after the target is met or another path prevents reservation |
+| `false` | `true` | Standing initial warm-up plus one-idle replenishment |
+| `true` | `true` | The same single standing task per distinct address; no duplicate one-shot task |
 
-After one successful warm-up, or after another path fills the address budget,
-the task exits. Retirement of that idle or checked-out connection does not
-restart pre-connect, maintain an idle target, or otherwise replenish capacity.
+`PoolConfig` is a public struct, so adding this field is source-breaking for a
+downstream exhaustive struct literal. Set `priority_replenishment` explicitly or
+use `..PoolConfig::default()` when constructing the configuration.
+
+Duplicate `PriorityDevice` addresses start at most one task, and the first
+matching entry's `max_connections` remains authoritative. A first cap of zero
+starts no task or connector. Before every TCP attempt, maintenance reserves one
+charge under the same `PoolInner` lock and per-device budget used by demand
+acquisition. It never evicts an active connection or steals capacity. At the cap
+with no idle entry, a standing task waits without running the connector; checkout,
+retirement, failed demand establishment, reusable-client completion, passive
+health retirement, or shutdown broadcasts a state-change hint for reevaluation.
+
+Connector failure drops the exact reservation, wakes waiters, and then always
+observes the configured exponential backoff before retrying. Any successful TCP
+establishment resets that backoff, so a later failure starts at the initial delay.
+Connection establishment and repeated recovery incur normal network and TCP
+handshake costs. A successful connector atomically releases its pending charge
+and inserts only when shutdown has not begun and no idle priority entry for the
+address already exists. If a reusable client return or another insertion won the
+race, the newly connected redundant transport is retired outside the pool lock.
+
+When the target is already met or capacity is unavailable, standing maintenance
+waits for either a registered capacity notification or one fresh safety fallback
+using `health_check_interval`. Only this replenishment fallback is locally
+clamped to a 1ms nonzero floor to avoid spinning; health-task interval behavior is
+unchanged. The fallback performs no active probe or socket write. Neither it nor
+an idle entry proves peer liveness or protocol synchronization.
+
+With replenishment disabled, `pre_connect` retains its one-time behavior. It
+retries initial connection failures with backoff but exits after one successful
+warm-up or when another path makes the one-idle reservation predicate false.
+Later checkout or retirement does not restart it. In either mode, a pending
+maintenance attempt consumes the per-address budget, so a racing fail-fast `get`
+can return `PoolError::Exhausted`.
 
 ## Passive idle TCP validation
 
@@ -110,15 +141,16 @@ signal result does not prove peer liveness or protocol synchronization. Input ca
 arrive after validation and before or during the next borrow. In particular, a
 late response that is already observable before checkout is retired rather than
 handed to the next borrower, but a response racing after validation remains
-possible for idle entries created by pre-connect or verdict-gated client return.
+possible for idle entries created by priority maintenance or verdict-gated
+client return.
 Raw lease drop no longer creates such an idle entry. Across the current
 implemented return paths, raw Drop retirement, always-retiring client handoff,
 and exact verdict-gated reusable return close F-017's cross-borrower reuse
-finding. Passive observation mitigates F-018, but TCP-013 remains a
-compatibility deviation: active liveness and protocol proof, the
-post-observation race, automatic reconnect and replenishment after retirement,
-gateway composition, exact creation-bound evidence, public metrics, and
-benchmarks remain incomplete.
+finding. Passive observation mitigates F-018, but TCP-013 remains a compatibility
+deviation: active liveness and protocol proof, the post-observation race, default
+recovery policy, gateway composition, exact creation-bound evidence, public
+metrics, and benchmarks remain incomplete. Opt-in one-idle replenishment does
+not close TCP-013, F-018, or PR-403.
 
 Each passive retirement emits one `DEBUG` event with target
 `rusty_modbus_pool::idle_validation` and message
@@ -269,7 +301,7 @@ not establish general connection health. Together with raw Drop and the
 always-retiring handoff, its exact verdict and recovery gate closes F-017 for
 current implemented return paths. F-018 remains mitigated, and TCP-013 remains
 open for the passive-observation race and outstanding liveness, synchronization,
-replenishment, integration, and evidence gaps. The existing
+default-policy, gateway-integration, and evidence gaps. The existing
 `into_retiring_client` method remains an always-retiring option. For connection
 reuse, enable `client`, call `into_reusable_client(...)?` before any raw-half
 access, perform operations through `PooledClientSession::client`, then consume

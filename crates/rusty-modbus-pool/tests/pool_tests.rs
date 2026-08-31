@@ -177,6 +177,17 @@ fn pool_config_for(addr: SocketAddr) -> PoolConfig {
     }
 }
 
+fn replenishing_priority_config(addr: SocketAddr, max_connections: usize) -> PoolConfig {
+    PoolConfig {
+        priority_replenishment: true,
+        priority_devices: vec![PriorityDevice {
+            addr,
+            max_connections,
+        }],
+        ..pool_config_for(addr)
+    }
+}
+
 #[tokio::test]
 async fn pristine_raw_drop_retires_and_next_get_connects_fresh() {
     let (addr, mut accepted) = tracked_echo_server().await;
@@ -810,6 +821,72 @@ async fn passively_validated_preconnected_entry_can_checkout_but_raw_drop_retire
     drop(fresh);
     assert_eq!(pool.active_count(), 0);
     assert_eq!(pool.idle_count(), 0);
+}
+
+#[tokio::test]
+async fn standing_priority_replenishment_restores_idle_after_raw_drop() {
+    let (addr, mut accepted) = tracked_echo_server().await;
+    let pool = ConnectionPool::new(replenishing_priority_config(addr, 1));
+
+    wait_for_accept(&mut accepted).await;
+    wait_for_idle_count(&pool, 1).await;
+    let raw = pool
+        .get(addr)
+        .await
+        .expect("standing warm-up entry should be reusable");
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+    assert!(accepted.try_recv().is_err());
+
+    drop(raw);
+    wait_for_accept(&mut accepted).await;
+    wait_for_idle_count(&pool, 1).await;
+    assert_eq!(pool.active_count(), 0);
+
+    pool.shutdown_and_wait().await;
+}
+
+#[cfg(feature = "client")]
+#[tokio::test]
+async fn reusable_retirement_replenishes_but_returned_idle_does_not_connect() {
+    let (addr, mut accepted) = tracked_echo_server().await;
+    let pool = ConnectionPool::new(replenishing_priority_config(addr, 1));
+
+    wait_for_accept(&mut accepted).await;
+    wait_for_idle_count(&pool, 1).await;
+    let retired = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(ClientConfig::default())
+        .unwrap();
+    retired.client().abort();
+    assert!(matches!(
+        retired.shutdown_and_return().await,
+        PooledClientReturnOutcome::Retired(_)
+    ));
+    wait_for_accept(&mut accepted).await;
+    wait_for_idle_count(&pool, 1).await;
+
+    let returned = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(ClientConfig::default())
+        .unwrap();
+    assert_eq!(
+        returned.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
+    wait_for_idle_count(&pool, 1).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), accepted.recv())
+            .await
+            .is_err(),
+        "returning the target idle entry must not open another connection"
+    );
+
+    pool.shutdown_and_wait().await;
 }
 
 /// A refused address: bind an ephemeral port to learn it, then free it.
