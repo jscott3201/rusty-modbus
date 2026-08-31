@@ -13,7 +13,7 @@ use rusty_modbus_client::{SessionRetirementReason, SessionReuseVerdict};
 use rusty_modbus_frame::{Frame, FrameHeader};
 use rusty_modbus_pool::{
     ClientConfig, ClientError, ConnectionPool, LeaseInvalidationReason, PoolConfig, PoolError,
-    PooledClientReturnOutcome, PriorityDevice, RetryConfig,
+    PooledClientReturnOutcome, PriorityDevice, RetryConfig, ReusableClientHandoffError,
 };
 use rusty_modbus_tcp::config::{TcpConfig, TcpServerConfig};
 use rusty_modbus_tcp::listener::TcpServerListener;
@@ -29,6 +29,8 @@ use tracing_subscriber::{Layer, registry};
 
 const COMPLETION_TARGET: &str = "rusty_modbus_pool::client_handoff";
 const COMPLETION_MESSAGE: &str = "pooled_client_session_completed";
+const RAW_DROP_TARGET: &str = "rusty_modbus_pool::raw_lease";
+const RAW_DROP_MESSAGE: &str = "pooled_raw_connection_retired";
 
 #[derive(Debug, PartialEq, Eq)]
 struct CapturedCompletion {
@@ -145,6 +147,82 @@ where
 }
 
 fn drop_with_capture<T>(capture: &CompletionCapture, value: T) {
+    let dispatch = capture.dispatch();
+    dispatcher::with_default(&dispatch, || drop(value));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedRawDrop {
+    level: Level,
+    message: String,
+    trigger: String,
+    raw_accessed: bool,
+    is_priority: bool,
+}
+
+#[derive(Default)]
+struct RawDropVisitor {
+    message: Option<String>,
+    trigger: Option<String>,
+    raw_accessed: Option<bool>,
+    is_priority: Option<bool>,
+}
+
+impl Visit for RawDropVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "trigger" {
+            self.trigger = Some(value.to_owned());
+        }
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        match field.name() {
+            "raw_accessed" => self.raw_accessed = Some(value),
+            "is_priority" => self.is_priority = Some(value),
+            _ => {}
+        }
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = Some(format!("{value:?}"));
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RawDropCapture {
+    events: Arc<Mutex<Vec<CapturedRawDrop>>>,
+}
+
+impl RawDropCapture {
+    fn dispatch(&self) -> tracing::Dispatch {
+        tracing::Dispatch::new(registry().with(self.clone()))
+    }
+}
+
+impl<S> Layer<S> for RawDropCapture
+where
+    S: Subscriber,
+{
+    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+        if event.metadata().target() != RAW_DROP_TARGET {
+            return;
+        }
+
+        let mut visitor = RawDropVisitor::default();
+        event.record(&mut visitor);
+        self.events.lock().unwrap().push(CapturedRawDrop {
+            level: *event.metadata().level(),
+            message: visitor.message.expect("raw drop message field"),
+            trigger: visitor.trigger.expect("raw drop trigger field"),
+            raw_accessed: visitor.raw_accessed.expect("raw drop access field"),
+            is_priority: visitor.is_priority.expect("raw drop priority field"),
+        });
+    }
+}
+
+fn drop_with_raw_capture<T>(capture: &RawDropCapture, value: T) {
     let dispatch = capture.dispatch();
     dispatcher::with_default(&dispatch, || drop(value));
 }
@@ -480,11 +558,15 @@ async fn healthy_reusable_sessions_reuse_one_accept_wake_waiter_and_keep_exact_a
     let (addr, mut events, finish, server) = two_request_reuse_server().await;
     let pool = Arc::new(ConnectionPool::new(pool_config()));
 
-    let first = pool
-        .get(addr)
-        .await
-        .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+    let first_lease = pool.get(addr).await.unwrap();
+    assert_eq!(
+        first_lease.addr(),
+        addr,
+        "address access must stay pristine"
+    );
+    let first = first_lease
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     assert_eq!(
         first
             .client()
@@ -522,7 +604,8 @@ async fn healthy_reusable_sessions_reuse_one_accept_wake_waiter_and_keep_exact_a
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     assert_eq!(pool.active_count(), 1);
     assert_eq!(pool.idle_count(), 0);
     assert_eq!(
@@ -563,10 +646,162 @@ async fn healthy_reusable_sessions_reuse_one_accept_wake_waiter_and_keep_exact_a
     assert_eq!(pool.idle_count(), 0);
     drop(third);
     assert_eq!(pool.active_count(), 0);
-    assert_eq!(pool.idle_count(), 1);
+    assert_eq!(
+        pool.idle_count(),
+        0,
+        "checking out a client-returned idle entry as raw must retire it on drop"
+    );
 
     finish.send(()).unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn raw_accessed_reusable_handoff_returns_typed_error_retires_and_wakes_waiter() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = Arc::new(ConnectionPool::new(pool_config()));
+    let mut lease = pool.get(addr).await.unwrap();
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    let _sink = lease.sink();
+
+    let waiting_pool = Arc::clone(&pool);
+    let waiter = tokio::spawn(async move {
+        waiting_pool
+            .get_with_acquisition_timeout(addr, Duration::from_secs(1))
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished(), "the raw lease owns the only charge");
+
+    let error = lease
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap_err();
+    assert_eq!(error, ReusableClientHandoffError::RawTransportAccessed);
+    assert_eq!(
+        error.to_string(),
+        "raw transport access disqualifies reusable client handoff"
+    );
+
+    let mut fresh = waiter
+        .await
+        .expect("waiter task should complete")
+        .expect("rejected handoff should release capacity");
+    expect_event(&mut events, ServerEvent::Accepted(2)).await;
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+    fresh.invalidate(LeaseInvalidationReason::CallerDirected);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn retired_reusable_handoff_returns_unavailable_without_panicking() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let mut lease = pool.get(addr).await.unwrap();
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+
+    lease.invalidate(LeaseInvalidationReason::CallerDirected);
+    let error = lease
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap_err();
+
+    assert_eq!(error, ReusableClientHandoffError::LeaseUnavailable);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn ordinary_raw_drop_trace_is_bounded_once_and_skips_invalidation() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let capture = RawDropCapture::default();
+
+    let pristine = pool.get(addr).await.unwrap();
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    drop_with_raw_capture(&capture, pristine);
+
+    let mut accessed = pool.get(addr).await.unwrap();
+    expect_event(&mut events, ServerEvent::Accepted(2)).await;
+    let _ = accessed.stream();
+    drop_with_raw_capture(&capture, accessed);
+
+    let mut invalidated = pool.get(addr).await.unwrap();
+    expect_event(&mut events, ServerEvent::Accepted(3)).await;
+    invalidated.invalidate(LeaseInvalidationReason::Timeout);
+    drop_with_raw_capture(&capture, invalidated);
+
+    assert_eq!(
+        capture.events.lock().unwrap().as_slice(),
+        [
+            CapturedRawDrop {
+                level: Level::DEBUG,
+                message: RAW_DROP_MESSAGE.to_owned(),
+                trigger: "drop".to_owned(),
+                raw_accessed: false,
+                is_priority: false,
+            },
+            CapturedRawDrop {
+                level: Level::DEBUG,
+                message: RAW_DROP_MESSAGE.to_owned(),
+                trigger: "drop".to_owned(),
+                raw_accessed: true,
+                is_priority: false,
+            },
+        ]
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn raw_stream_rejection_cannot_resurrect_idle_during_concurrent_shutdown() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = Arc::new(ConnectionPool::new(pool_config()));
+    let mut lease = pool.get(addr).await.unwrap();
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    let _stream = lease.stream();
+
+    let barrier = Arc::new(Barrier::new(3));
+    let handoff_barrier = Arc::clone(&barrier);
+    let handoff = tokio::spawn(async move {
+        handoff_barrier.wait().await;
+        lease.into_reusable_client(client_config(Duration::from_secs(1)))
+    });
+    let shutdown_pool = Arc::clone(&pool);
+    let shutdown_barrier = Arc::clone(&barrier);
+    let shutdown = tokio::spawn(async move {
+        shutdown_barrier.wait().await;
+        shutdown_pool.shutdown();
+    });
+    barrier.wait().await;
+
+    let error = handoff.await.unwrap().unwrap_err();
+    shutdown.await.unwrap();
+    assert_eq!(error, ReusableClientHandoffError::RawTransportAccessed);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+    assert!(matches!(pool.get(addr).await, Err(PoolError::ShuttingDown)));
+    server.abort();
+}
+
+#[tokio::test]
+async fn raw_accessed_lease_can_still_enter_always_retiring_client_handoff() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let mut lease = pool.get(addr).await.unwrap();
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    let _ = lease.sink();
+
+    let client = lease.into_retiring_client(client_config(Duration::from_secs(1)));
+    client.shutdown().await;
+    drop(client);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+    server.abort();
 }
 
 #[tokio::test]
@@ -577,7 +812,8 @@ async fn reusable_timeout_retires_and_forces_a_fresh_accept() {
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_millis(50)));
+        .into_reusable_client(client_config(Duration::from_millis(50)))
+        .unwrap();
 
     let error = session
         .client()
@@ -624,7 +860,8 @@ async fn reusable_post_dispatch_cancellation_retires_and_forces_a_fresh_accept()
         pool.get(addr)
             .await
             .unwrap()
-            .into_reusable_client(client_config(Duration::from_secs(30))),
+            .into_reusable_client(client_config(Duration::from_secs(30)))
+            .unwrap(),
     );
 
     let request_session = Arc::clone(&session);
@@ -672,7 +909,8 @@ async fn observed_unknown_response_retires_and_forces_a_fresh_accept() {
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
     expect_event(&mut events, ServerEvent::HostileFrameSent).await;
 
@@ -704,7 +942,8 @@ async fn typed_validation_failure_retires_and_forces_a_fresh_accept() {
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
 
     assert!(matches!(
         session.client().read_coils(UnitId(1), 0, 64).await,
@@ -741,7 +980,8 @@ async fn explicit_abort_retires_and_forces_a_fresh_accept() {
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
 
     session.client().abort();
@@ -764,7 +1004,13 @@ async fn shutdown_deadline_retires_and_forces_a_fresh_accept() {
     let pool = ConnectionPool::new(pool_config());
     let mut config = client_config(Duration::from_secs(30));
     config.shutdown_timeout = Duration::from_millis(50);
-    let session = Arc::new(pool.get(addr).await.unwrap().into_reusable_client(config));
+    let session = Arc::new(
+        pool.get(addr)
+            .await
+            .unwrap()
+            .into_reusable_client(config)
+            .unwrap(),
+    );
 
     let request_session = Arc::clone(&session);
     let request = tokio::spawn(async move {
@@ -810,7 +1056,8 @@ async fn dropping_reusable_session_without_return_retires_and_releases_capacity(
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
     assert_eq!(pool.active_count(), 1);
 
@@ -845,7 +1092,8 @@ async fn clean_client_shutdown_then_wrapper_drop_retires_with_eligible_verdict()
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
 
     session.client().shutdown().await;
@@ -878,7 +1126,8 @@ async fn cancelling_consuming_return_future_emits_once_and_retires_exact_capacit
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
     assert_eq!(pool.active_count(), 1);
 
@@ -926,7 +1175,8 @@ async fn pool_shutdown_before_reusable_return_wins_without_idle_resurrection() {
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
 
     pool.shutdown();
@@ -957,7 +1207,8 @@ async fn concurrent_pool_shutdown_and_reusable_return_release_once_without_idle_
         .get(addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
 
     let barrier = Arc::new(Barrier::new(3));
@@ -1003,7 +1254,8 @@ async fn priority_reusable_return_preserves_separate_budget_and_exact_active_cha
         .get(priority_addr)
         .await
         .unwrap()
-        .into_reusable_client(client_config(Duration::from_secs(1)));
+        .into_reusable_client(client_config(Duration::from_secs(1)))
+        .unwrap();
     expect_event(&mut priority_events, ServerEvent::Accepted(1)).await;
     let mut ordinary = pool.get(ordinary_addr).await.unwrap();
     expect_event(&mut ordinary_events, ServerEvent::Accepted(1)).await;
@@ -1058,7 +1310,7 @@ async fn priority_reusable_return_preserves_separate_budget_and_exact_active_cha
     assert_eq!(pool.idle_count(), 0);
     drop(priority_again);
     assert_eq!(pool.active_count(), 0);
-    assert_eq!(pool.idle_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
 
     finish.send(()).unwrap();
     priority_server.await.unwrap();
@@ -1251,7 +1503,8 @@ fn runtime_drop_then_reusable_session_drop_retires_without_panicking_or_leaking_
                 .get(addr)
                 .await
                 .unwrap()
-                .into_reusable_client(client_config(Duration::from_secs(1)));
+                .into_reusable_client(client_config(Duration::from_secs(1)))
+                .unwrap();
             (pool, session)
         });
 

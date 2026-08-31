@@ -8,12 +8,14 @@ use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_pool::{
     BackoffConfig, ConnectionPool, LeaseInvalidationReason, PoolConfig, PoolError, PriorityDevice,
 };
+#[cfg(feature = "client")]
+use rusty_modbus_pool::{ClientConfig, PooledClientReturnOutcome};
 use rusty_modbus_tcp::TransportError;
 use rusty_modbus_tcp::config::{TcpConfig, TcpServerConfig};
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_types::MbapHeader;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Start an echo server on an ephemeral port.
 async fn echo_server() -> SocketAddr {
@@ -72,6 +74,70 @@ async fn wait_for_accept(accepted: &mut mpsc::UnboundedReceiver<()>) {
         .expect("tracked server should remain available");
 }
 
+async fn wait_for_idle_count(pool: &ConnectionPool, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while pool.idle_count() != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pool should reach the expected idle count promptly");
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RawIsolationEvent {
+    Accepted(u8),
+    Request(u8),
+    LateResponseAttempted,
+}
+
+async fn raw_late_response_server() -> (
+    SocketAddr,
+    mpsc::UnboundedReceiver<RawIsolationEvent>,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener =
+        TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
+            .await
+            .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (events_tx, events_rx) = mpsc::unbounded_channel();
+    let (release_late_tx, release_late_rx) = oneshot::channel();
+
+    let task = tokio::spawn(async move {
+        let (mut sink_a, mut stream_a, _, _guard_a) = listener.accept().await.unwrap();
+        events_tx.send(RawIsolationEvent::Accepted(1)).unwrap();
+        let request_a = stream_a.recv().await.unwrap();
+        events_tx.send(RawIsolationEvent::Request(1)).unwrap();
+
+        let (mut sink_b, mut stream_b, _, _guard_b) = listener.accept().await.unwrap();
+        events_tx.send(RawIsolationEvent::Accepted(2)).unwrap();
+        let request_b = stream_b.recv().await.unwrap();
+        events_tx.send(RawIsolationEvent::Request(2)).unwrap();
+
+        release_late_rx.await.unwrap();
+        let _ = sink_a.send(request_a).await;
+        events_tx
+            .send(RawIsolationEvent::LateResponseAttempted)
+            .unwrap();
+        sink_b.send(request_b).await.unwrap();
+    });
+
+    (addr, events_rx, release_late_tx, task)
+}
+
+async fn expect_raw_event(
+    events: &mut mpsc::UnboundedReceiver<RawIsolationEvent>,
+    expected: RawIsolationEvent,
+) {
+    let actual = tokio::time::timeout(Duration::from_secs(1), events.recv())
+        .await
+        .expect("raw isolation event should arrive promptly")
+        .expect("raw isolation server should remain available");
+    assert_eq!(actual, expected);
+}
+
 /// Start an echo server bound to a *specific* address (used to bring a device
 /// up after the pool's pre-connect has already started retrying).
 async fn echo_server_on(addr: SocketAddr) {
@@ -112,52 +178,125 @@ fn pool_config_for(addr: SocketAddr) -> PoolConfig {
 }
 
 #[tokio::test]
-async fn get_and_return_cycle() {
-    let addr = echo_server().await;
+async fn pristine_raw_drop_retires_and_next_get_connects_fresh() {
+    let (addr, mut accepted) = tracked_echo_server().await;
     let pool = ConnectionPool::new(pool_config_for(addr));
 
+    let first = pool.get(addr).await.unwrap();
+    wait_for_accept(&mut accepted).await;
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(first);
     assert_eq!(pool.active_count(), 0);
     assert_eq!(pool.idle_count(), 0);
 
-    // Get a connection.
-    {
-        let mut conn = pool.get(addr).await.unwrap();
-        assert_eq!(pool.active_count(), 1);
-        assert_eq!(pool.idle_count(), 0);
-
-        // Use it.
-        let pdu = [0x03, 0x00, 0x00, 0x00, 0x01];
-        conn.sink().send(make_frame(1, 0xFF, &pdu)).await.unwrap();
-        let resp = conn.stream().recv().await.unwrap();
-        assert_eq!(&resp.pdu[..], &pdu);
-    }
-    // Dropped — should return to idle.
+    let second = pool.get(addr).await.unwrap();
+    wait_for_accept(&mut accepted).await;
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+    drop(second);
     assert_eq!(pool.active_count(), 0);
-    assert_eq!(pool.idle_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
 }
 
 #[tokio::test]
-async fn reuses_idle_connection() {
-    let addr = echo_server().await;
+async fn successful_raw_send_receive_drop_still_forces_fresh_connection() {
+    let (addr, mut accepted) = tracked_echo_server().await;
     let pool = ConnectionPool::new(pool_config_for(addr));
 
-    // Get and return.
-    {
-        let _conn = pool.get(addr).await.unwrap();
-    }
-    assert_eq!(pool.idle_count(), 1);
-
-    // Get again — should reuse the idle connection (no new TCP handshake).
     {
         let mut conn = pool.get(addr).await.unwrap();
-        assert_eq!(pool.active_count(), 1);
-        assert_eq!(pool.idle_count(), 0);
-
-        // Verify it still works.
+        wait_for_accept(&mut accepted).await;
         let pdu = [0x03, 0x00, 0x00, 0x00, 0x01];
         conn.sink().send(make_frame(1, 0xFF, &pdu)).await.unwrap();
         let resp = conn.stream().recv().await.unwrap();
         assert_eq!(&resp.pdu[..], &pdu);
+    }
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    let second = pool.get(addr).await.unwrap();
+    wait_for_accept(&mut accepted).await;
+    drop(second);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+}
+
+#[tokio::test]
+async fn raw_cancellation_after_send_keeps_late_response_from_crossing_borrowers() {
+    let (addr, mut events, release_late, server) = raw_late_response_server().await;
+    let pool = ConnectionPool::new(pool_config_for(addr));
+    let request_a = [0x03, 0x00, 0x00, 0x00, 0x01];
+    let request_b = [0x03, 0x00, 0x01, 0x00, 0x01];
+
+    let mut first = pool.get(addr).await.unwrap();
+    expect_raw_event(&mut events, RawIsolationEvent::Accepted(1)).await;
+    let first_operation = tokio::spawn(async move {
+        first
+            .sink()
+            .send(make_frame(1, 0xFF, &request_a))
+            .await
+            .unwrap();
+        std::future::pending::<()>().await;
+    });
+    expect_raw_event(&mut events, RawIsolationEvent::Request(1)).await;
+    first_operation.abort();
+    assert!(first_operation.await.unwrap_err().is_cancelled());
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    let mut second = pool.get(addr).await.unwrap();
+    expect_raw_event(&mut events, RawIsolationEvent::Accepted(2)).await;
+    second
+        .sink()
+        .send(make_frame(1, 0xFF, &request_b))
+        .await
+        .unwrap();
+    expect_raw_event(&mut events, RawIsolationEvent::Request(2)).await;
+    release_late.send(()).unwrap();
+    expect_raw_event(&mut events, RawIsolationEvent::LateResponseAttempted).await;
+
+    let response = second.stream().recv().await.unwrap();
+    assert_eq!(&response.pdu[..], &request_b);
+    drop(second);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn unwind_after_either_raw_half_access_releases_once_without_idle() {
+    let (addr, mut accepted) = tracked_echo_server().await;
+    let mut config = pool_config_for(addr);
+    config.max_connections = 2;
+    let pool = ConnectionPool::new(config);
+
+    for access_sink in [true, false] {
+        let sibling = pool.get(addr).await.unwrap();
+        wait_for_accept(&mut accepted).await;
+        let lease = pool.get(addr).await.unwrap();
+        wait_for_accept(&mut accepted).await;
+        assert_eq!(pool.active_count(), 2);
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let mut lease = lease;
+            if access_sink {
+                let _ = lease.sink();
+            } else {
+                let _ = lease.stream();
+            }
+            panic!("test unwind after raw access");
+        }));
+
+        assert!(unwind.is_err());
+        assert_eq!(
+            pool.active_count(),
+            1,
+            "the sibling charge proves unwind released exactly once"
+        );
+        drop(sibling);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
     }
 }
 
@@ -252,7 +391,7 @@ async fn invalidating_priority_releases_its_device_budget() {
     assert_eq!(pool.active_count(), 1);
     drop(second);
     assert_eq!(pool.active_count(), 0);
-    assert_eq!(pool.idle_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
 }
 
 #[tokio::test]
@@ -286,7 +425,7 @@ async fn repeated_invalidation_keeps_first_reason_and_releases_only_once() {
 
     drop(sibling);
     assert_eq!(pool.active_count(), 0);
-    assert_eq!(pool.idle_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
 }
 
 #[tokio::test]
@@ -342,7 +481,7 @@ async fn invalidation_forces_next_acquisition_to_open_fresh_connection() {
     assert_eq!(pool.active_count(), 1);
     drop(second);
     assert_eq!(pool.active_count(), 0);
-    assert_eq!(pool.idle_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
 }
 
 #[tokio::test]
@@ -363,7 +502,7 @@ async fn exhaustion_when_full() {
 }
 
 #[tokio::test]
-async fn zero_acquisition_timeout_checks_immediate_capacity_and_reuse() {
+async fn zero_acquisition_timeout_checks_immediate_capacity_after_raw_retirement() {
     let (addr, mut accepted) = tracked_echo_server().await;
     let mut config = pool_config_for(addr);
     config.max_connections = 1;
@@ -381,19 +520,16 @@ async fn zero_acquisition_timeout_checks_immediate_capacity_and_reuse() {
     assert!(matches!(result, Err(PoolError::Timeout)));
 
     drop(first);
-    let reused = pool
+    let fresh = pool
         .get_with_acquisition_timeout(addr, Duration::ZERO)
         .await
-        .expect("zero timeout should allow immediate idle reuse");
-    assert_eq!(reused.addr(), addr);
-    assert!(
-        accepted.try_recv().is_err(),
-        "idle reuse must not establish another TCP connection"
-    );
+        .expect("zero timeout should allow an immediate fresh reservation");
+    wait_for_accept(&mut accepted).await;
+    assert_eq!(fresh.addr(), addr);
 }
 
 #[tokio::test]
-async fn duration_max_allows_public_immediate_capacity_and_reuse() {
+async fn duration_max_allows_public_immediate_capacity_after_raw_retirement() {
     let (addr, mut accepted) = tracked_echo_server().await;
     let mut config = pool_config_for(addr);
     config.max_connections = 1;
@@ -408,15 +544,12 @@ async fn duration_max_allows_public_immediate_capacity_and_reuse() {
     assert_eq!(pool.idle_count(), 0);
 
     drop(first);
-    let reused = pool
+    let fresh = pool
         .get_with_acquisition_timeout(addr, Duration::MAX)
         .await
-        .expect("Duration::MAX must not panic before immediate idle reuse");
-    assert_eq!(reused.addr(), addr);
-    assert!(
-        accepted.try_recv().is_err(),
-        "idle reuse must not establish another TCP connection"
-    );
+        .expect("Duration::MAX must not panic before an immediate fresh reservation");
+    wait_for_accept(&mut accepted).await;
+    assert_eq!(fresh.addr(), addr);
 }
 
 #[tokio::test]
@@ -437,9 +570,10 @@ async fn duration_max_full_public_api_returns_timeout_without_accounting_change(
 
     drop(first);
     assert_eq!(pool.active_count(), 0);
-    assert_eq!(pool.idle_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
 }
 
+#[cfg(feature = "client")]
 #[tokio::test]
 async fn evicts_oldest_idle_non_priority() {
     let addr1 = echo_server().await;
@@ -449,11 +583,27 @@ async fn evicts_oldest_idle_non_priority() {
     config.max_connections = 2;
     let pool = ConnectionPool::new(config);
 
-    // Fill pool with 2 idle connections to addr1.
-    {
-        let _c1 = pool.get(addr1).await.unwrap();
-        let _c2 = pool.get(addr1).await.unwrap();
-    }
+    // Verdict-gated client returns create two reusable non-priority entries.
+    let first = pool
+        .get(addr1)
+        .await
+        .unwrap()
+        .into_reusable_client(ClientConfig::default())
+        .unwrap();
+    let second = pool
+        .get(addr1)
+        .await
+        .unwrap()
+        .into_reusable_client(ClientConfig::default())
+        .unwrap();
+    assert_eq!(
+        first.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
+    assert_eq!(
+        second.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
     assert_eq!(pool.idle_count(), 2);
 
     // Request to addr2 — should evict one idle for addr1.
@@ -474,6 +624,7 @@ async fn shutdown_rejects_new_requests() {
     assert!(matches!(result, Err(PoolError::ShuttingDown)));
 }
 
+#[cfg(feature = "client")]
 #[tokio::test]
 async fn priority_connections_not_evicted() {
     let priority_addr = echo_server().await;
@@ -488,14 +639,27 @@ async fn priority_connections_not_evicted() {
     }];
     let pool = ConnectionPool::new(config);
 
-    // One idle priority connection (drawn from the priority pool).
-    {
-        let _p = pool.get(priority_addr).await.unwrap();
-    }
-    // Fill the non-priority pool (budget = 1) with one idle connection.
-    {
-        let _a = pool.get(other_addr).await.unwrap();
-    }
+    // Verdict-gated client returns create one idle entry in each pool.
+    let priority = pool
+        .get(priority_addr)
+        .await
+        .unwrap()
+        .into_reusable_client(ClientConfig::default())
+        .unwrap();
+    let ordinary = pool
+        .get(other_addr)
+        .await
+        .unwrap()
+        .into_reusable_client(ClientConfig::default())
+        .unwrap();
+    assert_eq!(
+        priority.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
+    assert_eq!(
+        ordinary.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
     assert_eq!(pool.idle_count(), 2); // 1 priority + 1 non-priority
 
     // A new non-priority request fills the non-priority pool by evicting the
@@ -530,15 +694,11 @@ async fn priority_idle_does_not_starve_non_priority() {
             max_connections: 1,
         },
     ];
+    config.pre_connect = true;
     let pool = ConnectionPool::new(config);
 
-    // Saturate the priority pool with two idle (never-evicted) connections.
-    {
-        let _a = pool.get(p1).await.unwrap();
-    }
-    {
-        let _b = pool.get(p2).await.unwrap();
-    }
+    // Pre-connect creates the two idle (never-evicted) priority connections.
+    wait_for_idle_count(&pool, 2).await;
     assert_eq!(pool.idle_count(), 2);
 
     // Two non-priority requests must still succeed despite the full priority pool.
@@ -619,6 +779,39 @@ async fn pre_connect_retries_until_device_up() {
     );
 }
 
+#[tokio::test]
+async fn passively_validated_preconnected_entry_can_checkout_but_raw_drop_retires_it() {
+    let (addr, mut accepted) = tracked_echo_server().await;
+    let mut config = pool_config_for(addr);
+    config.pre_connect = true;
+    config.priority_devices = vec![PriorityDevice {
+        addr,
+        max_connections: 1,
+    }];
+    let pool = ConnectionPool::new(config);
+
+    wait_for_accept(&mut accepted).await;
+    wait_for_idle_count(&pool, 1).await;
+    let checked_out = pool.get(addr).await.unwrap();
+    assert!(
+        accepted.try_recv().is_err(),
+        "checkout should use the passively validated pre-connected entry"
+    );
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+
+    drop(checked_out);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    let fresh = pool.get(addr).await.unwrap();
+    wait_for_accept(&mut accepted).await;
+    assert_eq!(fresh.addr(), addr);
+    drop(fresh);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+}
+
 /// A refused address: bind an ephemeral port to learn it, then free it.
 async fn dead_addr() -> SocketAddr {
     let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -661,6 +854,7 @@ async fn connect_failure_releases_priority_budget() {
     assert!(matches!(result2, Err(PoolError::ConnectionFailed(_))));
 }
 
+#[cfg(feature = "client")]
 #[tokio::test]
 async fn failed_connect_preserves_evicted_idle() {
     let live = echo_server().await;
@@ -670,10 +864,17 @@ async fn failed_connect_preserves_evicted_idle() {
     config.max_connections = 1; // non-priority budget of 1
     let pool = ConnectionPool::new(config);
 
-    // One idle non-priority connection to `live` fills the pool.
-    {
-        let _c = pool.get(live).await.unwrap();
-    }
+    // A verdict-gated client return creates one idle non-priority connection.
+    let session = pool
+        .get(live)
+        .await
+        .unwrap()
+        .into_reusable_client(ClientConfig::default())
+        .unwrap();
+    assert_eq!(
+        session.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
     assert_eq!(pool.idle_count(), 1);
 
     // get(dead) requires eviction (pool full), but the connect fails. The

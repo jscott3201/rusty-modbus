@@ -60,9 +60,9 @@ signal result does not prove peer liveness or protocol synchronization. Input ca
 arrive after validation and before or during the next borrow. In particular, a
 late response that is already observable before checkout is retired rather than
 handed to the next borrower, but a response racing after validation remains
-possible. That race and raw lease drop's default return-to-idle behavior are why
-this work does not close F-017, F-018, or TCP-013 and does not add automatic
-reconnect or backoff behavior.
+possible for idle entries created by pre-connect or verdict-gated client return.
+Raw lease drop no longer creates such an idle entry. This work does not close
+F-017, F-018, or TCP-013 and does not add automatic reconnect or backoff behavior.
 
 Each passive retirement emits one `DEBUG` event with target
 `rusty_modbus_pool::idle_validation` and message
@@ -71,16 +71,20 @@ Each passive retirement emits one `DEBUG` event with target
 `trigger` (`checkout` or `health_sweep`), and boolean `is_priority`. Addresses,
 payload bytes, Unit IDs, and error text are not recorded.
 
-## Manual lease invalidation
+## Raw lease retirement and manual classification
 
-Checked-out connections return to the idle pool on drop by default. Callers must
-call `PooledConnection::invalidate` after a timeout or cancellation where I/O
-may have occurred, or whenever transport, framing, or protocol behavior leaves
-stream synchronization ambiguous and the lease must not be reused.
+**Compatibility break:** dropping a checked-out raw `PooledConnection` now
+always retires its exact TCP transport and releases its active capacity charge.
+Raw drop never inserts the connection into idle, even when the lease was never
+used or a raw send/receive completed successfully. A later `get` therefore opens
+a fresh TCP connection unless an independently created idle entry is available.
+Raw callers should expect more TCP handshakes and connection churn.
 
-Invalidation immediately releases the lease's pool capacity and retires its TCP
-connection instead of returning it to idle. The first caller-supplied
-`LeaseInvalidationReason` is retained and later invalidation calls are no-ops.
+`PooledConnection::invalidate` remains useful when a caller wants to retire
+immediately and classify an observed timeout, cancellation, transport failure,
+or protocol ambiguity. The first caller-supplied `LeaseInvalidationReason` is
+retained and later invalidation calls and drop are no-ops for accounting.
+Ordinary raw drop does not invent an invalidation reason.
 
 Direct callers using a checked-out lease's raw TCP halves can opt into a pure,
 conservative suggestion for a `TransportError`. Scope the transport borrow
@@ -106,9 +110,15 @@ if let Some(reason) = suggested_reason {
 This mechanism and classifier remain manual only. The helper neither invalidates
 the lease nor mutates pool state, and a `None` suggestion does not prove health,
 reusability, liveness, or protocol stream synchronization. Cancellation may
-require an explicit `LeaseInvalidationReason::Cancelled` because it may not
-produce a `TransportError`. This API therefore does not by itself resolve the
-tracked F-017 and F-018 recovery gaps.
+require an explicit `LeaseInvalidationReason::Cancelled` for classification
+because it may not produce a `TransportError`. Raw drop still retires when no
+classification is recorded. This API does not by itself resolve the tracked
+F-017 and F-018 recovery gaps.
+
+Each ordinary raw drop retirement emits one `DEBUG` event with target
+`rusty_modbus_pool::raw_lease` and message `pooled_raw_connection_retired`. Its
+bounded fields are `trigger` (`drop`), `raw_accessed`, and `is_priority`. No
+address, payload, Unit ID, invalidation reason, or error text is recorded.
 
 ## Retiring high-level client handoff
 
@@ -144,8 +154,10 @@ The fence prevents a timed-out, cancelled, or delayed response from one handed-
 off session from reaching a later pool borrower on the same TCP connection. It
 does not actively probe liveness, prove stream synchronization, or close the
 tracked F-017/F-018 recovery gaps. Without the `client` feature, the optional
-client dependency and handoff API are absent, and existing raw lease behavior
-is unchanged. The facade crate's `pool` feature enables this handoff.
+client dependency and both handoff APIs are absent. Raw drop retirement still
+applies. This handoff remains available after direct raw-half access because it
+can never return idle; prior raw access does not make starting another operation
+semantically safe. The facade crate's `pool` feature enables the handoffs.
 
 ## Verdict-gated reusable client handoff
 
@@ -158,7 +170,7 @@ use rusty_modbus_pool::{ClientConfig, ConnectionPool, PooledClientReturnOutcome}
 let session = pool
     .get(addr)
     .await?
-    .into_reusable_client(ClientConfig::default());
+    .into_reusable_client(ClientConfig::default())?;
 
 let values = session
     .client()
@@ -174,21 +186,30 @@ match session.shutdown_and_return().await {
 # }
 ```
 
-`PooledConnection::into_reusable_client` keeps ownership in the pool while
-exposing borrowed access to the normal high-level client API. Only consuming
-`shutdown_and_return` can reinsert the TCP connection, and only after graceful
-shutdown joins all client tasks and the final local `SessionReuseVerdict` is
-exactly `ReuseEligible`. Timeout, post-dispatch cancellation, malformed,
-mismatched, unknown, duplicate, or typed-invalid responses, reader failure,
-abort, an incomplete shutdown, wrapper drop, recovery failure, and pool shutdown
-all retire the connection and release capacity without inserting it into idle.
+`PooledConnection::into_reusable_client` accepts only a pristine lease and keeps
+ownership in the pool while exposing borrowed access to the normal high-level
+client API. Calling raw `sink()` or `stream()` first permanently disqualifies the
+lease and returns `ReusableClientHandoffError::RawTransportAccessed`; the rejected
+lease is retired. `addr()` does not disqualify it. An already-retired lease
+returns `ReusableClientHandoffError::LeaseUnavailable` rather than panicking.
+
+Only consuming `shutdown_and_return` can reinsert the TCP connection, and only
+after graceful shutdown joins all client tasks and the final local
+`SessionReuseVerdict` is exactly `ReuseEligible`. Timeout, post-dispatch
+cancellation, malformed, mismatched, unknown, duplicate, or typed-invalid
+responses, reader failure, abort, an incomplete shutdown, wrapper drop, recovery
+failure, and pool shutdown all retire the connection and release capacity
+without inserting it into idle.
 
 This is a local synchronization-safety contract, not a peer-health guarantee. It
 assumes a conforming peer does not invent a future duplicate after all valid
 requests complete. There is no active probe, quiet-period test, peer-liveness
 proof, or guarantee of permanent future silence. This opt-in return path does
 not close the tracked F-017/F-018 recovery gaps. The existing
-`into_retiring_client` method remains the conservative always-retiring default.
+`into_retiring_client` method remains an always-retiring option. For connection
+reuse, enable `client`, call `into_reusable_client(...)?` before any raw-half
+access, perform operations through `PooledClientSession::client`, then consume
+the wrapper with `shutdown_and_return`. Raw drop always retires.
 
 Each `PooledClientSession` lifecycle emits exactly one structured tracing event
 with target `rusty_modbus_pool::client_handoff` and message
