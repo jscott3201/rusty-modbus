@@ -2,9 +2,9 @@
   "schema_version": 1,
   "baseline": {
     "repository": "jscott3201/rusty-modbus",
-    "base_sha": "b2703b1cbef8d3c4a86caa56f987a17d39d85c27",
+    "base_sha": "47f723d2f5913847972192160baccdff735c9a3d",
     "base_ref": "dev",
-    "as_of": "2026-08-23",
+    "as_of": "2026-08-31",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
     "test_count": 54
@@ -2198,6 +2198,27 @@
       "implementation_refs": [
         {
           "path": "crates/rusty-modbus-pool/src/pool.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-pool/src/connection.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-pool/src/client_handoff.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-pool/src/health.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tcp/src/connect.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/session.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/lifecycle.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-client/src/transaction.rs"
         }
       ],
       "test_ids": [
@@ -2205,7 +2226,7 @@
         "spec_tcp_transport"
       ],
       "evidence_gap": {
-        "detail": "Pool recovery has tests, but idle and half-open health policy remains incomplete.",
+        "detail": "PRs #119-#127 add manual invalidation and classification, bounded acquisition, always-retiring and verdict-gated client handoff, bounded tracing, passive idle TCP observation, and raw Drop retirement. Active liveness and protocol proof, the post-observation race, automatic reconnect and replenishment after retirement, gateway composition, exact creation-bound evidence, public metrics, and benchmarks remain incomplete.",
         "owner": "maintainers",
         "follow_up": "PR-403"
       },
@@ -2214,13 +2235,13 @@
           "profile": "tcp-client",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Connection reuse and eviction are implemented without complete health recovery policy."
+          "reason": "Current return paths retire raw leases and unsafe or ambiguous client outcomes, while only pristine sessions with an exact ReuseEligible verdict and successful recovery can return to idle. Bounded acquisition and passive checkout and sweep observation are implemented, but active liveness and protocol proof, the post-observation race, reconnect and replenishment after retirement, exact creation-bound evidence, public metrics, and benchmarks remain incomplete."
         },
         {
           "profile": "gateway",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "Connection reuse and eviction are implemented without complete health recovery policy."
+          "reason": "The pool and client layers now provide conservative return paths, bounded acquisition, and passive idle observation, but equivalent gateway composition is not established. Active liveness and protocol proof, the post-observation race, reconnect and replenishment after retirement, exact creation-bound evidence, public metrics, and benchmarks also remain incomplete."
         }
       ]
     },
@@ -5093,7 +5114,8 @@
       "title": "Pooled connections are returned to idle even after timeout, framing error, or disconnect unless callers manually prevent reuse",
       "priority": "P1",
       "confidence": "Verified source finding",
-      "status": "open",
+      "status": "closed",
+      "status_reason": "Closed only for current implemented return paths: raw Drop retires, direct raw access cannot enter reusable handoff, and the always-retiring client handoff never returns idle. A pristine reusable session returns only after graceful shutdown yields exactly ReuseEligible and transport recovery succeeds; timeout, post-dispatch cancellation, protocol ambiguity, unknown or duplicate and typed-validation failures, reader failure, abort, incomplete shutdown, wrapper drop, recovery failure, and pool shutdown retire. Direct tests cover raw drop and fresh connect, raw-cancellation and client-timeout late-response isolation, and reusable timeout, post-dispatch cancellation, unknown-response, and typed-validation retirement; this closes cross-borrower reuse on those paths without claiming peer liveness or general connection health.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-403"
@@ -5107,7 +5129,8 @@
       "title": "Pool “health check” evicts old idle entries but does not establish socket/protocol health",
       "priority": "P2",
       "confidence": "Verified source finding",
-      "status": "open",
+      "status": "mitigated",
+      "status_reason": "Mitigated by passive checkout and sweep inspection that catches decoder-buffered or socket-queued bytes, peer EOF, socket errors, and mismatched halves without consuming bytes, waiting, or writing. NoAdverseSignal proves neither liveness nor protocol synchronization or future silence; the post-observation race remains, and active probes, reconnect and replenishment after retirement, gateway integration, public metrics, and broader evidence remain outstanding.",
       "owner": "maintainers",
       "primary_closure_packages": [
         "PR-403"
