@@ -26,6 +26,8 @@ fn spec_4_2_1_pre_connect_default() {
     let config = PoolConfig::default();
     // Pre-connect to priority devices is recommended
     assert!(config.pre_connect);
+    // Standing recovery is an explicit opt-in compatibility policy.
+    assert!(!config.priority_replenishment);
 }
 
 // ── Backoff Config ────────────────────────────────────────────────
