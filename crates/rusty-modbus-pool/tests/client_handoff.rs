@@ -2,9 +2,10 @@
 
 #![cfg(feature = "client")]
 
-use std::future::pending;
+use std::future::{Future, pending, poll_fn};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -20,6 +21,133 @@ use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_types::{MbapHeader, UnitId};
 use tokio::sync::{Barrier, mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tracing::field::{Field, Visit};
+use tracing::{Event, Level, Subscriber, dispatcher};
+use tracing_subscriber::layer::Context;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{Layer, registry};
+
+const COMPLETION_TARGET: &str = "rusty_modbus_pool::client_handoff";
+const COMPLETION_MESSAGE: &str = "pooled_client_session_completed";
+
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedCompletion {
+    level: Level,
+    message: String,
+    outcome: String,
+    trigger: String,
+    verdict: String,
+    retirement_reason: String,
+    is_priority: bool,
+}
+
+#[derive(Default)]
+struct CompletionVisitor {
+    message: Option<String>,
+    outcome: Option<String>,
+    trigger: Option<String>,
+    verdict: Option<String>,
+    retirement_reason: Option<String>,
+    is_priority: Option<bool>,
+}
+
+impl Visit for CompletionVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        let slot = match field.name() {
+            "outcome" => &mut self.outcome,
+            "trigger" => &mut self.trigger,
+            "verdict" => &mut self.verdict,
+            "retirement_reason" => &mut self.retirement_reason,
+            _ => return,
+        };
+        *slot = Some(value.to_owned());
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        if field.name() == "is_priority" {
+            self.is_priority = Some(value);
+        }
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = Some(format!("{value:?}"));
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct CompletionCapture {
+    events: Arc<Mutex<Vec<CapturedCompletion>>>,
+}
+
+impl CompletionCapture {
+    fn dispatch(&self) -> tracing::Dispatch {
+        tracing::Dispatch::new(registry().with(self.clone()))
+    }
+
+    fn assert_events(&self, expected: &[CapturedCompletion]) {
+        assert_eq!(self.events.lock().unwrap().as_slice(), expected);
+    }
+}
+
+impl<S> Layer<S> for CompletionCapture
+where
+    S: Subscriber,
+{
+    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+        if event.metadata().target() != COMPLETION_TARGET {
+            return;
+        }
+
+        let mut visitor = CompletionVisitor::default();
+        event.record(&mut visitor);
+        self.events.lock().unwrap().push(CapturedCompletion {
+            level: *event.metadata().level(),
+            message: visitor.message.expect("completion message field"),
+            outcome: visitor.outcome.expect("completion outcome field"),
+            trigger: visitor.trigger.expect("completion trigger field"),
+            verdict: visitor.verdict.expect("completion verdict field"),
+            retirement_reason: visitor
+                .retirement_reason
+                .expect("completion retirement reason field"),
+            is_priority: visitor.is_priority.expect("completion priority field"),
+        });
+    }
+}
+
+fn completion(
+    level: Level,
+    outcome: &str,
+    trigger: &str,
+    verdict: &str,
+    retirement_reason: &str,
+    is_priority: bool,
+) -> CapturedCompletion {
+    CapturedCompletion {
+        level,
+        message: COMPLETION_MESSAGE.to_owned(),
+        outcome: outcome.to_owned(),
+        trigger: trigger.to_owned(),
+        verdict: verdict.to_owned(),
+        retirement_reason: retirement_reason.to_owned(),
+        is_priority,
+    }
+}
+
+async fn with_capture<F>(capture: &CompletionCapture, future: F) -> F::Output
+where
+    F: Future,
+{
+    let dispatch = capture.dispatch();
+    let mut future = std::pin::pin!(future);
+    poll_fn(|context| dispatcher::with_default(&dispatch, || future.as_mut().poll(context))).await
+}
+
+fn drop_with_capture<T>(capture: &CompletionCapture, value: T) {
+    let dispatch = capture.dispatch();
+    dispatcher::with_default(&dispatch, || drop(value));
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum ServerEvent {
@@ -374,10 +502,19 @@ async fn healthy_reusable_sessions_reuse_one_accept_wake_waiter_and_keep_exact_a
         },
     )
     .await;
+    let completion_capture = CompletionCapture::default();
     assert_eq!(
-        first.shutdown_and_return().await,
+        with_capture(&completion_capture, first.shutdown_and_return()).await,
         PooledClientReturnOutcome::ReturnedToIdle
     );
+    completion_capture.assert_events(&[completion(
+        Level::DEBUG,
+        "returned_to_idle",
+        "shutdown_and_return",
+        "reuse_eligible",
+        "none",
+        false,
+    )]);
     assert_eq!(pool.active_count(), 0);
     assert_eq!(pool.idle_count(), 1);
 
@@ -457,12 +594,21 @@ async fn reusable_timeout_retires_and_forces_a_fresh_accept() {
         },
     )
     .await;
+    let completion_capture = CompletionCapture::default();
     assert_eq!(
-        session.shutdown_and_return().await,
+        with_capture(&completion_capture, session.shutdown_and_return()).await,
         PooledClientReturnOutcome::Retired(SessionReuseVerdict::Retire(
             SessionRetirementReason::RequestTimedOut
         ))
     );
+    completion_capture.assert_events(&[completion(
+        Level::DEBUG,
+        "retired",
+        "shutdown_and_return",
+        "retire",
+        "request_timed_out",
+        false,
+    )]);
     assert_eq!(pool.active_count(), 0);
     assert_eq!(pool.idle_count(), 0);
 
@@ -668,7 +814,16 @@ async fn dropping_reusable_session_without_return_retires_and_releases_capacity(
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
     assert_eq!(pool.active_count(), 1);
 
-    drop(session);
+    let completion_capture = CompletionCapture::default();
+    drop_with_capture(&completion_capture, session);
+    completion_capture.assert_events(&[completion(
+        Level::DEBUG,
+        "retired",
+        "wrapper_drop",
+        "not_quiescent",
+        "none",
+        false,
+    )]);
     tokio::time::timeout(Duration::from_secs(1), async {
         while pool.active_count() != 0 {
             tokio::task::yield_now().await;
@@ -676,6 +831,87 @@ async fn dropping_reusable_session_without_return_retires_and_releases_capacity(
     })
     .await
     .expect("aborted reader task should release the final vault owner");
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn clean_client_shutdown_then_wrapper_drop_retires_with_eligible_verdict() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+
+    session.client().shutdown().await;
+    assert_eq!(
+        session.client().session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
+    let completion_capture = CompletionCapture::default();
+    drop_with_capture(&completion_capture, session);
+    completion_capture.assert_events(&[completion(
+        Level::DEBUG,
+        "retired",
+        "wrapper_drop",
+        "reuse_eligible",
+        "none",
+        false,
+    )]);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn cancelling_consuming_return_future_emits_once_and_retires_exact_capacity() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    assert_eq!(pool.active_count(), 1);
+
+    let completion_capture = CompletionCapture::default();
+    let dispatch = completion_capture.dispatch();
+    let mut returning = Box::pin(session.shutdown_and_return());
+    let first_poll = poll_fn(|context| {
+        Poll::Ready(dispatcher::with_default(&dispatch, || {
+            returning.as_mut().poll(context)
+        }))
+    })
+    .await;
+    assert!(
+        first_poll.is_pending(),
+        "shutdown must yield to its spawned coordinator"
+    );
+    dispatcher::with_default(&dispatch, || drop(returning));
+    completion_capture.assert_events(&[completion(
+        Level::DEBUG,
+        "retired",
+        "wrapper_drop",
+        "not_quiescent",
+        "none",
+        false,
+    )]);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while pool.active_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled return should release its exact active charge");
     assert_eq!(pool.idle_count(), 0);
 
     acquire_fresh_and_retire(&pool, addr, &mut events).await;
@@ -694,10 +930,19 @@ async fn pool_shutdown_before_reusable_return_wins_without_idle_resurrection() {
     expect_event(&mut events, ServerEvent::Accepted(1)).await;
 
     pool.shutdown();
+    let completion_capture = CompletionCapture::default();
     assert_eq!(
-        session.shutdown_and_return().await,
+        with_capture(&completion_capture, session.shutdown_and_return()).await,
         PooledClientReturnOutcome::PoolShuttingDown
     );
+    completion_capture.assert_events(&[completion(
+        Level::DEBUG,
+        "pool_shutting_down",
+        "shutdown_and_return",
+        "reuse_eligible",
+        "none",
+        false,
+    )]);
     assert_eq!(pool.active_count(), 0);
     assert_eq!(pool.idle_count(), 0);
     assert!(matches!(pool.get(addr).await, Err(PoolError::ShuttingDown)));
@@ -784,10 +1029,19 @@ async fn priority_reusable_return_preserves_separate_budget_and_exact_active_cha
         },
     )
     .await;
+    let completion_capture = CompletionCapture::default();
     assert_eq!(
-        priority.shutdown_and_return().await,
+        with_capture(&completion_capture, priority.shutdown_and_return()).await,
         PooledClientReturnOutcome::ReturnedToIdle
     );
+    completion_capture.assert_events(&[completion(
+        Level::DEBUG,
+        "returned_to_idle",
+        "shutdown_and_return",
+        "reuse_eligible",
+        "none",
+        true,
+    )]);
     assert_eq!(
         pool.active_count(),
         1,

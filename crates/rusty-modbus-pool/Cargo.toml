@@ -19,6 +19,7 @@ rusty-modbus-client = { path = "../rusty-modbus-client", version = "0.1.1", opti
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 parking_lot = "0.12"
 thiserror = "2"
+tracing = { version = "0.1.44", features = ["attributes"] }
 
 [features]
 default = []
@@ -28,6 +29,7 @@ client = ["dep:rusty-modbus-client"]
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 rusty-modbus-types = { path = "../rusty-modbus-types" }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 
 [package.metadata.docs.rs]
 all-features = true
