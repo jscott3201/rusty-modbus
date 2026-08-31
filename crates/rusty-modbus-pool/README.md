@@ -41,6 +41,30 @@ waiters, which return `PoolError::ShuttingDown` when shutdown is observed.
 while a demand or initial priority pre-connect TCP connector is pending. It does
 not report idle connections or expose a separate public pending metric.
 
+## Pool shutdown and bounded quiescence
+
+`ConnectionPool::shutdown()` remains synchronous and nonblocking. It
+idempotently seals admission, clears idle connections, wakes capacity waiters,
+and requests cancellation of the pool-owned health-check and initial pre-connect
+tasks. `Drop` calls only this synchronous path, so dropping a pool does not wait
+and remains safe without an active runtime.
+
+Await `ConnectionPool::shutdown_and_wait()` inside a live Tokio runtime when the
+caller needs proof that those pool-owned tasks have terminated and their
+cancellation destructors have run. One lazy detached coordinator joins all of
+their handles and publishes sticky completion. Concurrent callers share that
+completion, repeated calls return promptly, and cancelling any public waiter
+does not detach the handles or prevent a later caller from observing completion.
+This also proves rollback of any reservation owned by a cancelled initial
+pre-connect task.
+
+The wait boundary deliberately excludes checked-out raw leases, reusable client
+sessions, and caller-owned pending demand connector futures. It neither waits
+for them nor proves that `active_count()` or all pool-accounting references have
+reached zero. Runtime teardown can cancel runtime tasks and therefore cannot
+promise this asynchronous completion; use the nonblocking `shutdown()`/`Drop`
+path there.
+
 ## Initial priority pre-connect
 
 Pre-connect is a one-time initial warm-up, not standing replenishment. Pool
