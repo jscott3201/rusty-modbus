@@ -180,10 +180,7 @@ fn pool_config_for(addr: SocketAddr) -> PoolConfig {
 fn replenishing_priority_config(addr: SocketAddr, max_connections: usize) -> PoolConfig {
     PoolConfig {
         priority_replenishment: true,
-        priority_devices: vec![PriorityDevice {
-            addr,
-            max_connections,
-        }],
+        priority_devices: vec![PriorityDevice::new(addr, max_connections)],
         ..pool_config_for(addr)
     }
 }
@@ -377,10 +374,7 @@ async fn transport_error_suggestions_do_not_mutate_a_checked_out_lease() {
 async fn invalidating_priority_releases_its_device_budget() {
     let addr = echo_server().await;
     let mut config = pool_config_for(addr);
-    config.priority_devices = vec![PriorityDevice {
-        addr,
-        max_connections: 1,
-    }];
+    config.priority_devices = vec![PriorityDevice::new(addr, 1)];
     let pool = ConnectionPool::new(config);
     let mut first = pool.get(addr).await.unwrap();
 
@@ -644,10 +638,7 @@ async fn priority_connections_not_evicted() {
     // Non-priority budget of 1; priority device has its own separate budget.
     let mut config = pool_config_for(priority_addr);
     config.max_connections = 1;
-    config.priority_devices = vec![PriorityDevice {
-        addr: priority_addr,
-        max_connections: 1,
-    }];
+    config.priority_devices = vec![PriorityDevice::new(priority_addr, 1)];
     let pool = ConnectionPool::new(config);
 
     // Verdict-gated client returns create one idle entry in each pool.
@@ -695,16 +686,7 @@ async fn priority_idle_does_not_starve_non_priority() {
 
     let mut config = pool_config_for(p1);
     config.max_connections = 2; // non-priority budget
-    config.priority_devices = vec![
-        PriorityDevice {
-            addr: p1,
-            max_connections: 1,
-        },
-        PriorityDevice {
-            addr: p2,
-            max_connections: 1,
-        },
-    ];
+    config.priority_devices = vec![PriorityDevice::new(p1, 1), PriorityDevice::new(p2, 1)];
     config.pre_connect = true;
     let pool = ConnectionPool::new(config);
 
@@ -729,10 +711,7 @@ async fn priority_device_respects_per_device_cap() {
     let p = echo_server().await;
     let mut config = pool_config_for(p);
     config.max_connections = 64;
-    config.priority_devices = vec![PriorityDevice {
-        addr: p,
-        max_connections: 2,
-    }];
+    config.priority_devices = vec![PriorityDevice::new(p, 2)];
     let pool = ConnectionPool::new(config);
 
     let _c1 = pool.get(p).await.unwrap();
@@ -763,10 +742,7 @@ async fn pre_connect_retries_until_device_up() {
         max_delay: Duration::from_millis(50),
         multiplier: 2.0,
     };
-    config.priority_devices = vec![PriorityDevice {
-        addr,
-        max_connections: 1,
-    }];
+    config.priority_devices = vec![PriorityDevice::new(addr, 1)];
     let pool = ConnectionPool::new(config);
 
     // Pre-connect is now failing (connection refused) and retrying with backoff.
@@ -795,10 +771,7 @@ async fn passively_validated_preconnected_entry_can_checkout_but_raw_drop_retire
     let (addr, mut accepted) = tracked_echo_server().await;
     let mut config = pool_config_for(addr);
     config.pre_connect = true;
-    config.priority_devices = vec![PriorityDevice {
-        addr,
-        max_connections: 1,
-    }];
+    config.priority_devices = vec![PriorityDevice::new(addr, 1)];
     let pool = ConnectionPool::new(config);
 
     wait_for_accept(&mut accepted).await;
@@ -915,10 +888,7 @@ async fn connect_failure_releases_priority_budget() {
     let dead = dead_addr().await;
     let mut config = pool_config_for(dead);
     config.pre_connect = false;
-    config.priority_devices = vec![PriorityDevice {
-        addr: dead,
-        max_connections: 1,
-    }];
+    config.priority_devices = vec![PriorityDevice::new(dead, 1)];
     let pool = ConnectionPool::new(config);
 
     let result = pool.get(dead).await;
@@ -982,10 +952,7 @@ async fn dropped_pool_aborts_pre_connect_promptly() {
         max_delay: Duration::from_secs(10),
         multiplier: 1.0,
     };
-    config.priority_devices = vec![PriorityDevice {
-        addr: dead,
-        max_connections: 1,
-    }];
+    config.priority_devices = vec![PriorityDevice::new(dead, 1)];
     let pool = ConnectionPool::new(config);
 
     // Let the first connect fail and the task park in its 10s backoff sleep.

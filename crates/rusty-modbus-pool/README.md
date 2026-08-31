@@ -59,14 +59,17 @@ return promptly, and cancelling any public waiter does not detach the handles or
 prevent a later caller from observing completion. This also proves cooperative
 exit and rollback of any reservation owned by a stopped priority-maintenance
 task, whether it is connecting, backing off, or waiting on the standing-policy
-fallback.
+fallback. It also includes a blocked pool-owned priority probe: cooperative stop
+cancels the read, aborts its client, and then waits without further cancellation
+selection for reusable-session shutdown to join the client reader and deadline
+tasks before maintenance is considered quiescent.
 
-The wait boundary deliberately excludes checked-out raw leases, reusable client
-sessions, and caller-owned pending demand connector futures. It neither waits
-for them nor proves that `active_count()` or all pool-accounting references have
-reached zero. Runtime teardown can cancel runtime tasks and therefore cannot
-promise this asynchronous completion; use the nonblocking `shutdown()`/`Drop`
-path there.
+The wait boundary deliberately excludes caller-owned checked-out raw leases,
+reusable client sessions, and pending demand connector futures. Pool-owned probe
+sessions are included. The boundary neither waits for excluded work nor proves
+that `active_count()` or all pool-accounting references have reached zero.
+Runtime teardown can cancel runtime tasks and therefore cannot promise this
+asynchronous completion; use the nonblocking `shutdown()`/`Drop` path there.
 
 ## Priority warm-up and opt-in replenishment
 
@@ -83,18 +86,22 @@ not retired. The configuration truth table is:
 | `false` | `true` | Standing initial warm-up plus one-idle replenishment |
 | `true` | `true` | The same single standing task per distinct address; no duplicate one-shot task |
 
+This table assumes `PriorityDevice::probe` is `None`. A configured probe keeps
+the same integrated task alive but does not enable pre-connect or replenishment.
+
 `PoolConfig` is a public struct, so adding this field is source-breaking for a
 downstream exhaustive struct literal. Set `priority_replenishment` explicitly or
 use `..PoolConfig::default()` when constructing the configuration.
 
 Duplicate `PriorityDevice` addresses start at most one task, and the first
-matching entry's `max_connections` remains authoritative. A first cap of zero
-starts no task or connector. Before every TCP attempt, maintenance reserves one
-charge under the same `PoolInner` lock and per-device budget used by demand
-acquisition. It never evicts an active connection or steals capacity. At the cap
-with no idle entry, a standing task waits without running the connector; checkout,
-retirement, failed demand establishment, reusable-client completion, passive
-health retirement, or shutdown broadcasts a state-change hint for reevaluation.
+matching entry's `max_connections` and feature-gated probe configuration remain
+authoritative. A first cap of zero starts no task, connector, or probe. Before
+every TCP attempt, maintenance reserves one charge under the same `PoolInner`
+lock and per-device budget used by demand acquisition. It never evicts an active
+connection or steals capacity. At the cap with no idle entry, a standing task
+waits without running the connector; checkout, retirement, failed demand
+establishment, reusable-client completion, passive health retirement, or
+shutdown broadcasts a state-change hint for reevaluation.
 
 Connector failure drops the exact reservation, wakes waiters, and then always
 observes the configured exponential backoff before retrying. Any successful TCP
@@ -109,8 +116,10 @@ When the target is already met or capacity is unavailable, standing maintenance
 waits for either a registered capacity notification or one fresh safety fallback
 using `health_check_interval`. Only this replenishment fallback is locally
 clamped to a 1ms nonzero floor to avoid spinning; health-task interval behavior is
-unchanged. The fallback performs no active probe or socket write. Neither it nor
-an idle entry proves peer liveness or protocol synchronization.
+unchanged. The fallback itself performs no socket write. Unless the separate
+active-probe option below is configured, neither it nor an idle entry sends a
+request. Neither mechanism proves permanent peer liveness or future protocol
+synchronization.
 
 With replenishment disabled, `pre_connect` retains its one-time behavior. It
 retries initial connection failures with backoff but exits after one successful
@@ -118,6 +127,93 @@ warm-up or when another path makes the one-idle reservation predicate false.
 Later checkout or retirement does not restart it. In either mode, a pending
 maintenance attempt consumes the per-address budget, so a racing fail-fast `get`
 can return `PoolError::Exhausted`.
+
+## Default-off priority active probes (`client` feature)
+
+With the pool's `client` feature enabled, each configured `PriorityDevice` has a
+public `probe: Option<PriorityProbeConfig>` field. It is `None` when constructed
+with `PriorityDevice::new`, so active probing is always explicit and default-off:
+
+```rust,no_run
+use std::time::Duration;
+use rusty_modbus_pool::{
+    PriorityDevice, PriorityProbeConfig, PriorityProbeOperation,
+};
+use rusty_modbus_types::{Address, Quantity, UnitId};
+
+# fn configured(addr: std::net::SocketAddr) -> Result<PriorityDevice, Box<dyn std::error::Error>> {
+let mut device = PriorityDevice::new(addr, 2);
+device.probe = Some(PriorityProbeConfig::new(
+    PriorityProbeOperation::ReadHoldingRegisters,
+    UnitId(1),
+    Address(0),
+    Quantity(1),
+    Duration::from_secs(30),
+    Duration::from_secs(2),
+)?);
+# Ok(device)
+# }
+```
+
+Only read-only FC01, FC02, FC03, and FC04 are supported. Construction rejects
+broadcast/reserved Unit IDs, function-specific quantities outside `1..=2000`
+for FC01/02 or `1..=125` for FC03/04, address spans beyond `0x10000`, and zero
+intervals or timeouts. Unit IDs `1..=247` and the direct-TCP ID `0xff` are valid;
+address `0xffff` with quantity 1 is valid. Validation errors contain only bounded
+operation and numeric/configuration data.
+
+The first attempt is due only after one full interval from maintenance-task
+start. Every completed or skipped due attempt schedules one fresh interval from
+that completion/skip time, so there is no catch-up burst. Capacity notifications
+and replenishment fallback wakes do not postpone an existing deadline. The first
+duplicate address owns both cap and probe policy, and a first cap of zero suppresses
+all background work. A probe starts the existing one-per-address maintenance task;
+it never adds a second task or an in-progress map.
+
+A due attempt can claim only an idle connection for its configured priority
+address. Under the pool lock it first performs the same non-consuming passive
+inspection used by checkout. Adverse entries retire through the bounded passive
+retirement path. One clean entry is removed and transferred from idle to active
+accounting atomically, so checkout cannot claim the same transport. The integrated
+task serializes this claim with maintenance connectors. Probe-only mode
+(`pre_connect=false`, `priority_replenishment=false`) never opens a connection; it
+can probe only an idle entry later created and returned by demand. One-shot warm-up
+does not become standing replenishment merely because a probe is configured.
+
+Each attempt uses the configured Unit ID and timeout, `max_in_flight = 1`, no
+retries, and a client shutdown timeout equal to the probe timeout. It executes
+exactly one typed read and discards the values. Any operation error, including a
+valid Modbus exception, conservatively aborts and retires the transport. A
+successful read still returns the connection only after graceful client shutdown,
+an exact local `ReuseEligible` verdict, complete transport recovery, and an atomic
+pool-shutdown check. Standing replenishment may replace a retired probe transport;
+probe-only and one-shot modes do not silently gain that policy.
+
+These reads have real network, device-processing, and data-table access cost.
+Enable them only for explicitly configured TCP priority targets whose selected
+addresses are safe to read at the requested cadence. A successful probe means one
+validated read plus a local reusable-session verdict. It is not permanent
+liveness, proof of future silence, a general protocol-synchronization guarantee,
+or a health threshold. Probes never target checked-out sessions and add no metric,
+gateway, TLS, RTU, Python, CLI, write, or retry behavior.
+
+Enabling `client` adds this public field, so downstream client-enabled exhaustive
+`PriorityDevice` literals must now specify `probe: None` (or `Some(...)`). Use
+`PriorityDevice::new(addr, max_connections)` for source that should compile with
+the same constructor across feature sets. Without `client`, the optional client
+and types dependencies, probe exports, probe field, and active behavior are
+absent; the prior two-field `PriorityDevice` struct shape remains.
+
+Every attempted probe emits one `DEBUG` event under
+`rusty_modbus_pool::priority_probe` with message `priority_probe_completed`.
+Its bounded fields are `operation`, `probe_result` (`success`, `error`, or
+`stopped`), `pool_outcome`, `verdict`, `retirement_reason`, and
+`is_priority=true`. It records no socket address, Unit ID, data address, quantity,
+response value, payload, credential, or error display text. Passive rejection at
+a due instant is a skipped attempt rather than an active attempt; its retirement
+uses `rusty_modbus_pool::idle_validation` with trigger `priority_probe`.
+
+This opt-in behavior does not close TCP-013, PR-403, or F-018.
 
 ## Passive idle TCP validation
 
@@ -143,8 +239,8 @@ signal result does not prove peer liveness or protocol synchronization. Input ca
 arrive after validation and before or during the next borrow. In particular, a
 late response that is already observable before checkout is retired rather than
 handed to the next borrower, but a response racing after validation remains
-possible for idle entries created by priority maintenance or verdict-gated
-client return.
+possible for idle entries created by priority maintenance, verdict-gated client
+return, or a successful active probe.
 Raw lease drop no longer creates such an idle entry. Across the current
 implemented return paths, raw Drop retirement, always-retiring client handoff,
 and exact verdict-gated reusable return close F-017's cross-borrower reuse
@@ -158,8 +254,9 @@ Each passive retirement emits one `DEBUG` event with target
 `rusty_modbus_pool::idle_validation` and message
 `idle_tcp_connection_passively_retired`. Its bounded fields are `reason`
 (`queued_input`, `peer_closed`, `socket_error`, `mismatched_halves`, or `other`),
-`trigger` (`checkout` or `health_sweep`), and boolean `is_priority`. Addresses,
-payload bytes, Unit IDs, and error text are not recorded.
+`trigger` (`checkout`, `health_sweep`, or feature-gated `priority_probe`), and
+boolean `is_priority`. Addresses, payload bytes, Unit IDs, and error text are not
+recorded.
 
 ## Raw lease retirement and manual classification
 
@@ -297,9 +394,11 @@ without inserting it into idle.
 
 This is a local synchronization-safety contract, not a peer-health guarantee. It
 assumes a conforming peer does not invent a future duplicate after all valid
-requests complete. There is no active probe, quiet-period test, peer-liveness
-proof, or guarantee of permanent future silence. This opt-in return path does
-not establish general connection health. Together with raw Drop and the
+requests complete. This handoff alone performs no active probe or quiet-period
+test and provides no peer-liveness proof or guarantee of permanent future
+silence. A separately configured priority probe has only the bounded meaning
+documented above. This opt-in return path does not establish general connection
+health. Together with raw Drop and the
 always-retiring handoff, its exact verdict and recovery gate closes F-017 for
 current implemented return paths. F-018 remains mitigated, and TCP-013 remains
 open for the passive-observation race and outstanding liveness, synchronization,
@@ -324,7 +423,7 @@ label (`none` when inapplicable and `other` for a future unknown reason); and
 `is_priority` is a boolean. No request, address, Unit ID, error text, or other
 high-cardinality value is recorded.
 
-Tracing is observability only. It adds no public counters, health probe,
+This client-handoff tracing is observability only. It adds no public counters,
 liveness proof, automatic raw-lease invalidation, or recovery/backoff policy,
 and it is not evidence that any return path is safe by itself. F-017 closure
 comes from the combined current return-path behavior; F-018 remains mitigated
