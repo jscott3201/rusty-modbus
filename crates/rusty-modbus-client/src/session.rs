@@ -58,6 +58,10 @@ pub enum SessionRetirementReason {
     ReaderDisconnected,
     /// The background reader observed a non-idle transport error.
     ReaderTransportFailed,
+    /// A correlated response contained invalid typed data, shape, or continuation state.
+    TypedResponseDataInvalid,
+    /// A correlated write response did not echo the required request fields.
+    TypedResponseEchoMismatch,
 }
 
 impl SessionRetirementReason {
@@ -80,6 +84,8 @@ impl SessionRetirementReason {
                 Self::ResponseChannelClosed => 13,
                 Self::ReaderDisconnected => 14,
                 Self::ReaderTransportFailed => 15,
+                Self::TypedResponseDataInvalid => 16,
+                Self::TypedResponseEchoMismatch => 17,
             }
     }
 
@@ -101,6 +107,8 @@ impl SessionRetirementReason {
             13 => Self::ResponseChannelClosed,
             14 => Self::ReaderDisconnected,
             15 => Self::ReaderTransportFailed,
+            16 => Self::TypedResponseDataInvalid,
+            17 => Self::TypedResponseEchoMismatch,
             _ => unreachable!("reuse-safety authority stored an invalid state"),
         }
     }

@@ -272,6 +272,31 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         self.reuse_safety.verdict()
     }
 
+    /// Retire on validation errors produced only after a correlated typed response.
+    pub(crate) fn finish_typed_response<T>(
+        &self,
+        result: Result<T, ClientError>,
+    ) -> Result<T, ClientError> {
+        let reason = match result.as_ref().err() {
+            Some(ClientError::UnexpectedResponseEcho { .. }) => {
+                Some(SessionRetirementReason::TypedResponseEchoMismatch)
+            }
+            Some(
+                ClientError::Codec(_)
+                | ClientError::ShortResponse { .. }
+                | ClientError::UnexpectedResponseLength { .. }
+                | ClientError::UnexpectedResponsePadding { .. }
+                | ClientError::InvalidDeviceIdentificationContinuation { .. }
+                | ClientError::DeviceIdentificationPaginationLimit { .. },
+            ) => Some(SessionRetirementReason::TypedResponseDataInvalid),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            self.reuse_safety.retire(reason);
+        }
+        result
+    }
+
     /// Gracefully seal admission and drain already-admitted operations.
     ///
     /// The configured [`ClientConfig::shutdown_timeout`] starts when admission

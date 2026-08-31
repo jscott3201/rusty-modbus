@@ -383,6 +383,15 @@ async fn read_holding_registers() {
         .unwrap();
 
     assert_eq!(regs, vec![0x1234, 0x5678]);
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::NotQuiescent
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
 }
 
 #[tokio::test]
@@ -1849,6 +1858,15 @@ async fn invalid_request_arguments_return_encode_errors_before_send() {
         7,
         245,
     );
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::NotQuiescent
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2130,6 +2148,15 @@ async fn short_coil_response_is_error_not_panic() {
         matches!(result, Err(ClientError::ShortResponse { .. })),
         "expected ShortResponse, got {result:?}"
     );
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::TypedResponseDataInvalid)
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::TypedResponseDataInvalid)
+    );
 }
 
 /// A response whose function code does not echo the request (but lands on the
@@ -2300,6 +2327,15 @@ async fn write_single_register_rejects_mismatched_echo() {
         "address",
         0x0001,
         0x0002,
+    );
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::TypedResponseEchoMismatch)
+    );
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::TypedResponseEchoMismatch)
     );
 }
 

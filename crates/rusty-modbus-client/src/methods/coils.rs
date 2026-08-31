@@ -47,13 +47,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::ReadCoils(rc) => {
-                validate_bit_response_shape(
+                self.finish_typed_response(validate_bit_response_shape(
                     FunctionCode::ReadCoils.code(),
                     quantity,
                     &rc.coil_status,
-                )?;
+                ))?;
                 let mut coils = Vec::with_capacity(quantity as usize);
                 for i in 0..quantity as usize {
                     coils.push(rc.coil(i));
@@ -64,7 +64,8 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Read discrete inputs (FC 0x02).
@@ -98,13 +99,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::ReadDiscreteInputs(rd) => {
-                validate_bit_response_shape(
+                self.finish_typed_response(validate_bit_response_shape(
                     FunctionCode::ReadDiscreteInputs.code(),
                     quantity,
                     &rd.input_status,
-                )?;
+                ))?;
                 let mut inputs = Vec::with_capacity(quantity as usize);
                 for i in 0..quantity as usize {
                     inputs.push(rd.coil(i));
@@ -115,7 +116,8 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Write a single coil (FC 0x05).
@@ -149,16 +151,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::WriteSingleCoil(resp) => {
-                expect_echo("address", address, resp.address.0)?;
+                self.finish_typed_response(expect_echo("address", address, resp.address.0))?;
                 expect_echo("value", req.value.to_wire(), resp.value.to_wire())
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Write multiple coils (FC 0x0F).
@@ -205,16 +208,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::WriteMultipleCoils(resp) => {
-                expect_echo("address", address, resp.address.0)?;
+                self.finish_typed_response(expect_echo("address", address, resp.address.0))?;
                 expect_echo("quantity", quantity, resp.quantity.0)
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 }
 

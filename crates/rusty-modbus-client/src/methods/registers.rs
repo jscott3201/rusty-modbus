@@ -49,20 +49,21 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::ReadHoldingRegisters(rhr) => {
-                validate_register_response_shape(
+                self.finish_typed_response(validate_register_response_shape(
                     FunctionCode::ReadHoldingRegisters.code(),
                     quantity,
                     &rhr.register_data,
-                )?;
+                ))?;
                 Ok(rhr.registers().collect())
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Read holding registers returning raw bytes (FC 0x03, zero-copy variant).
@@ -96,20 +97,21 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::ReadHoldingRegisters(rhr) => {
-                validate_register_response_shape(
+                self.finish_typed_response(validate_register_response_shape(
                     FunctionCode::ReadHoldingRegisters.code(),
                     quantity,
                     &rhr.register_data,
-                )?;
+                ))?;
                 Ok(rhr.register_data)
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Read input registers (FC 0x04).
@@ -143,20 +145,21 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::ReadInputRegisters(rir) => {
-                validate_register_response_shape(
+                self.finish_typed_response(validate_register_response_shape(
                     FunctionCode::ReadInputRegisters.code(),
                     quantity,
                     &rir.register_data,
-                )?;
+                ))?;
                 Ok(rir.registers().collect())
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Write a single register (FC 0x06).
@@ -190,16 +193,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::WriteSingleRegister(resp) => {
-                expect_echo("address", address, resp.address.0)?;
+                self.finish_typed_response(expect_echo("address", address, resp.address.0))?;
                 expect_echo("value", value, resp.value)
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Write multiple registers (FC 0x10).
@@ -243,16 +247,17 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::WriteMultipleRegisters(resp) => {
-                expect_echo("address", address, resp.address.0)?;
+                self.finish_typed_response(expect_echo("address", address, resp.address.0))?;
                 expect_echo("quantity", quantity, resp.quantity.0)
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Mask write register (FC 0x16).
@@ -288,17 +293,18 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::MaskWriteRegister(resp) => {
-                expect_echo("address", address, resp.address.0)?;
-                expect_echo("and_mask", and_mask, resp.and_mask)?;
+                self.finish_typed_response(expect_echo("address", address, resp.address.0))?;
+                self.finish_typed_response(expect_echo("and_mask", and_mask, resp.and_mask))?;
                 expect_echo("or_mask", or_mask, resp.or_mask)
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 
     /// Read and write multiple registers simultaneously (FC 0x17).
@@ -349,20 +355,21 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             )
             .await?;
 
-        match response {
+        let result = match response {
             OwnedResponsePdu::ReadWriteMultipleRegisters(rw) => {
-                validate_register_response_shape(
+                self.finish_typed_response(validate_register_response_shape(
                     FunctionCode::ReadWriteMultipleRegisters.code(),
                     read_quantity,
                     &rw.register_data,
-                )?;
+                ))?;
                 Ok(rw.registers().collect())
             }
             OwnedResponsePdu::Exception(exc) => Err(ClientError::Exception(exc)),
             _ => Err(ClientError::Codec(
                 rusty_modbus_codec::DecodeError::UnknownFunctionCode(0),
             )),
-        }
+        };
+        self.finish_typed_response(result)
     }
 }
 
