@@ -1,4 +1,4 @@
-//! Retiring pool-to-client handoff integration tests.
+//! Retiring and verdict-gated pool-to-client handoff integration tests.
 
 #![cfg(feature = "client")]
 
@@ -12,19 +12,20 @@ use rusty_modbus_client::{SessionRetirementReason, SessionReuseVerdict};
 use rusty_modbus_frame::{Frame, FrameHeader};
 use rusty_modbus_pool::{
     ClientConfig, ClientError, ConnectionPool, LeaseInvalidationReason, PoolConfig, PoolError,
-    RetryConfig,
+    PooledClientReturnOutcome, PriorityDevice, RetryConfig,
 };
 use rusty_modbus_tcp::config::{TcpConfig, TcpServerConfig};
 use rusty_modbus_tcp::listener::TcpServerListener;
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_types::{MbapHeader, UnitId};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Barrier, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, PartialEq, Eq)]
 enum ServerEvent {
     Accepted(u8),
     Request { borrower: u8, transaction_id: u16 },
+    HostileFrameSent,
     LateResponseAttempted,
 }
 
@@ -64,6 +65,17 @@ fn transaction_id(frame: &Frame) -> u16 {
 
 fn register_response(request: &Frame, value: u16) -> Frame {
     let pdu = Bytes::from(vec![0x03, 0x02, (value >> 8) as u8, value as u8]);
+    Frame {
+        header: FrameHeader::Mbap(MbapHeader::new(
+            transaction_id(request),
+            request.unit_id(),
+            u16::try_from(pdu.len()).unwrap(),
+        )),
+        pdu,
+    }
+}
+
+fn response_with_pdu(request: &Frame, pdu: Bytes) -> Frame {
     Frame {
         header: FrameHeader::Mbap(MbapHeader::new(
             transaction_id(request),
@@ -166,6 +178,637 @@ async fn withholding_server() -> (
     });
 
     (addr, event_rx, task)
+}
+
+async fn two_request_reuse_server() -> (
+    SocketAddr,
+    mpsc::UnboundedReceiver<ServerEvent>,
+    oneshot::Sender<()>,
+    JoinHandle<()>,
+) {
+    let listener =
+        TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
+            .await
+            .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (finish_tx, finish_rx) = oneshot::channel();
+
+    let task = tokio::spawn(async move {
+        let (mut sink, mut stream, _, _guard) = listener.accept().await.unwrap();
+        event_tx.send(ServerEvent::Accepted(1)).unwrap();
+
+        let first = stream.recv().await.unwrap();
+        event_tx
+            .send(ServerEvent::Request {
+                borrower: 1,
+                transaction_id: transaction_id(&first),
+            })
+            .unwrap();
+        sink.send(register_response(&first, 0x1001)).await.unwrap();
+
+        tokio::select! {
+            second = stream.recv() => {
+                let second = second.unwrap();
+                event_tx
+                    .send(ServerEvent::Request {
+                        borrower: 1,
+                        transaction_id: transaction_id(&second),
+                    })
+                    .unwrap();
+                sink.send(register_response(&second, 0x2002)).await.unwrap();
+            }
+            accepted = listener.accept() => {
+                let (mut second_sink, mut second_stream, _, _second_guard) = accepted.unwrap();
+                event_tx.send(ServerEvent::Accepted(2)).unwrap();
+                let second = second_stream.recv().await.unwrap();
+                event_tx
+                    .send(ServerEvent::Request {
+                        borrower: 2,
+                        transaction_id: transaction_id(&second),
+                    })
+                    .unwrap();
+                second_sink
+                    .send(register_response(&second, 0x2002))
+                    .await
+                    .unwrap();
+            }
+        }
+
+        finish_rx.await.unwrap();
+    });
+
+    (addr, event_rx, finish_tx, task)
+}
+
+#[derive(Clone, Copy)]
+enum HostileBehavior {
+    UnknownResponse,
+    TypedInvalidResponse,
+}
+
+async fn hostile_then_fresh_server(
+    behavior: HostileBehavior,
+) -> (
+    SocketAddr,
+    mpsc::UnboundedReceiver<ServerEvent>,
+    JoinHandle<()>,
+) {
+    let listener =
+        TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
+            .await
+            .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+
+    let task = tokio::spawn(async move {
+        let (mut sink, mut stream, _, _guard) = listener.accept().await.unwrap();
+        event_tx.send(ServerEvent::Accepted(1)).unwrap();
+        match behavior {
+            HostileBehavior::UnknownResponse => {
+                sink.send(Frame {
+                    header: FrameHeader::Mbap(MbapHeader::new(41, 1, 4)),
+                    pdu: Bytes::from_static(&[0x03, 0x02, 0x00, 0x2A]),
+                })
+                .await
+                .unwrap();
+            }
+            HostileBehavior::TypedInvalidResponse => {
+                let request = stream.recv().await.unwrap();
+                event_tx
+                    .send(ServerEvent::Request {
+                        borrower: 1,
+                        transaction_id: transaction_id(&request),
+                    })
+                    .unwrap();
+                sink.send(response_with_pdu(
+                    &request,
+                    Bytes::from_static(&[0x01, 0x01, 0xFF]),
+                ))
+                .await
+                .unwrap();
+            }
+        }
+        event_tx.send(ServerEvent::HostileFrameSent).unwrap();
+
+        let (_fresh_sink, _fresh_stream, _, _fresh_guard) = listener.accept().await.unwrap();
+        event_tx.send(ServerEvent::Accepted(2)).unwrap();
+        pending::<()>().await;
+    });
+
+    (addr, event_rx, task)
+}
+
+async fn single_response_server() -> (
+    SocketAddr,
+    mpsc::UnboundedReceiver<ServerEvent>,
+    oneshot::Sender<()>,
+    JoinHandle<()>,
+) {
+    let listener =
+        TcpServerListener::bind("127.0.0.1:0".parse().unwrap(), TcpServerConfig::default())
+            .await
+            .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (finish_tx, finish_rx) = oneshot::channel();
+
+    let task = tokio::spawn(async move {
+        let (mut sink, mut stream, _, _guard) = listener.accept().await.unwrap();
+        event_tx.send(ServerEvent::Accepted(1)).unwrap();
+        let request = stream.recv().await.unwrap();
+        event_tx
+            .send(ServerEvent::Request {
+                borrower: 1,
+                transaction_id: transaction_id(&request),
+            })
+            .unwrap();
+        sink.send(register_response(&request, 0x3003))
+            .await
+            .unwrap();
+        finish_rx.await.unwrap();
+    });
+
+    (addr, event_rx, finish_tx, task)
+}
+
+async fn acquire_fresh_and_retire(
+    pool: &ConnectionPool,
+    addr: SocketAddr,
+    events: &mut mpsc::UnboundedReceiver<ServerEvent>,
+) {
+    let mut fresh = pool
+        .get_with_acquisition_timeout(addr, Duration::from_secs(1))
+        .await
+        .unwrap();
+    expect_event(events, ServerEvent::Accepted(2)).await;
+    fresh.invalidate(LeaseInvalidationReason::CallerDirected);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+}
+
+#[tokio::test]
+async fn healthy_reusable_sessions_reuse_one_accept_wake_waiter_and_keep_exact_accounting() {
+    let (addr, mut events, finish, server) = two_request_reuse_server().await;
+    let pool = Arc::new(ConnectionPool::new(pool_config()));
+
+    let first = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    assert_eq!(
+        first
+            .client()
+            .read_holding_registers(UnitId(1), 0, 1)
+            .await
+            .unwrap(),
+        vec![0x1001]
+    );
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    expect_event(
+        &mut events,
+        ServerEvent::Request {
+            borrower: 1,
+            transaction_id: 1,
+        },
+    )
+    .await;
+    assert_eq!(
+        first.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
+
+    let second = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+    assert_eq!(
+        second
+            .client()
+            .read_holding_registers(UnitId(1), 0, 1)
+            .await
+            .unwrap(),
+        vec![0x2002]
+    );
+    expect_event(
+        &mut events,
+        ServerEvent::Request {
+            borrower: 1,
+            transaction_id: 1,
+        },
+    )
+    .await;
+
+    let waiter_pool = Arc::clone(&pool);
+    let waiter = tokio::spawn(async move {
+        waiter_pool
+            .get_with_acquisition_timeout(addr, Duration::from_secs(1))
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !waiter.is_finished(),
+        "bounded waiter should need the active charge"
+    );
+
+    assert_eq!(
+        second.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
+    let third = waiter.await.unwrap().unwrap();
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+    drop(third);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
+
+    finish.send(()).unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn reusable_timeout_retires_and_forces_a_fresh_accept() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_millis(50)));
+
+    let error = session
+        .client()
+        .read_holding_registers(UnitId(1), 0, 1)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ClientError::RetriesExhausted { .. }));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    expect_event(
+        &mut events,
+        ServerEvent::Request {
+            borrower: 1,
+            transaction_id: 1,
+        },
+    )
+    .await;
+    assert_eq!(
+        session.shutdown_and_return().await,
+        PooledClientReturnOutcome::Retired(SessionReuseVerdict::Retire(
+            SessionRetirementReason::RequestTimedOut
+        ))
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn reusable_post_dispatch_cancellation_retires_and_forces_a_fresh_accept() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = Arc::new(
+        pool.get(addr)
+            .await
+            .unwrap()
+            .into_reusable_client(client_config(Duration::from_secs(30))),
+    );
+
+    let request_session = Arc::clone(&session);
+    let request = tokio::spawn(async move {
+        request_session
+            .client()
+            .read_holding_registers(UnitId(1), 0, 1)
+            .await
+    });
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    expect_event(
+        &mut events,
+        ServerEvent::Request {
+            borrower: 1,
+            transaction_id: 1,
+        },
+    )
+    .await;
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+
+    let session = match Arc::try_unwrap(session) {
+        Ok(session) => session,
+        Err(_) => panic!("request task should release its session owner"),
+    };
+    assert_eq!(
+        session.shutdown_and_return().await,
+        PooledClientReturnOutcome::Retired(SessionReuseVerdict::Retire(
+            SessionRetirementReason::DispatchCancelled
+        ))
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn observed_unknown_response_retires_and_forces_a_fresh_accept() {
+    let (addr, mut events, server) =
+        hostile_then_fresh_server(HostileBehavior::UnknownResponse).await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    expect_event(&mut events, ServerEvent::HostileFrameSent).await;
+
+    let expected = SessionReuseVerdict::Retire(SessionRetirementReason::UnknownOrDuplicateResponse);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while session.client().session_reuse_verdict() != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reader should observe the unknown response before shutdown");
+    assert_eq!(
+        session.shutdown_and_return().await,
+        PooledClientReturnOutcome::Retired(expected)
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn typed_validation_failure_retires_and_forces_a_fresh_accept() {
+    let (addr, mut events, server) =
+        hostile_then_fresh_server(HostileBehavior::TypedInvalidResponse).await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+
+    assert!(matches!(
+        session.client().read_coils(UnitId(1), 0, 64).await,
+        Err(ClientError::ShortResponse { .. })
+    ));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    expect_event(
+        &mut events,
+        ServerEvent::Request {
+            borrower: 1,
+            transaction_id: 1,
+        },
+    )
+    .await;
+    expect_event(&mut events, ServerEvent::HostileFrameSent).await;
+    assert_eq!(
+        session.shutdown_and_return().await,
+        PooledClientReturnOutcome::Retired(SessionReuseVerdict::Retire(
+            SessionRetirementReason::TypedResponseDataInvalid
+        ))
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn explicit_abort_retires_and_forces_a_fresh_accept() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+
+    session.client().abort();
+    assert_eq!(
+        session.shutdown_and_return().await,
+        PooledClientReturnOutcome::Retired(SessionReuseVerdict::Retire(
+            SessionRetirementReason::Aborted
+        ))
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn shutdown_deadline_retires_and_forces_a_fresh_accept() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let mut config = client_config(Duration::from_secs(30));
+    config.shutdown_timeout = Duration::from_millis(50);
+    let session = Arc::new(pool.get(addr).await.unwrap().into_reusable_client(config));
+
+    let request_session = Arc::clone(&session);
+    let request = tokio::spawn(async move {
+        request_session
+            .client()
+            .read_holding_registers(UnitId(1), 0, 1)
+            .await
+    });
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    expect_event(
+        &mut events,
+        ServerEvent::Request {
+            borrower: 1,
+            transaction_id: 1,
+        },
+    )
+    .await;
+
+    session.client().shutdown().await;
+    assert!(request.await.unwrap().is_err());
+    let session = match Arc::try_unwrap(session) {
+        Ok(session) => session,
+        Err(_) => panic!("request task should release its session owner"),
+    };
+    assert_eq!(
+        session.shutdown_and_return().await,
+        PooledClientReturnOutcome::Retired(SessionReuseVerdict::Retire(
+            SessionRetirementReason::ShutdownDeadlineExceeded
+        ))
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn dropping_reusable_session_without_return_retires_and_releases_capacity() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+    assert_eq!(pool.active_count(), 1);
+
+    drop(session);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while pool.active_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("aborted reader task should release the final vault owner");
+    assert_eq!(pool.idle_count(), 0);
+
+    acquire_fresh_and_retire(&pool, addr, &mut events).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn pool_shutdown_before_reusable_return_wins_without_idle_resurrection() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = ConnectionPool::new(pool_config());
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+
+    pool.shutdown();
+    assert_eq!(
+        session.shutdown_and_return().await,
+        PooledClientReturnOutcome::PoolShuttingDown
+    );
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+    assert!(matches!(pool.get(addr).await, Err(PoolError::ShuttingDown)));
+    server.abort();
+}
+
+#[tokio::test]
+async fn concurrent_pool_shutdown_and_reusable_return_release_once_without_idle_resurrection() {
+    let (addr, mut events, server) = withholding_server().await;
+    let pool = Arc::new(ConnectionPool::new(pool_config()));
+    let session = pool
+        .get(addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    expect_event(&mut events, ServerEvent::Accepted(1)).await;
+
+    let barrier = Arc::new(Barrier::new(3));
+    let return_barrier = Arc::clone(&barrier);
+    let returning = tokio::spawn(async move {
+        return_barrier.wait().await;
+        session.shutdown_and_return().await
+    });
+    let shutdown_pool = Arc::clone(&pool);
+    let shutdown_barrier = Arc::clone(&barrier);
+    let shutting_down = tokio::spawn(async move {
+        shutdown_barrier.wait().await;
+        shutdown_pool.shutdown();
+    });
+    barrier.wait().await;
+
+    let outcome = returning.await.unwrap();
+    shutting_down.await.unwrap();
+    assert!(matches!(
+        outcome,
+        PooledClientReturnOutcome::ReturnedToIdle | PooledClientReturnOutcome::PoolShuttingDown
+    ));
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 0);
+    pool.shutdown();
+    assert_eq!(pool.active_count(), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn priority_reusable_return_preserves_separate_budget_and_exact_active_charge() {
+    let (priority_addr, mut priority_events, finish, priority_server) =
+        single_response_server().await;
+    let (ordinary_addr, mut ordinary_events, ordinary_server) = withholding_server().await;
+    let mut config = pool_config();
+    config.priority_devices = vec![PriorityDevice {
+        addr: priority_addr,
+        max_connections: 1,
+    }];
+    let pool = ConnectionPool::new(config);
+
+    let priority = pool
+        .get(priority_addr)
+        .await
+        .unwrap()
+        .into_reusable_client(client_config(Duration::from_secs(1)));
+    expect_event(&mut priority_events, ServerEvent::Accepted(1)).await;
+    let mut ordinary = pool.get(ordinary_addr).await.unwrap();
+    expect_event(&mut ordinary_events, ServerEvent::Accepted(1)).await;
+    assert_eq!(
+        pool.active_count(),
+        2,
+        "priority activity must not consume the non-priority budget"
+    );
+
+    assert_eq!(
+        priority
+            .client()
+            .read_holding_registers(UnitId(1), 0, 1)
+            .await
+            .unwrap(),
+        vec![0x3003]
+    );
+    expect_event(
+        &mut priority_events,
+        ServerEvent::Request {
+            borrower: 1,
+            transaction_id: 1,
+        },
+    )
+    .await;
+    assert_eq!(
+        priority.shutdown_and_return().await,
+        PooledClientReturnOutcome::ReturnedToIdle
+    );
+    assert_eq!(
+        pool.active_count(),
+        1,
+        "only the ordinary lease remains active"
+    );
+    assert_eq!(pool.idle_count(), 1);
+
+    ordinary.invalidate(LeaseInvalidationReason::CallerDirected);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
+
+    let priority_again = pool.get(priority_addr).await.unwrap();
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.idle_count(), 0);
+    drop(priority_again);
+    assert_eq!(pool.active_count(), 0);
+    assert_eq!(pool.idle_count(), 1);
+
+    finish.send(()).unwrap();
+    priority_server.await.unwrap();
+    ordinary_server.abort();
 }
 
 #[tokio::test]
@@ -335,13 +978,13 @@ async fn pool_shutdown_then_client_teardown_releases_once_without_idle_resurrect
 }
 
 #[test]
-fn runtime_drop_then_client_drop_retires_without_panicking_or_leaking_capacity() {
+fn runtime_drop_then_reusable_session_drop_retires_without_panicking_or_leaking_capacity() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let (pool, client) = runtime.block_on(async {
+        let (pool, session) = runtime.block_on(async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             tokio::spawn(async move {
@@ -350,18 +993,22 @@ fn runtime_drop_then_client_drop_retires_without_panicking_or_leaking_capacity()
             });
 
             let pool = ConnectionPool::new(pool_config());
-            let client = pool
+            let session = pool
                 .get(addr)
                 .await
                 .unwrap()
-                .into_retiring_client(client_config(Duration::from_secs(1)));
-            (pool, client)
+                .into_reusable_client(client_config(Duration::from_secs(1)));
+            (pool, session)
         });
 
         assert_eq!(pool.active_count(), 1);
         drop(runtime);
-        assert_eq!(pool.active_count(), 1, "the sink survives runtime teardown");
-        drop(client);
+        assert_eq!(
+            pool.active_count(),
+            1,
+            "the session survives runtime teardown"
+        );
+        drop(session);
         assert_eq!(pool.active_count(), 0);
         assert_eq!(pool.idle_count(), 0);
     }));
