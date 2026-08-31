@@ -134,20 +134,8 @@ fn session_completion_fields(
     verdict: SessionReuseVerdict,
     is_priority: bool,
 ) -> SessionCompletionFields {
-    let outcome = match outcome {
-        PooledClientReturnOutcome::ReturnedToIdle => "returned_to_idle",
-        PooledClientReturnOutcome::Retired(_) => "retired",
-        PooledClientReturnOutcome::PoolShuttingDown => "pool_shutting_down",
-        PooledClientReturnOutcome::TransportRecoveryFailed => "transport_recovery_failed",
-    };
-    let (verdict, retirement_reason) = match verdict {
-        SessionReuseVerdict::ReuseEligible => ("reuse_eligible", "none"),
-        SessionReuseVerdict::NotQuiescent => ("not_quiescent", "none"),
-        SessionReuseVerdict::Retire(reason) => ("retire", retirement_reason_label(reason)),
-        // Future verdicts conservatively retire in `shutdown_and_return`; keep
-        // their observability bounded without claiming a current reason.
-        _ => ("retire", "other"),
-    };
+    let outcome = pooled_client_outcome_label(outcome);
+    let (verdict, retirement_reason) = session_reuse_verdict_labels(verdict);
 
     SessionCompletionFields {
         outcome,
@@ -158,7 +146,31 @@ fn session_completion_fields(
     }
 }
 
-const fn retirement_reason_label(reason: SessionRetirementReason) -> &'static str {
+pub(crate) const fn pooled_client_outcome_label(
+    outcome: PooledClientReturnOutcome,
+) -> &'static str {
+    match outcome {
+        PooledClientReturnOutcome::ReturnedToIdle => "returned_to_idle",
+        PooledClientReturnOutcome::Retired(_) => "retired",
+        PooledClientReturnOutcome::PoolShuttingDown => "pool_shutting_down",
+        PooledClientReturnOutcome::TransportRecoveryFailed => "transport_recovery_failed",
+    }
+}
+
+pub(crate) const fn session_reuse_verdict_labels(
+    verdict: SessionReuseVerdict,
+) -> (&'static str, &'static str) {
+    match verdict {
+        SessionReuseVerdict::ReuseEligible => ("reuse_eligible", "none"),
+        SessionReuseVerdict::NotQuiescent => ("not_quiescent", "none"),
+        SessionReuseVerdict::Retire(reason) => ("retire", retirement_reason_label(reason)),
+        // Future verdicts conservatively retire in `shutdown_and_return`; keep
+        // their observability bounded without claiming a current reason.
+        _ => ("retire", "other"),
+    }
+}
+
+pub(crate) const fn retirement_reason_label(reason: SessionRetirementReason) -> &'static str {
     match reason {
         SessionRetirementReason::Aborted => "aborted",
         SessionRetirementReason::FinalOwnerDropped => "final_owner_dropped",

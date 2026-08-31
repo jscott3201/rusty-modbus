@@ -1247,6 +1247,7 @@ async fn priority_reusable_return_preserves_separate_budget_and_exact_active_cha
     config.priority_devices = vec![PriorityDevice {
         addr: priority_addr,
         max_connections: 1,
+        probe: None,
     }];
     let pool = ConnectionPool::new(config);
 

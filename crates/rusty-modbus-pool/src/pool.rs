@@ -14,11 +14,25 @@ use rusty_modbus_tcp::{
     TcpIdleObservation, TcpRecvStream, TcpSink, TcpTransport, TransportConnect, inspect_idle_tcp,
 };
 
+#[cfg(feature = "client")]
+use rusty_modbus_client::{
+    ClientConfig, ClientError, ModbusClient, RetryConfig, SessionReuseVerdict,
+};
+#[cfg(feature = "client")]
+use rusty_modbus_tcp::transport::TransportSink;
+
 use crate::backoff::Backoff;
 use crate::config::PoolConfig;
 use crate::connection::PooledConnection;
 use crate::error::PoolError;
 use crate::health;
+
+#[cfg(feature = "client")]
+use crate::client_handoff::{
+    PooledClientReturnOutcome, pooled_client_outcome_label, session_reuse_verdict_labels,
+};
+#[cfg(feature = "client")]
+use crate::config::PriorityProbeConfig;
 
 /// A pooled connection entry stored internally.
 pub(crate) struct PoolEntry {
@@ -39,6 +53,8 @@ pub(crate) struct PoolEntry {
 pub(crate) enum IdleValidationTrigger {
     Checkout,
     HealthSweep,
+    #[cfg(feature = "client")]
+    PriorityProbe,
 }
 
 impl IdleValidationTrigger {
@@ -46,6 +62,8 @@ impl IdleValidationTrigger {
         match self {
             Self::Checkout => "checkout",
             Self::HealthSweep => "health_sweep",
+            #[cfg(feature = "client")]
+            Self::PriorityProbe => "priority_probe",
         }
     }
 }
@@ -387,12 +405,13 @@ impl std::fmt::Debug for ConnectionPool {
 impl ConnectionPool {
     /// Create a new connection pool.
     ///
-    /// Priority background maintenance is disabled only when both
-    /// `config.pre_connect` and `config.priority_replenishment` are false. Initial
-    /// warm-up alone exits after its one-idle target is met or unavailable under
-    /// the per-device cap. Replenishment keeps one task per distinct address to
-    /// restore that target after checkout or retirement. The call itself returns
-    /// immediately.
+    /// Priority background maintenance is disabled only when pre-connect,
+    /// replenishment, and every feature-gated priority probe are disabled.
+    /// Initial warm-up alone exits after its one-idle target is met or unavailable
+    /// under the per-device cap. Replenishment keeps one task per distinct address
+    /// to restore that target after checkout or retirement. A configured probe
+    /// keeps that same per-address task alive without changing one-shot warm-up
+    /// into standing replenishment. The call itself returns immediately.
     #[must_use]
     pub fn new(config: PoolConfig) -> Self {
         Self::new_with_priority_maintenance_runtime(
@@ -437,7 +456,7 @@ impl ConnectionPool {
         );
         let (priority_maintenance_stop, priority_maintenance_stop_rx) = watch::channel(false);
 
-        let priority_maintenance_tasks = if config.pre_connect || config.priority_replenishment {
+        let priority_maintenance_tasks = if priority_background_required(&config) {
             Self::spawn_priority_maintenance(
                 &config,
                 &inner,
@@ -789,8 +808,10 @@ impl ConnectionPool {
     /// [`shutdown_and_wait`](Self::shutdown_and_wait) when proof of that bounded
     /// task quiescence is required.
     ///
-    /// Checked-out leases, reusable client sessions, and caller-owned pending
+    /// Caller-owned checked-out leases, reusable client sessions, and pending
     /// demand connector futures are outside both shutdown methods' wait boundary.
+    /// Pool-owned probe client sessions remain inside the priority-maintenance
+    /// boundary.
     pub fn shutdown(&self) {
         {
             let mut inner = self.inner.lock();
@@ -814,12 +835,13 @@ impl ConnectionPool {
     /// later callers. Cancelling a caller does not cancel the coordinator or
     /// prevent a later caller from observing completion. When this method returns,
     /// cleanup for those tasks, including any priority-maintenance reservation
-    /// rollback, has completed.
+    /// rollback and probe-client reader/deadline-task join, has completed.
     ///
-    /// This bounded quiescence excludes checked-out raw leases, reusable client
-    /// sessions, and caller-owned pending demand connector futures. Consequently,
-    /// [`active_count`](Self::active_count) may remain nonzero after this method
-    /// returns. It does not prove that every reference to pool accounting is gone.
+    /// This bounded quiescence excludes caller-owned checked-out raw leases,
+    /// reusable client sessions, and pending demand connector futures.
+    /// Consequently, [`active_count`](Self::active_count) may remain nonzero after
+    /// this method returns. It does not prove that every reference to pool
+    /// accounting is gone.
     ///
     /// The future must be polled inside a live Tokio runtime. Runtime teardown can
     /// cancel runtime tasks and therefore cannot promise asynchronous completion;
@@ -901,12 +923,13 @@ impl ConnectionPool {
     ///
     /// One task per *distinct* device address (duplicate `priority_devices`
     /// entries for the same address are ignored so they cannot collectively
-    /// exceed the first entry's per-device budget). One-shot tasks exit when the
-    /// one-idle target is unavailable or met. Standing tasks wait on capacity
-    /// changes plus a safety-only fallback, then replenish the target without
-    /// probing an existing socket. Connector failures always observe exponential
-    /// [`Backoff`]. Each returned task cooperatively observes the pool's sticky
-    /// maintenance-stop signal; [`shutdown`](Self::shutdown) does not abort them.
+    /// exceed the first entry's per-device budget or probe policy). One-shot
+    /// warm-up ends when its one-idle target is unavailable or met, but a
+    /// configured probe keeps the same task alive. Standing tasks wait on
+    /// capacity changes plus a safety-only fallback, then replenish the target.
+    /// Connector failures always observe exponential [`Backoff`]. Each returned
+    /// task cooperatively observes the pool's sticky maintenance-stop signal;
+    /// [`shutdown`](Self::shutdown) does not abort them.
     fn spawn_priority_maintenance<C, F, R, RF, W, WF>(
         config: &PoolConfig,
         inner: &Arc<Mutex<PoolInner>>,
@@ -936,6 +959,7 @@ impl ConnectionPool {
         let fallback_interval = config
             .health_check_interval
             .max(MIN_PRIORITY_MAINTENANCE_SLEEP);
+        let warm_up_enabled = config.pre_connect || config.priority_replenishment;
 
         for pd in &config.priority_devices {
             if !seen.insert(pd.addr) {
@@ -946,6 +970,16 @@ impl ConnectionPool {
             if cap == 0 {
                 continue;
             }
+            #[cfg(feature = "client")]
+            let probe = pd.probe;
+            #[cfg(feature = "client")]
+            if !warm_up_enabled && probe.is_none() {
+                continue;
+            }
+            #[cfg(not(feature = "client"))]
+            if !warm_up_enabled {
+                continue;
+            }
             let tcp_config = config.tcp_config.clone();
             let backoff_config = config.backoff.clone();
             let inner = Arc::clone(inner);
@@ -953,95 +987,27 @@ impl ConnectionPool {
             let connector = connector.clone();
             let retry_wait = retry_wait.clone();
             let fallback_wait = fallback_wait.clone();
-            let mut maintenance_stop = maintenance_stop.clone();
+            let maintenance_stop = maintenance_stop.clone();
 
-            handles.push(tokio::spawn(async move {
-                let mut backoff = Backoff::new(backoff_config);
-                loop {
-                    if priority_maintenance_should_stop(&maintenance_stop) {
-                        return;
-                    }
-
-                    // Register before inspecting policy/capacity so a checkout or
-                    // retirement broadcast cannot be lost before the wait below.
-                    let notified = capacity_changed.notified();
-                    tokio::pin!(notified);
-                    notified.as_mut().enable();
-
-                    // PoolInner is the only policy and accounting authority. The
-                    // pending reservation owns the exact active charge while the
-                    // connector runs outside this lock.
-                    let reservation = match reserve_priority_maintenance(
-                        &inner,
-                        &capacity_changed,
-                        addr,
-                        cap,
-                    ) {
-                        PriorityMaintenanceReservation::ShuttingDown => return,
-                        PriorityMaintenanceReservation::Reserved(reservation) => reservation,
-                        PriorityMaintenanceReservation::Unavailable => {
-                            if matches!(mode, PriorityMaintenanceMode::OneShot) {
-                                return;
-                            }
-                            tokio::select! {
-                                biased;
-                                () = wait_for_priority_maintenance_stop(&mut maintenance_stop) => return,
-                                () = notified.as_mut() => {}
-                                () = fallback_wait(fallback_interval) => {}
-                            }
-                            continue;
-                        }
-                    };
-
-                    let connect_result = tokio::select! {
-                        biased;
-                        () = wait_for_priority_maintenance_stop(&mut maintenance_stop) => return,
-                        result = connector(tcp_config.clone(), addr) => result,
-                    };
-
-                    let connected = if let Ok((sink, stream)) = connect_result {
-                        if priority_maintenance_should_stop(&maintenance_stop) {
-                            drop((sink, stream));
-                            drop(reservation);
-                            return;
-                        }
-
-                        // Establishment resets retry history even if shutdown
-                        // or a concurrent idle return makes this transport
-                        // redundant at commit time.
-                        backoff.reset();
-                        reservation.commit_priority_idle_if_needed(PoolEntry {
-                            addr,
-                            sink,
-                            stream,
-                            last_used: Instant::now(),
-                            is_priority: true,
-                        });
-                        if matches!(mode, PriorityMaintenanceMode::OneShot) {
-                            return;
-                        }
-                        true
-                    } else {
-                        drop(reservation);
-                        false
-                    };
-
-                    if connected {
-                        continue;
-                    }
-
-                    // A failure always waits its own exponential backoff; it
-                    // never races the rollback notification emitted by its
-                    // reservation. Success continues immediately to a fresh
-                    // policy evaluation with reset backoff state.
-                    let delay = backoff.next_delay().max(MIN_PRIORITY_MAINTENANCE_SLEEP);
-                    tokio::select! {
-                        biased;
-                        () = wait_for_priority_maintenance_stop(&mut maintenance_stop) => return,
-                        () = retry_wait(delay) => {}
-                    }
-                }
-            }));
+            let task = PriorityMaintenanceTask {
+                inner,
+                capacity_changed,
+                connector,
+                retry_wait,
+                fallback_wait,
+                tcp_config,
+                backoff_config,
+                addr,
+                cap,
+                mode,
+                fallback_interval,
+                warm_up_enabled,
+                maintenance_stop,
+                #[cfg(feature = "client")]
+                probe,
+            }
+            .run();
+            handles.push(tokio::spawn(task));
         }
 
         handles
@@ -1052,6 +1018,449 @@ impl ConnectionPool {
 enum PriorityMaintenanceMode {
     OneShot,
     Standing,
+}
+
+impl PriorityMaintenanceMode {
+    const fn is_standing(self) -> bool {
+        matches!(self, Self::Standing)
+    }
+}
+
+struct PriorityMaintenanceTask<C, R, W> {
+    inner: Arc<Mutex<PoolInner>>,
+    capacity_changed: Arc<Notify>,
+    connector: C,
+    retry_wait: R,
+    fallback_wait: W,
+    tcp_config: rusty_modbus_tcp::TcpConfig,
+    backoff_config: crate::BackoffConfig,
+    addr: SocketAddr,
+    cap: usize,
+    mode: PriorityMaintenanceMode,
+    fallback_interval: Duration,
+    warm_up_enabled: bool,
+    maintenance_stop: watch::Receiver<bool>,
+    #[cfg(feature = "client")]
+    probe: Option<PriorityProbeConfig>,
+}
+
+enum PriorityMaintenanceAction {
+    Stopped,
+    Complete,
+    Reevaluate,
+    Connect(PendingReservation),
+}
+
+enum PriorityConnectOutcome {
+    Stopped,
+    Connected,
+    Failed,
+}
+
+impl<C, R, W> PriorityMaintenanceTask<C, R, W> {
+    async fn run<F, RF, WF>(mut self)
+    where
+        C: Fn(rusty_modbus_tcp::TcpConfig, SocketAddr) -> F + Clone + Send + 'static,
+        F: Future<Output = Result<(TcpSink, TcpRecvStream), rusty_modbus_tcp::TransportError>>
+            + Send
+            + 'static,
+        R: Fn(Duration) -> RF + Clone + Send + 'static,
+        RF: Future<Output = ()> + Send + 'static,
+        W: Fn(Duration) -> WF + Clone + Send + 'static,
+        WF: Future<Output = ()> + Send + 'static,
+    {
+        let mut backoff = Backoff::new(self.backoff_config.clone());
+        let mut warm_up_pending = self.warm_up_enabled;
+        #[cfg(feature = "client")]
+        let mut probe_deadline = self
+            .probe
+            .and_then(|config| next_priority_probe_deadline(config.interval()));
+        #[cfg(feature = "client")]
+        let probe_enabled = self.probe.is_some();
+        #[cfg(not(feature = "client"))]
+        let probe_enabled = false;
+        #[cfg(not(feature = "client"))]
+        let probe_deadline = None;
+
+        loop {
+            if priority_maintenance_should_stop(&self.maintenance_stop) {
+                return;
+            }
+
+            #[cfg(feature = "client")]
+            if let Some(config) = self.probe
+                && priority_probe_is_due(probe_deadline)
+            {
+                if self.run_due_probe(config).await {
+                    return;
+                }
+                // Completion or a due skip starts one fresh interval.
+                // Notifications and fallback wakes never rewrite it.
+                probe_deadline = next_priority_probe_deadline(config.interval());
+            }
+
+            match self
+                .next_action(&mut warm_up_pending, probe_enabled, probe_deadline)
+                .await
+            {
+                PriorityMaintenanceAction::Stopped | PriorityMaintenanceAction::Complete => return,
+                PriorityMaintenanceAction::Reevaluate => continue,
+                PriorityMaintenanceAction::Connect(reservation) => {
+                    match self.connect(reservation).await {
+                        PriorityConnectOutcome::Stopped => return,
+                        PriorityConnectOutcome::Connected => {
+                            backoff.reset();
+                            if !self.mode.is_standing() {
+                                warm_up_pending = false;
+                                if !probe_enabled {
+                                    return;
+                                }
+                            }
+                            continue;
+                        }
+                        PriorityConnectOutcome::Failed => {}
+                    }
+                }
+            }
+
+            // Failure always observes its own exponential backoff; it never
+            // races the reservation rollback notification.
+            let delay = backoff.next_delay().max(MIN_PRIORITY_MAINTENANCE_SLEEP);
+            let retry = (self.retry_wait)(delay);
+            tokio::select! {
+                biased;
+                () = wait_for_priority_maintenance_stop(&mut self.maintenance_stop) => return,
+                () = retry => {}
+            }
+        }
+    }
+
+    async fn next_action<WF>(
+        &mut self,
+        warm_up_pending: &mut bool,
+        probe_enabled: bool,
+        probe_deadline: Option<Instant>,
+    ) -> PriorityMaintenanceAction
+    where
+        W: Fn(Duration) -> WF,
+        WF: Future<Output = ()>,
+    {
+        // Register before inspecting policy/capacity so a checkout or retirement
+        // broadcast cannot be lost before the wait below.
+        let notified = self.capacity_changed.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        if self.mode.is_standing() || *warm_up_pending {
+            match reserve_priority_maintenance(
+                &self.inner,
+                &self.capacity_changed,
+                self.addr,
+                self.cap,
+            ) {
+                PriorityMaintenanceReservation::ShuttingDown => {
+                    return PriorityMaintenanceAction::Stopped;
+                }
+                PriorityMaintenanceReservation::Reserved(reservation) => {
+                    return PriorityMaintenanceAction::Connect(reservation);
+                }
+                PriorityMaintenanceReservation::Unavailable => {
+                    if !self.mode.is_standing() {
+                        *warm_up_pending = false;
+                    }
+                }
+            }
+        }
+
+        if !self.mode.is_standing() && !probe_enabled {
+            return PriorityMaintenanceAction::Complete;
+        }
+
+        let fallback = (self.fallback_wait)(self.fallback_interval);
+        tokio::select! {
+            biased;
+            () = wait_for_priority_maintenance_stop(&mut self.maintenance_stop) => {
+                PriorityMaintenanceAction::Stopped
+            }
+            () = notified.as_mut() => PriorityMaintenanceAction::Reevaluate,
+            () = fallback, if self.mode.is_standing() => PriorityMaintenanceAction::Reevaluate,
+            () = wait_for_priority_probe_deadline(probe_deadline), if probe_enabled => {
+                PriorityMaintenanceAction::Reevaluate
+            }
+        }
+    }
+
+    async fn connect<F>(&mut self, reservation: PendingReservation) -> PriorityConnectOutcome
+    where
+        C: Fn(rusty_modbus_tcp::TcpConfig, SocketAddr) -> F,
+        F: Future<Output = Result<(TcpSink, TcpRecvStream), rusty_modbus_tcp::TransportError>>,
+    {
+        let connecting = (self.connector)(self.tcp_config.clone(), self.addr);
+        let connect_result = tokio::select! {
+            biased;
+            () = wait_for_priority_maintenance_stop(&mut self.maintenance_stop) => {
+                return PriorityConnectOutcome::Stopped;
+            }
+            result = connecting => result,
+        };
+
+        let Ok((sink, stream)) = connect_result else {
+            drop(reservation);
+            return PriorityConnectOutcome::Failed;
+        };
+        if priority_maintenance_should_stop(&self.maintenance_stop) {
+            drop((sink, stream));
+            drop(reservation);
+            return PriorityConnectOutcome::Stopped;
+        }
+
+        reservation.commit_priority_idle_if_needed(PoolEntry {
+            addr: self.addr,
+            sink,
+            stream,
+            last_used: Instant::now(),
+            is_priority: true,
+        });
+        PriorityConnectOutcome::Connected
+    }
+
+    #[cfg(feature = "client")]
+    async fn run_due_probe(&mut self, config: PriorityProbeConfig) -> bool {
+        let claim = claim_priority_probe(
+            &self.inner,
+            &self.capacity_changed,
+            self.addr,
+            &self.maintenance_stop,
+        );
+        finish_passive_retirements(
+            claim.retirements,
+            IdleValidationTrigger::PriorityProbe,
+            &self.capacity_changed,
+        );
+
+        match claim.outcome {
+            PriorityProbeClaimOutcome::Stopped => true,
+            PriorityProbeClaimOutcome::Unavailable => false,
+            PriorityProbeClaimOutcome::Claimed(connection) => {
+                run_priority_probe(connection, config, &mut self.maintenance_stop).await
+            }
+        }
+    }
+}
+
+fn priority_background_required(config: &PoolConfig) -> bool {
+    if config.pre_connect || config.priority_replenishment {
+        return true;
+    }
+
+    #[cfg(feature = "client")]
+    {
+        config
+            .priority_devices
+            .iter()
+            .any(|device| device.probe.is_some())
+    }
+    #[cfg(not(feature = "client"))]
+    {
+        false
+    }
+}
+
+#[cfg(feature = "client")]
+struct PriorityProbeClaim {
+    outcome: PriorityProbeClaimOutcome,
+    retirements: Vec<(PoolEntry, TcpIdleObservation)>,
+}
+
+#[cfg(feature = "client")]
+enum PriorityProbeClaimOutcome {
+    Stopped,
+    Unavailable,
+    Claimed(PooledConnection),
+}
+
+/// Under the pool authority, passively validate matching priority idle entries
+/// and atomically transfer one clean entry from idle to active accounting.
+#[cfg(feature = "client")]
+fn claim_priority_probe(
+    inner: &Arc<Mutex<PoolInner>>,
+    capacity_changed: &Arc<Notify>,
+    addr: SocketAddr,
+    maintenance_stop: &watch::Receiver<bool>,
+) -> PriorityProbeClaim {
+    let mut retirements = Vec::new();
+    let mut pool = inner.lock();
+    if pool.shutting_down || priority_maintenance_should_stop(maintenance_stop) {
+        return PriorityProbeClaim {
+            outcome: PriorityProbeClaimOutcome::Stopped,
+            retirements,
+        };
+    }
+
+    while let Some(index) = pool
+        .idle
+        .iter()
+        .position(|entry| entry.is_priority && entry.addr == addr)
+    {
+        let entry = pool.idle.swap_remove(index);
+        match inspect_idle_entry(entry) {
+            IdleEntryInspection::Retain(mut entry) => {
+                entry.last_used = Instant::now();
+                pool.charge_active(&entry);
+                let connection =
+                    PooledConnection::new(entry, Arc::clone(inner), Arc::clone(capacity_changed));
+                return PriorityProbeClaim {
+                    outcome: PriorityProbeClaimOutcome::Claimed(connection),
+                    retirements,
+                };
+            }
+            IdleEntryInspection::Retire(entry, observation) => {
+                retirements.push((entry, observation));
+            }
+        }
+    }
+
+    PriorityProbeClaim {
+        outcome: PriorityProbeClaimOutcome::Unavailable,
+        retirements,
+    }
+}
+
+#[cfg(feature = "client")]
+enum PriorityProbeOperationCompletion {
+    Completed(Result<(), ClientError>),
+    Stopped,
+}
+
+/// Run one typed read, then shield the full reusable-session cleanup from the
+/// maintenance stop so pool task quiescence includes all client-owned subtasks.
+#[cfg(feature = "client")]
+async fn run_priority_probe(
+    connection: PooledConnection,
+    config: PriorityProbeConfig,
+    maintenance_stop: &mut watch::Receiver<bool>,
+) -> bool {
+    let client_config = ClientConfig {
+        unit_id: config.unit_id(),
+        timeout: config.timeout(),
+        max_in_flight: 1,
+        retry: RetryConfig {
+            max_retries: 0,
+            ..RetryConfig::default()
+        },
+        shutdown_timeout: config.timeout(),
+    };
+    let session = connection
+        .into_reusable_client(client_config)
+        .expect("an internally claimed pristine probe lease must support reusable handoff");
+
+    let completion = {
+        let operation = execute_priority_probe(session.client(), config);
+        tokio::pin!(operation);
+        tokio::select! {
+            biased;
+            () = wait_for_priority_maintenance_stop(maintenance_stop) => {
+                PriorityProbeOperationCompletion::Stopped
+            }
+            result = operation.as_mut() => PriorityProbeOperationCompletion::Completed(result),
+        }
+    };
+
+    let stopped = matches!(&completion, PriorityProbeOperationCompletion::Stopped);
+    if stopped
+        || matches!(
+            &completion,
+            PriorityProbeOperationCompletion::Completed(Err(_))
+        )
+    {
+        // Dropping the selected operation future happens before this abort. The
+        // subsequent cleanup is deliberately not cancellation-selected.
+        session.client().abort();
+    }
+
+    let operation_succeeded = matches!(
+        completion,
+        PriorityProbeOperationCompletion::Completed(Ok(()))
+    );
+    let outcome = session.shutdown_and_return().await;
+    let verdict = match outcome {
+        PooledClientReturnOutcome::Retired(verdict) => verdict,
+        PooledClientReturnOutcome::ReturnedToIdle
+        | PooledClientReturnOutcome::PoolShuttingDown
+        | PooledClientReturnOutcome::TransportRecoveryFailed => SessionReuseVerdict::ReuseEligible,
+    };
+    let probe_result = if stopped {
+        "stopped"
+    } else if operation_succeeded && verdict == SessionReuseVerdict::ReuseEligible {
+        "success"
+    } else {
+        "error"
+    };
+    let (verdict, retirement_reason) = session_reuse_verdict_labels(verdict);
+    tracing::debug!(
+        target: "rusty_modbus_pool::priority_probe",
+        operation = config.operation().as_str(),
+        probe_result,
+        pool_outcome = pooled_client_outcome_label(outcome),
+        verdict,
+        retirement_reason,
+        is_priority = true,
+        "priority_probe_completed"
+    );
+
+    stopped
+}
+
+#[cfg(feature = "client")]
+async fn execute_priority_probe<S>(
+    client: &ModbusClient<S>,
+    config: PriorityProbeConfig,
+) -> Result<(), ClientError>
+where
+    S: TransportSink + Send + 'static,
+{
+    let unit_id = config.unit_id();
+    let address = config.address().0;
+    let quantity = config.quantity().0;
+    match config.operation() {
+        crate::PriorityProbeOperation::ReadCoils => {
+            client.read_coils(unit_id, address, quantity).await?;
+        }
+        crate::PriorityProbeOperation::ReadDiscreteInputs => {
+            client
+                .read_discrete_inputs(unit_id, address, quantity)
+                .await?;
+        }
+        crate::PriorityProbeOperation::ReadHoldingRegisters => {
+            client
+                .read_holding_registers(unit_id, address, quantity)
+                .await?;
+        }
+        crate::PriorityProbeOperation::ReadInputRegisters => {
+            client
+                .read_input_registers(unit_id, address, quantity)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "client")]
+fn next_priority_probe_deadline(interval: Duration) -> Option<Instant> {
+    Instant::now().checked_add(interval)
+}
+
+#[cfg(feature = "client")]
+fn priority_probe_is_due(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|deadline| Instant::now() >= deadline)
+}
+
+async fn wait_for_priority_probe_deadline(deadline: Option<Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(deadline).await;
+    } else {
+        std::future::pending::<()>().await;
+    }
 }
 
 enum PriorityMaintenanceReservation {
@@ -1756,10 +2165,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_and_wait_joins_pending_priority_maintenance_and_releases_reservation() {
         let addr = test_addr(15_220);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, mut retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let attempt = next_priority_maintenance_attempt(&mut attempts).await;
@@ -1791,10 +2197,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_and_wait_joins_priority_maintenance_parked_in_backoff() {
         let addr = test_addr(15_221);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, mut retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
         next_priority_maintenance_attempt(&mut attempts)
@@ -1824,10 +2227,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_and_wait_joins_priority_maintenance_parked_in_fallback() {
         let addr = test_addr(15_226);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, mut retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
         next_priority_maintenance_attempt(&mut attempts)
@@ -1916,10 +2316,7 @@ mod tests {
     #[tokio::test]
     async fn synchronous_shutdown_then_async_wait_joins_already_stopping_tasks() {
         let addr = test_addr(15_222);
-        let config = pre_connect_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = pre_connect_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, _retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let attempt = next_priority_maintenance_attempt(&mut attempts).await;
@@ -1958,10 +2355,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn synchronous_shutdown_sticky_stop_before_first_poll_starts_no_activity() {
         let addr = test_addr(15_227);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, mut retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
 
@@ -1987,10 +2381,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_sync_shutdown_and_async_wait_release_pre_connect_once() {
         let addr = test_addr(15_223);
-        let config = pre_connect_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 2,
-        }]);
+        let config = pre_connect_config(vec![crate::PriorityDevice::new(addr, 2)]);
         let (pool, mut attempts, _retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let attempt = next_priority_maintenance_attempt(&mut attempts).await;
@@ -2034,10 +2425,7 @@ mod tests {
     async fn background_task_panic_warns_and_does_not_strand_other_joins() {
         let _tracing_test = TRACING_TEST_LOCK.lock().await;
         let addr = test_addr(15_228);
-        let config = pre_connect_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = pre_connect_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, _retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let maintenance = next_priority_maintenance_attempt(&mut attempts).await;
@@ -2124,10 +2512,7 @@ mod tests {
     #[tokio::test]
     async fn replenishment_starts_initial_warmup_when_pre_connect_is_disabled() {
         let addr = test_addr(15_230);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         assert!(!config.pre_connect);
         assert!(config.priority_replenishment);
         let (pool, mut attempts, _retries, mut fallbacks) =
@@ -2148,10 +2533,7 @@ mod tests {
     #[tokio::test]
     async fn standing_checkout_wakes_and_restores_one_idle_below_device_cap() {
         let addr = test_addr(15_231);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 2,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 2)]);
         let (pool, mut attempts, _retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
 
@@ -2186,10 +2568,7 @@ mod tests {
     #[tokio::test]
     async fn standing_waits_at_cap_then_invalidation_and_raw_drop_wake_replenishment() {
         let addr = test_addr(15_232);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, _retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
 
@@ -2245,10 +2624,7 @@ mod tests {
     #[tokio::test]
     async fn demand_connect_failure_releases_priority_capacity_for_maintenance() {
         let addr = test_addr(15_233);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, _retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
 
@@ -2276,10 +2652,7 @@ mod tests {
     #[tokio::test]
     async fn maintenance_failure_backoff_resets_after_successful_establishment() {
         let addr = test_addr(15_234);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, mut retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
 
@@ -2321,10 +2694,7 @@ mod tests {
     #[tokio::test]
     async fn pending_maintenance_success_racing_idle_insertion_drops_redundant_transport() {
         let addr = test_addr(15_235);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 2,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 2)]);
         let (pool, mut attempts, _retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let pending = next_priority_maintenance_attempt(&mut attempts).await;
@@ -2366,10 +2736,7 @@ mod tests {
     #[tokio::test]
     async fn passive_priority_retirement_wakes_standing_maintenance() {
         let addr = test_addr(15_236);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, mut retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let pending = next_priority_maintenance_attempt(&mut attempts).await;
@@ -2407,10 +2774,7 @@ mod tests {
     #[tokio::test]
     async fn standing_fallback_recovers_an_intentionally_omitted_notification() {
         let addr = test_addr(15_237);
-        let config = replenishment_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let expected_interval = config.health_check_interval;
         let (pool, mut attempts, _retries, mut fallbacks) =
             pool_with_gated_priority_maintenance(config);
@@ -2449,10 +2813,7 @@ mod tests {
     #[tokio::test]
     async fn pending_pre_connect_reserves_before_fail_fast_demand() {
         let addr = test_addr(15_200);
-        let config = pre_connect_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = pre_connect_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, _retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let attempt = next_priority_maintenance_attempt(&mut attempts).await;
@@ -2488,10 +2849,7 @@ mod tests {
     async fn failed_pre_connect_releases_for_demand_and_retry_exits_when_full() {
         let addr = test_addr(15_201);
         let demand_halves = connected_halves().await;
-        let config = pre_connect_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = pre_connect_config(vec![crate::PriorityDevice::new(addr, 1)]);
         let (pool, mut attempts, mut retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let pool = Arc::new(pool);
@@ -2553,10 +2911,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_one_shot_warms_for_reuse_and_does_not_replenish_retirement() {
         let addr = test_addr(15_202);
-        let config = pre_connect_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }]);
+        let config = pre_connect_config(vec![crate::PriorityDevice::new(addr, 1)]);
         assert!(!config.priority_replenishment);
         let (pool, mut attempts, _retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
@@ -2613,10 +2968,7 @@ mod tests {
     async fn shutdown_cooperatively_stops_pending_pre_connect_without_idle_resurrection() {
         let addr = test_addr(15_203);
         let demand_halves = connected_halves().await;
-        let config = pre_connect_config(vec![crate::PriorityDevice {
-            addr,
-            max_connections: 2,
-        }]);
+        let config = pre_connect_config(vec![crate::PriorityDevice::new(addr, 2)]);
         let (pool, mut attempts, _retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
         let attempt = next_priority_maintenance_attempt(&mut attempts).await;
@@ -2647,10 +2999,7 @@ mod tests {
     async fn completed_pre_connect_after_shutdown_releases_without_idle() {
         let addr = test_addr(15_208);
         let mut config = test_config(1);
-        config.priority_devices = vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }];
+        config.priority_devices = vec![crate::PriorityDevice::new(addr, 1)];
         let pool = ConnectionPool::new(config);
         let reservation = {
             let mut inner = pool.inner.lock();
@@ -2685,14 +3034,8 @@ mod tests {
         let first_addr = test_addr(15_204);
         let second_addr = test_addr(15_205);
         let config = pre_connect_config(vec![
-            crate::PriorityDevice {
-                addr: first_addr,
-                max_connections: 1,
-            },
-            crate::PriorityDevice {
-                addr: second_addr,
-                max_connections: 1,
-            },
+            crate::PriorityDevice::new(first_addr, 1),
+            crate::PriorityDevice::new(second_addr, 1),
         ]);
         let (pool, mut attempts, _retries, _fallbacks) =
             pool_with_gated_priority_maintenance(config);
@@ -2725,14 +3068,8 @@ mod tests {
     async fn both_flags_and_duplicate_addresses_spawn_one_first_cap_maintenance_task() {
         let addr = test_addr(15_206);
         let mut config = pre_connect_config(vec![
-            crate::PriorityDevice {
-                addr,
-                max_connections: 1,
-            },
-            crate::PriorityDevice {
-                addr,
-                max_connections: 3,
-            },
+            crate::PriorityDevice::new(addr, 1),
+            crate::PriorityDevice::new(addr, 3),
         ]);
         config.priority_replenishment = true;
         let (pool, mut attempts, _retries, _fallbacks) =
@@ -2780,14 +3117,8 @@ mod tests {
     async fn first_zero_priority_cap_spawns_no_maintenance_task_or_connector() {
         let addr = test_addr(15_207);
         let mut config = pre_connect_config(vec![
-            crate::PriorityDevice {
-                addr,
-                max_connections: 0,
-            },
-            crate::PriorityDevice {
-                addr,
-                max_connections: 2,
-            },
+            crate::PriorityDevice::new(addr, 0),
+            crate::PriorityDevice::new(addr, 2),
         ]);
         config.priority_replenishment = true;
         let (pool, mut attempts, _retries, _fallbacks) =
@@ -2817,6 +3148,11 @@ mod tests {
     fn idle_validation_labels_are_stable_and_bounded() {
         assert_eq!(IdleValidationTrigger::Checkout.as_str(), "checkout");
         assert_eq!(IdleValidationTrigger::HealthSweep.as_str(), "health_sweep");
+        #[cfg(feature = "client")]
+        assert_eq!(
+            IdleValidationTrigger::PriorityProbe.as_str(),
+            "priority_probe"
+        );
         assert_eq!(
             idle_observation_reason(TcpIdleObservation::QueuedInput),
             "queued_input"
@@ -3140,10 +3476,7 @@ mod tests {
         let priority_addr = test_addr(15_102);
         let non_priority_addr = test_addr(15_103);
         let mut config = test_config(1);
-        config.priority_devices = vec![crate::PriorityDevice {
-            addr: priority_addr,
-            max_connections: 1,
-        }];
+        config.priority_devices = vec![crate::PriorityDevice::new(priority_addr, 1)];
         let pool = Arc::new(ConnectionPool::new(config));
         let priority = acquired_connection(&pool, priority_addr).await;
         let non_priority = acquired_connection(&pool, non_priority_addr).await;
@@ -3490,10 +3823,7 @@ mod tests {
     async fn cancel_pending_priority_connect_releases_device_budget() {
         let addr = test_addr(15_002);
         let mut config = test_config(1);
-        config.priority_devices = vec![crate::PriorityDevice {
-            addr,
-            max_connections: 1,
-        }];
+        config.priority_devices = vec![crate::PriorityDevice::new(addr, 1)];
         let pool = Arc::new(ConnectionPool::new(config));
 
         let (first_task, first_entered) = spawn_pending_get(Arc::clone(&pool), addr);
