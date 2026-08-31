@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 
 use rusty_modbus_tcp::{
@@ -284,6 +284,77 @@ enum Acquisition {
     Reserved(PendingReservation),
 }
 
+/// Join handles for every task whose lifecycle is owned by the pool.
+struct OwnedBackgroundTasks {
+    health: tokio::task::JoinHandle<()>,
+    pre_connect: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl OwnedBackgroundTasks {
+    /// Request cancellation without taking ownership of any handle.
+    fn abort(&self) {
+        self.health.abort();
+        for task in &self.pre_connect {
+            task.abort();
+        }
+    }
+
+    /// Abort defensively, join every task, then publish sticky completion.
+    async fn abort_join_and_complete(self, completed: watch::Sender<bool>) {
+        let pre_connect_task_count = self.pre_connect.len();
+        let task_count = pre_connect_task_count.saturating_add(1);
+        tracing::debug!(
+            target: "rusty_modbus_pool::shutdown",
+            task_count,
+            pre_connect_task_count,
+            "pool_background_task_join_started"
+        );
+
+        self.abort();
+        let Self {
+            health,
+            pre_connect,
+        } = self;
+        let mut unexpected_join_errors = 0_usize;
+
+        if let Err(error) = health.await
+            && !error.is_cancelled()
+        {
+            unexpected_join_errors += 1;
+        }
+        for task in pre_connect {
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
+                unexpected_join_errors += 1;
+            }
+        }
+
+        if unexpected_join_errors != 0 {
+            tracing::warn!(
+                target: "rusty_modbus_pool::shutdown",
+                unexpected_join_errors,
+                task_count,
+                "pool_background_task_join_failed"
+            );
+        }
+        tracing::debug!(
+            target: "rusty_modbus_pool::shutdown",
+            task_count,
+            pre_connect_task_count,
+            "pool_background_task_join_completed"
+        );
+        completed.send_replace(true);
+    }
+}
+
+/// Shared ownership handoff and sticky completion state for pool task shutdown.
+struct BackgroundShutdownState {
+    tasks: Option<OwnedBackgroundTasks>,
+    coordinator_started: bool,
+    completed: watch::Sender<bool>,
+}
+
 /// Connection pool with two-pool eviction model.
 ///
 /// Priority connections (to configured addresses) are never age- or
@@ -296,11 +367,7 @@ pub struct ConnectionPool {
     inner: Arc<Mutex<PoolInner>>,
     capacity_changed: Arc<Notify>,
     config: PoolConfig,
-    health_task: Option<tokio::task::JoinHandle<()>>,
-    /// Background initial pre-connect retry tasks (one per priority device).
-    /// Tracked so they can be aborted on shutdown — otherwise a task parked in
-    /// its backoff sleep would outlive the pool and keep `inner` alive.
-    pre_connect_tasks: Vec<tokio::task::JoinHandle<()>>,
+    background_shutdown: Mutex<BackgroundShutdownState>,
 }
 
 impl std::fmt::Debug for ConnectionPool {
@@ -360,13 +427,20 @@ impl ConnectionPool {
         } else {
             Vec::new()
         };
+        let (completed, _) = watch::channel(false);
 
         Self {
             inner,
             capacity_changed,
             config,
-            health_task: Some(health_task),
-            pre_connect_tasks,
+            background_shutdown: Mutex::new(BackgroundShutdownState {
+                tasks: Some(OwnedBackgroundTasks {
+                    health: health_task,
+                    pre_connect: pre_connect_tasks,
+                }),
+                coordinator_started: false,
+                completed,
+            }),
         }
     }
 
@@ -676,11 +750,16 @@ impl ConnectionPool {
         }
     }
 
-    /// Shut down the pool — drop all idle connections and reject future requests.
+    /// Shut down the pool synchronously without waiting for background tasks.
     ///
-    /// Aborts the background health-check and all initial pre-connect retry tasks so
-    /// they stop immediately (even if parked in a backoff sleep) and release
-    /// their references to the pool state.
+    /// This immediately and idempotently seals admission, drops idle connections,
+    /// wakes capacity waiters, and requests cancellation of the pool-owned health
+    /// check and initial pre-connect tasks. It does not wait for those tasks or
+    /// their cancellation destructors. Use [`shutdown_and_wait`](Self::shutdown_and_wait)
+    /// when proof of that bounded task quiescence is required.
+    ///
+    /// Checked-out leases, reusable client sessions, and caller-owned pending
+    /// demand connector futures are outside both shutdown methods' wait boundary.
     pub fn shutdown(&self) {
         {
             let mut inner = self.inner.lock();
@@ -689,11 +768,65 @@ impl ConnectionPool {
         }
         self.capacity_changed.notify_waiters();
 
-        if let Some(task) = &self.health_task {
-            task.abort();
+        if let Some(tasks) = &self.background_shutdown.lock().tasks {
+            tasks.abort();
         }
-        for task in &self.pre_connect_tasks {
-            task.abort();
+    }
+
+    /// Shut down the pool and wait for all pool-owned background tasks to terminate.
+    ///
+    /// The first polled caller starts one detached coordinator that owns and joins
+    /// the health-check and initial pre-connect task handles. Completion is sticky
+    /// and shared by concurrent and later callers. Cancelling a caller does not
+    /// cancel the coordinator or prevent a later caller from observing completion.
+    /// When this method returns, cancellation cleanup for those tasks, including
+    /// any initial pre-connect reservation rollback, has completed.
+    ///
+    /// This bounded quiescence excludes checked-out raw leases, reusable client
+    /// sessions, and caller-owned pending demand connector futures. Consequently,
+    /// [`active_count`](Self::active_count) may remain nonzero after this method
+    /// returns. It does not prove that every reference to pool accounting is gone.
+    ///
+    /// The future must be polled inside a live Tokio runtime. Runtime teardown can
+    /// cancel runtime tasks and therefore cannot promise asynchronous completion;
+    /// [`shutdown`](Self::shutdown) and [`Drop`] remain nonblocking in that case.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the first caller that starts the detached coordinator is polled
+    /// outside a Tokio runtime.
+    pub async fn shutdown_and_wait(&self) {
+        self.shutdown();
+
+        let (mut completion, tasks, completed) = {
+            let mut shutdown = self.background_shutdown.lock();
+            let completion = shutdown.completed.subscribe();
+            let tasks = if shutdown.coordinator_started {
+                None
+            } else {
+                shutdown.coordinator_started = true;
+                Some(
+                    shutdown
+                        .tasks
+                        .take()
+                        .expect("background tasks must exist before coordinator start"),
+                )
+            };
+            (completion, tasks, shutdown.completed.clone())
+        };
+
+        if let Some(tasks) = tasks {
+            tokio::spawn(tasks.abort_join_and_complete(completed));
+        }
+
+        loop {
+            if *completion.borrow() {
+                return;
+            }
+            completion
+                .changed()
+                .await
+                .expect("pool shutdown completion sender must outlive waiters");
         }
     }
 
@@ -851,6 +984,7 @@ mod tests {
     use std::future::pending;
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc as std_mpsc;
     use std::time::Duration;
 
     use rusty_modbus_frame::FrameHeader;
@@ -858,15 +992,17 @@ mod tests {
     use rusty_modbus_tcp::{TcpConfig, TransportError};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::oneshot::error::TryRecvError;
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::sync::{Barrier, mpsc, oneshot};
     use tokio::task::JoinHandle;
     use tracing::field::{Field, Visit};
-    use tracing::{Event, Subscriber, dispatcher};
+    use tracing::{Event, Level, Subscriber, dispatcher};
     use tracing_subscriber::layer::Context;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{Layer, registry};
 
     type GetTask = JoinHandle<Result<PooledConnection, PoolError>>;
+
+    static TRACING_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct GatedConnectAttempt {
         addr: SocketAddr,
@@ -960,6 +1096,76 @@ mod tests {
                 trigger: visitor.trigger.expect("idle retirement trigger field"),
                 is_priority: visitor.is_priority.expect("idle retirement priority field"),
             });
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CapturedShutdownWarning {
+        message: String,
+        unexpected_join_errors: u64,
+        task_count: u64,
+    }
+
+    #[derive(Default)]
+    struct ShutdownWarningVisitor {
+        message: Option<String>,
+        unexpected_join_errors: Option<u64>,
+        task_count: Option<u64>,
+    }
+
+    impl Visit for ShutdownWarningVisitor {
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            match field.name() {
+                "unexpected_join_errors" => self.unexpected_join_errors = Some(value),
+                "task_count" => self.task_count = Some(value),
+                _ => {}
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ShutdownWarningCapture {
+        events: Arc<StdMutex<Vec<CapturedShutdownWarning>>>,
+    }
+
+    impl<S> Layer<S> for ShutdownWarningCapture
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+            if event.metadata().target() != "rusty_modbus_pool::shutdown"
+                || *event.metadata().level() != Level::WARN
+            {
+                return;
+            }
+
+            let mut visitor = ShutdownWarningVisitor::default();
+            event.record(&mut visitor);
+            self.events.lock().unwrap().push(CapturedShutdownWarning {
+                message: visitor.message.expect("shutdown warning message field"),
+                unexpected_join_errors: visitor
+                    .unexpected_join_errors
+                    .expect("shutdown warning error count field"),
+                task_count: visitor
+                    .task_count
+                    .expect("shutdown warning task count field"),
+            });
+        }
+    }
+
+    struct DropSignal(Option<oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(signal) = self.0.take() {
+                let _ = signal.send(());
+            }
         }
     }
 
@@ -1061,7 +1267,13 @@ mod tests {
 
     async fn wait_for_pre_connect_tasks(pool: &ConnectionPool) {
         for _ in 0..1_000 {
-            if pool.pre_connect_tasks.iter().all(JoinHandle::is_finished) {
+            let all_finished = pool
+                .background_shutdown
+                .lock()
+                .tasks
+                .as_ref()
+                .is_none_or(|tasks| tasks.pre_connect.iter().all(JoinHandle::is_finished));
+            if all_finished {
                 return;
             }
             tokio::task::yield_now().await;
@@ -1077,6 +1289,42 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("pool should reach active count {expected} promptly");
+    }
+
+    async fn wait_for_shutdown_coordinator(pool: &ConnectionPool) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if pool.background_shutdown.lock().coordinator_started {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown coordinator should start promptly");
+    }
+
+    fn add_background_task(pool: &ConnectionPool, task: JoinHandle<()>) {
+        pool.background_shutdown
+            .lock()
+            .tasks
+            .as_mut()
+            .expect("test task must be added before coordinator start")
+            .pre_connect
+            .push(task);
+    }
+
+    fn add_blocking_background_task(
+        pool: &ConnectionPool,
+    ) -> (oneshot::Receiver<()>, std_mpsc::Sender<()>) {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let task = tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        add_background_task(pool, task);
+        (started_rx, release_tx)
     }
 
     async fn connected_halves_with_peer() -> ((TcpSink, TcpRecvStream), tokio::net::TcpStream) {
@@ -1207,6 +1455,278 @@ mod tests {
             .await
             .expect_err("pending acquisition should be cancelled");
         assert!(error.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn shutdown_and_wait_empty_pool_is_sticky_and_prompt() {
+        let pool = ConnectionPool::new(test_config(1));
+
+        tokio::time::timeout(Duration::from_secs(1), pool.shutdown_and_wait())
+            .await
+            .expect("empty pool background tasks should join promptly");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            pool.shutdown_and_wait().await;
+            pool.shutdown_and_wait().await;
+        })
+        .await
+        .expect("repeated calls should observe sticky completion promptly");
+
+        let shutdown = pool.background_shutdown.lock();
+        assert!(shutdown.coordinator_started);
+        assert!(shutdown.tasks.is_none());
+        assert!(*shutdown.completed.borrow());
+    }
+
+    #[tokio::test]
+    async fn shutdown_and_wait_joins_pending_pre_connect_and_releases_reservation() {
+        let addr = test_addr(15_220);
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 1,
+        }]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        let attempt = next_pre_connect_attempt(&mut attempts).await;
+        assert_eq!(pool.active_count(), 1);
+
+        tokio::time::timeout(Duration::from_secs(1), pool.shutdown_and_wait())
+            .await
+            .expect("pre-connect cancellation and join should complete promptly");
+
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+        assert!(!pool.inner.lock().active_priority.contains_key(&addr));
+        assert!(attempt.complete.send(Ok(())).is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_and_wait_joins_pre_connect_parked_in_backoff() {
+        let addr = test_addr(15_221);
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 1,
+        }]);
+        let (pool, mut attempts, mut retries) = pool_with_gated_pre_connect(config);
+        next_pre_connect_attempt(&mut attempts).await.fail();
+        let retry = next_retry_wait(&mut retries).await;
+        assert_eq!(pool.active_count(), 0);
+        assert!(!pool.inner.lock().active_priority.contains_key(&addr));
+
+        tokio::time::timeout(Duration::from_secs(1), pool.shutdown_and_wait())
+            .await
+            .expect("parked backoff task should abort and join promptly");
+
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+        assert!(retry.complete.send(()).is_err());
+        assert!(matches!(
+            attempts.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_first_shutdown_waiter_does_not_lose_join_ownership() {
+        let pool = ConnectionPool::new(test_config(1));
+        let (blocking_started, release_blocking) = add_blocking_background_task(&pool);
+        blocking_started.await.unwrap();
+        let pool = Arc::new(pool);
+
+        let first_pool = Arc::clone(&pool);
+        let first = tokio::spawn(async move { first_pool.shutdown_and_wait().await });
+        wait_for_shutdown_coordinator(&pool).await;
+        assert!(!first.is_finished());
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        assert!(!*pool.background_shutdown.lock().completed.borrow());
+
+        let second_pool = Arc::clone(&pool);
+        let second = tokio::spawn(async move { second_pool.shutdown_and_wait().await });
+        tokio::task::yield_now().await;
+        assert!(!second.is_finished());
+        release_blocking.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("later waiter should observe coordinator completion")
+            .expect("later waiter task should not fail");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_shutdown_waiters_share_completion_and_one_may_cancel() {
+        let pool = ConnectionPool::new(test_config(1));
+        let (blocking_started, release_blocking) = add_blocking_background_task(&pool);
+        blocking_started.await.unwrap();
+        let pool = Arc::new(pool);
+
+        let mut waiters = Vec::new();
+        for _ in 0..3 {
+            let waiter_pool = Arc::clone(&pool);
+            waiters.push(tokio::spawn(async move {
+                waiter_pool.shutdown_and_wait().await;
+            }));
+        }
+        wait_for_shutdown_coordinator(&pool).await;
+        waiters[0].abort();
+        assert!(waiters.remove(0).await.unwrap_err().is_cancelled());
+        assert!(waiters.iter().all(|waiter| !waiter.is_finished()));
+
+        release_blocking.send(()).unwrap();
+        for waiter in waiters {
+            tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .expect("shared completion should wake every waiter")
+                .expect("shutdown waiter task should not fail");
+        }
+        assert!(*pool.background_shutdown.lock().completed.borrow());
+    }
+
+    #[tokio::test]
+    async fn synchronous_shutdown_then_async_wait_joins_already_aborted_tasks() {
+        let addr = test_addr(15_222);
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 1,
+        }]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        let attempt = next_pre_connect_attempt(&mut attempts).await;
+        assert_eq!(pool.active_count(), 1);
+
+        pool.shutdown();
+        pool.shutdown();
+        {
+            let shutdown = pool.background_shutdown.lock();
+            assert!(!shutdown.coordinator_started);
+            assert!(shutdown.tasks.is_some());
+        }
+
+        pool.shutdown_and_wait().await;
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+        assert!(attempt.complete.send(Ok(())).is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_sync_shutdown_and_async_wait_release_pre_connect_once() {
+        let addr = test_addr(15_223);
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 2,
+        }]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        let attempt = next_pre_connect_attempt(&mut attempts).await;
+        let demand = acquired_connection(&pool, addr).await;
+        assert_eq!(pool.active_count(), 2);
+        let pool = Arc::new(pool);
+        let barrier = Arc::new(Barrier::new(3));
+
+        let sync_pool = Arc::clone(&pool);
+        let sync_barrier = Arc::clone(&barrier);
+        let synchronous = tokio::spawn(async move {
+            sync_barrier.wait().await;
+            sync_pool.shutdown();
+            sync_pool.shutdown();
+        });
+        let async_pool = Arc::clone(&pool);
+        let async_barrier = Arc::clone(&barrier);
+        let asynchronous = tokio::spawn(async move {
+            async_barrier.wait().await;
+            async_pool.shutdown_and_wait().await;
+            async_pool.shutdown_and_wait().await;
+        });
+        barrier.wait().await;
+        synchronous.await.unwrap();
+        asynchronous.await.unwrap();
+
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.inner.lock().active_priority.get(&addr), Some(&1));
+        assert!(attempt.complete.send(Ok(())).is_err());
+        drop(demand);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn background_task_panic_warns_and_does_not_strand_other_joins() {
+        let _tracing_test = TRACING_TEST_LOCK.lock().await;
+        let pool = ConnectionPool::new(test_config(1));
+        let panicked = tokio::spawn(async { panic!("synthetic pool task panic") });
+        while !panicked.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        add_background_task(&pool, panicked);
+
+        let (cleanup_tx, mut cleanup_rx) = oneshot::channel();
+        let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
+        let cleanup = tokio::spawn(async move {
+            let _cleanup = DropSignal(Some(cleanup_tx));
+            cleanup_started_tx.send(()).unwrap();
+            pending::<()>().await;
+        });
+        cleanup_started_rx.await.unwrap();
+        add_background_task(&pool, cleanup);
+
+        let capture = ShutdownWarningCapture::default();
+        let dispatch = tracing::Dispatch::new(registry().with(capture.clone()));
+        let _default = dispatcher::set_default(&dispatch);
+        pool.shutdown_and_wait().await;
+
+        assert_eq!(cleanup_rx.try_recv(), Ok(()));
+        assert_eq!(
+            capture.events.lock().unwrap().as_slice(),
+            [CapturedShutdownWarning {
+                message: "pool_background_task_join_failed".to_owned(),
+                unexpected_join_errors: 1,
+                task_count: 3,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_task_quiescence_excludes_checked_out_raw_lease() {
+        let pool = ConnectionPool::new(test_config(1));
+        let lease = acquired_connection(&pool, test_addr(15_224)).await;
+        assert_eq!(pool.active_count(), 1);
+
+        pool.shutdown_and_wait().await;
+
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+        drop(lease);
+        assert_eq!(pool.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_task_quiescence_excludes_pending_demand_connector() {
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let (demand, entered) = spawn_pending_get(Arc::clone(&pool), test_addr(15_225));
+        entered.await.unwrap();
+        assert_eq!(pool.active_count(), 1);
+
+        tokio::time::timeout(Duration::from_secs(1), pool.shutdown_and_wait())
+            .await
+            .expect("caller-owned demand connector must not delay pool task quiescence");
+
+        assert!(!demand.is_finished());
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+        abort_pending(demand).await;
+        assert_eq!(pool.active_count(), 0);
+    }
+
+    #[test]
+    fn synchronous_shutdown_and_drop_after_runtime_teardown_do_not_panic() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let pool = runtime.block_on(async { ConnectionPool::new(test_config(1)) });
+        drop(runtime);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.shutdown();
+            pool.shutdown();
+            drop(pool);
+        }));
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -1499,7 +2019,16 @@ mod tests {
             attempts.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
-        assert_eq!(pool.pre_connect_tasks.len(), 1);
+        assert_eq!(
+            pool.background_shutdown
+                .lock()
+                .tasks
+                .as_ref()
+                .expect("coordinator has not started")
+                .pre_connect
+                .len(),
+            1
+        );
         assert_eq!(pool.active_count(), 1);
 
         pool.shutdown();
@@ -1688,6 +2217,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_sweep_validates_both_pools_before_non_priority_age_eviction() {
+        let _tracing_test = TRACING_TEST_LOCK.lock().await;
         let pool = ConnectionPool::new(test_config(8));
         let now = Instant::now();
         let expired = now - Duration::from_secs(2);
