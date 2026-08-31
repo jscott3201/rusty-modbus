@@ -126,9 +126,11 @@ const fn idle_observation_reason(observation: TcpIdleObservation) -> &'static st
 pub(crate) struct PoolInner {
     /// Idle connections available for reuse (entries from both pools).
     pub idle: Vec<PoolEntry>,
-    /// Number of currently checked-out (active) **non-priority** connections.
+    /// Number of active accounting charges for **non-priority** connections,
+    /// including checked-out connections and pending connection establishment.
     pub active_non_priority: usize,
-    /// Number of currently checked-out (active) **priority** connections,
+    /// Number of active accounting charges for **priority** connections,
+    /// including checked-out connections and pending connection establishment,
     /// counted per device address so each device's budget is independent.
     pub active_priority: HashMap<SocketAddr, usize>,
     /// Whether the pool is shutting down.
@@ -136,7 +138,8 @@ pub(crate) struct PoolInner {
 }
 
 impl PoolInner {
-    /// Total active (checked-out) connections across both pools.
+    /// Total active accounting charges across both pools, including pending
+    /// connection establishment.
     pub(crate) fn active_total(&self) -> usize {
         self.active_non_priority + self.active_priority.values().sum::<usize>()
     }
@@ -185,10 +188,10 @@ impl PoolInner {
 
 /// Owns an active capacity charge while a new connection is pending.
 ///
-/// Unless committed into a [`PooledConnection`], dropping the reservation
-/// releases the charge and restores any idle entry tentatively evicted to make
-/// room. Rollback is synchronous so dropping a pending `get` future is enough
-/// to restore the pool invariants.
+/// Unless committed into a [`PooledConnection`] or an idle pre-connect entry,
+/// dropping the reservation releases the charge and restores any idle entry
+/// tentatively evicted to make room. Rollback is synchronous so dropping a
+/// pending connector future is enough to restore the pool invariants.
 struct PendingReservation {
     pool: Arc<Mutex<PoolInner>>,
     capacity_changed: Arc<Notify>,
@@ -227,6 +230,31 @@ impl PendingReservation {
         // A successful replacement deliberately retires the evicted connection.
         drop(self.evicted.take());
         connection
+    }
+
+    /// Atomically convert a pending priority charge into an idle entry.
+    ///
+    /// Releasing the active charge and inserting idle happen under one lock so
+    /// another acquisition can never observe a transient hole in the device
+    /// budget. If shutdown won, the transport is dropped after unlocking.
+    fn commit_idle(mut self, entry: PoolEntry) {
+        debug_assert!(self.is_priority);
+        debug_assert!(self.evicted.is_none());
+
+        let rejected = {
+            let mut inner = self.pool.lock();
+            inner.release_active(self.is_priority, self.addr);
+            self.committed = true;
+            if inner.shutting_down {
+                Some(entry)
+            } else {
+                inner.idle.push(entry);
+                None
+            }
+        };
+
+        self.capacity_changed.notify_waiters();
+        drop(rejected);
     }
 }
 
@@ -269,7 +297,7 @@ pub struct ConnectionPool {
     capacity_changed: Arc<Notify>,
     config: PoolConfig,
     health_task: Option<tokio::task::JoinHandle<()>>,
-    /// Background pre-connect/reconnect tasks (one per priority device).
+    /// Background initial pre-connect retry tasks (one per priority device).
     /// Tracked so they can be aborted on shutdown — otherwise a task parked in
     /// its backoff sleep would outlive the pool and keep `inner` alive.
     pre_connect_tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -289,11 +317,29 @@ impl ConnectionPool {
     /// Create a new connection pool.
     ///
     /// If `config.pre_connect` is true and priority devices are configured,
-    /// background tasks are spawned to eagerly establish those connections,
-    /// retrying with exponential backoff until they succeed or the pool shuts
-    /// down. The call itself returns immediately.
+    /// background tasks are spawned for one-time initial warm-up. Each distinct
+    /// address retries with exponential backoff until one connection succeeds,
+    /// its budget is filled by another path, or the pool shuts down. This does
+    /// not replenish later retirements. The call itself returns immediately.
     #[must_use]
     pub fn new(config: PoolConfig) -> Self {
+        Self::new_with_pre_connect_runtime(config, TcpTransport::connect, tokio::time::sleep)
+    }
+
+    /// Construction path with injectable pre-connect connector and retry wait.
+    fn new_with_pre_connect_runtime<C, F, R, RF>(
+        config: PoolConfig,
+        connector: C,
+        retry_wait: R,
+    ) -> Self
+    where
+        C: Fn(rusty_modbus_tcp::TcpConfig, SocketAddr) -> F + Clone + Send + 'static,
+        F: Future<Output = Result<(TcpSink, TcpRecvStream), rusty_modbus_tcp::TransportError>>
+            + Send
+            + 'static,
+        R: Fn(Duration) -> RF + Clone + Send + 'static,
+        RF: Future<Output = ()> + Send + 'static,
+    {
         let inner = Arc::new(Mutex::new(PoolInner {
             idle: Vec::new(),
             active_non_priority: 0,
@@ -310,7 +356,7 @@ impl ConnectionPool {
         );
 
         let pre_connect_tasks = if config.pre_connect {
-            Self::spawn_pre_connect(&config, &inner)
+            Self::spawn_pre_connect(&config, &inner, &capacity_changed, connector, retry_wait)
         } else {
             Vec::new()
         };
@@ -632,7 +678,7 @@ impl ConnectionPool {
 
     /// Shut down the pool — drop all idle connections and reject future requests.
     ///
-    /// Aborts the background health-check and all pre-connect/reconnect tasks so
+    /// Aborts the background health-check and all initial pre-connect retry tasks so
     /// they stop immediately (even if parked in a backoff sleep) and release
     /// their references to the pool state.
     pub fn shutdown(&self) {
@@ -651,7 +697,11 @@ impl ConnectionPool {
         }
     }
 
-    /// Number of currently active (checked-out) connections across both pools.
+    /// Number of active accounting charges across both pools.
+    ///
+    /// This includes checked-out connections and capacity reserved while a
+    /// demand or initial priority pre-connect connector is pending. It excludes
+    /// idle connections.
     #[must_use]
     pub fn active_count(&self) -> usize {
         self.inner.lock().active_total()
@@ -684,15 +734,27 @@ impl ConnectionPool {
     ///
     /// One task per *distinct* device address (duplicate `priority_devices`
     /// entries for the same address are ignored so they cannot collectively
-    /// exceed the per-device budget). Each task retries with exponential
-    /// [`Backoff`] until it establishes a connection (capped at the device's
-    /// per-device budget) or the pool shuts down. This is where
+    /// exceed the per-device budget). Each task reserves under [`PoolInner`],
+    /// then retries failures with exponential [`Backoff`] until it establishes
+    /// one connection, another path fills the device budget, or the pool shuts
+    /// down. It does not replenish later retirements. This is where
     /// [`BackoffConfig`](crate::BackoffConfig) is applied. The returned handles
     /// are aborted by [`shutdown`](Self::shutdown).
-    fn spawn_pre_connect(
+    fn spawn_pre_connect<C, F, R, RF>(
         config: &PoolConfig,
         inner: &Arc<Mutex<PoolInner>>,
-    ) -> Vec<tokio::task::JoinHandle<()>> {
+        capacity_changed: &Arc<Notify>,
+        connector: C,
+        retry_wait: R,
+    ) -> Vec<tokio::task::JoinHandle<()>>
+    where
+        C: Fn(rusty_modbus_tcp::TcpConfig, SocketAddr) -> F + Clone + Send + 'static,
+        F: Future<Output = Result<(TcpSink, TcpRecvStream), rusty_modbus_tcp::TransportError>>
+            + Send
+            + 'static,
+        R: Fn(Duration) -> RF + Clone + Send + 'static,
+        RF: Future<Output = ()> + Send + 'static,
+    {
         let mut seen = std::collections::HashSet::new();
         let mut handles = Vec::new();
 
@@ -705,39 +767,51 @@ impl ConnectionPool {
             let tcp_config = config.tcp_config.clone();
             let backoff_config = config.backoff.clone();
             let inner = Arc::clone(inner);
+            let capacity_changed = Arc::clone(capacity_changed);
+            let connector = connector.clone();
+            let retry_wait = retry_wait.clone();
 
             handles.push(tokio::spawn(async move {
                 let mut backoff = Backoff::new(backoff_config);
                 loop {
-                    // Stop retrying once the pool is shutting down.
-                    if inner.lock().shutting_down {
-                        return;
-                    }
-
-                    if let Ok((sink, stream)) =
-                        TcpTransport::connect(tcp_config.clone(), addr).await
-                    {
-                        let entry = PoolEntry {
-                            addr,
-                            sink,
-                            stream,
-                            last_used: Instant::now(),
-                            is_priority: true,
-                        };
+                    // Reserve from the exact device budget before connector
+                    // establishment. Demand acquisition uses the same active
+                    // charge and PoolInner accounting authority.
+                    let reservation = {
                         let mut pool = inner.lock();
-                        // Respect shutdown and the device's own budget.
-                        if !pool.shutting_down && pool.priority_total(addr) < cap {
-                            pool.idle.push(entry);
+                        if pool.shutting_down || pool.priority_total(addr) >= cap {
+                            return;
                         }
-                        return;
+                        *pool.active_priority.entry(addr).or_insert(0) += 1;
+                        PendingReservation::new(
+                            Arc::clone(&inner),
+                            Arc::clone(&capacity_changed),
+                            addr,
+                            true,
+                            None,
+                        )
+                    };
+
+                    match connector(tcp_config.clone(), addr).await {
+                        Ok((sink, stream)) => {
+                            reservation.commit_idle(PoolEntry {
+                                addr,
+                                sink,
+                                stream,
+                                last_used: Instant::now(),
+                                is_priority: true,
+                            });
+                            return;
+                        }
+                        Err(_) => drop(reservation),
                     }
 
-                    // Connect failed: reconnect with exponential backoff (capped
+                    // Connect failed: retry with exponential backoff (capped
                     // at max_delay), then loop to re-check shutdown and retry. A
                     // minimum 1ms floor guards against a zero `initial_delay`
                     // config turning this into a hot busy-loop.
                     let delay = backoff.next_delay().max(MIN_BACKOFF_SLEEP);
-                    tokio::time::sleep(delay).await;
+                    retry_wait(delay).await;
                 }
             }));
         }
@@ -746,7 +820,7 @@ impl ConnectionPool {
     }
 }
 
-/// Lower bound on the pre-connect reconnect sleep, preventing a misconfigured
+/// Lower bound on the pre-connect retry sleep, preventing a misconfigured
 /// zero `initial_delay` from spinning the retry loop.
 const MIN_BACKOFF_SLEEP: std::time::Duration = std::time::Duration::from_millis(1);
 
@@ -773,16 +847,18 @@ fn find_evictable(inner: &PoolInner) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::future::pending;
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use rusty_modbus_frame::FrameHeader;
     use rusty_modbus_tcp::TransportStream;
     use rusty_modbus_tcp::{TcpConfig, TransportError};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::sync::oneshot;
     use tokio::sync::oneshot::error::TryRecvError;
+    use tokio::sync::{mpsc, oneshot};
     use tokio::task::JoinHandle;
     use tracing::field::{Field, Visit};
     use tracing::{Event, Subscriber, dispatcher};
@@ -791,6 +867,38 @@ mod tests {
     use tracing_subscriber::{Layer, registry};
 
     type GetTask = JoinHandle<Result<PooledConnection, PoolError>>;
+
+    struct GatedConnectAttempt {
+        addr: SocketAddr,
+        complete: oneshot::Sender<Result<(), TransportError>>,
+    }
+
+    struct GatedRetryWait {
+        delay: Duration,
+        complete: oneshot::Sender<()>,
+    }
+
+    impl GatedConnectAttempt {
+        fn succeed(self) {
+            self.complete
+                .send(Ok(()))
+                .expect("pre-connect attempt should remain pending");
+        }
+
+        fn fail(self) {
+            self.complete
+                .send(Err(TransportError::Disconnected))
+                .expect("pre-connect attempt should remain pending");
+        }
+    }
+
+    impl GatedRetryWait {
+        fn resume(self) {
+            self.complete
+                .send(())
+                .expect("pre-connect retry wait should remain pending");
+        }
+    }
 
     #[derive(Debug, PartialEq, Eq)]
     struct CapturedIdleRetirement {
@@ -867,6 +975,108 @@ mod tests {
             health_check_interval: Duration::from_hours(1),
             ..PoolConfig::default()
         }
+    }
+
+    fn pre_connect_config(priority_devices: Vec<crate::PriorityDevice>) -> PoolConfig {
+        PoolConfig {
+            pre_connect: true,
+            priority_devices,
+            backoff: crate::BackoffConfig {
+                initial_delay: Duration::from_millis(10),
+                max_delay: Duration::from_millis(10),
+                multiplier: 1.0,
+            },
+            ..test_config(4)
+        }
+    }
+
+    fn pool_with_gated_pre_connect(
+        config: PoolConfig,
+    ) -> (
+        ConnectionPool,
+        mpsc::UnboundedReceiver<GatedConnectAttempt>,
+        mpsc::UnboundedReceiver<GatedRetryWait>,
+    ) {
+        let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+        let (retry_tx, retry_rx) = mpsc::unbounded_channel();
+        let pool = ConnectionPool::new_with_pre_connect_runtime(
+            config,
+            move |_tcp_config, addr| {
+                let attempt_tx = attempt_tx.clone();
+                async move {
+                    let (complete_tx, complete_rx) = oneshot::channel();
+                    if attempt_tx
+                        .send(GatedConnectAttempt {
+                            addr,
+                            complete: complete_tx,
+                        })
+                        .is_err()
+                    {
+                        return Err(TransportError::Disconnected);
+                    }
+
+                    match complete_rx.await {
+                        Ok(Ok(())) => Ok(connected_halves().await),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err(TransportError::Disconnected),
+                    }
+                }
+            },
+            move |delay| {
+                let retry_tx = retry_tx.clone();
+                async move {
+                    let (complete_tx, complete_rx) = oneshot::channel();
+                    if retry_tx
+                        .send(GatedRetryWait {
+                            delay,
+                            complete: complete_tx,
+                        })
+                        .is_ok()
+                    {
+                        let _ = complete_rx.await;
+                    }
+                }
+            },
+        );
+        (pool, attempt_rx, retry_rx)
+    }
+
+    async fn next_pre_connect_attempt(
+        attempts: &mut mpsc::UnboundedReceiver<GatedConnectAttempt>,
+    ) -> GatedConnectAttempt {
+        tokio::time::timeout(Duration::from_secs(1), attempts.recv())
+            .await
+            .expect("pre-connect connector should start promptly")
+            .expect("pre-connect connector channel should remain open")
+    }
+
+    async fn next_retry_wait(
+        retries: &mut mpsc::UnboundedReceiver<GatedRetryWait>,
+    ) -> GatedRetryWait {
+        tokio::time::timeout(Duration::from_secs(1), retries.recv())
+            .await
+            .expect("pre-connect retry wait should start promptly")
+            .expect("pre-connect retry channel should remain open")
+    }
+
+    async fn wait_for_pre_connect_tasks(pool: &ConnectionPool) {
+        for _ in 0..1_000 {
+            if pool.pre_connect_tasks.iter().all(JoinHandle::is_finished) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("pre-connect tasks should finish promptly");
+    }
+
+    async fn wait_for_active_count(pool: &ConnectionPool, expected: usize) {
+        for _ in 0..1_000 {
+            if pool.active_count() == expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("pool should reach active count {expected} promptly");
     }
 
     async fn connected_halves_with_peer() -> ((TcpSink, TcpRecvStream), tokio::net::TcpStream) {
@@ -997,6 +1207,324 @@ mod tests {
             .await
             .expect_err("pending acquisition should be cancelled");
         assert!(error.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn pending_pre_connect_reserves_before_fail_fast_demand() {
+        let addr = test_addr(15_200);
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 1,
+        }]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        let attempt = next_pre_connect_attempt(&mut attempts).await;
+        assert_eq!(attempt.addr, addr);
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.inner.lock().priority_total(addr), 1);
+
+        let demand_connector_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&demand_connector_calls);
+        let result = pool
+            .get_with_connector(addr, move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { Err(TransportError::Disconnected) }
+            })
+            .await;
+
+        assert!(matches!(result, Err(PoolError::Exhausted)));
+        assert_eq!(demand_connector_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(pool.active_count(), 1);
+
+        attempt.succeed();
+        wait_for_pre_connect_tasks(&pool).await;
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 1);
+        assert_eq!(pool.inner.lock().priority_total(addr), 1);
+        assert!(matches!(
+            attempts.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_pre_connect_releases_for_demand_and_retry_exits_when_full() {
+        let addr = test_addr(15_201);
+        let demand_halves = connected_halves().await;
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 1,
+        }]);
+        let (pool, mut attempts, mut retries) = pool_with_gated_pre_connect(config);
+        let pool = Arc::new(pool);
+        let first_attempt = next_pre_connect_attempt(&mut attempts).await;
+        assert_eq!(pool.active_count(), 1);
+
+        let (demand_started_tx, demand_started_rx) = oneshot::channel();
+        let (demand_connector_tx, demand_connector_rx) = oneshot::channel();
+        let demand_pool = Arc::clone(&pool);
+        let demand = tokio::spawn(async move {
+            demand_started_tx
+                .send(())
+                .expect("demand start receiver should remain live");
+            demand_pool
+                .get_with_acquisition_timeout_and_connector(
+                    addr,
+                    Duration::from_secs(5),
+                    move || async move {
+                        demand_connector_tx
+                            .send(())
+                            .expect("demand connector receiver should remain live");
+                        Ok(demand_halves)
+                    },
+                )
+                .await
+        });
+        demand_started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(!demand.is_finished());
+
+        first_attempt.fail();
+        let retry = next_retry_wait(&mut retries).await;
+        assert_eq!(retry.delay, Duration::from_millis(10));
+        demand_connector_rx
+            .await
+            .expect("failure rollback should wake demand to reserve");
+        let connection = demand
+            .await
+            .expect("demand task should complete")
+            .expect("released priority capacity should be reservable");
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+
+        // Release the deterministic backoff gate. Demand now fills the budget,
+        // so the retry exits without starting a second connector.
+        retry.resume();
+        wait_for_pre_connect_tasks(&pool).await;
+        assert!(matches!(
+            attempts.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert_eq!(pool.active_count(), 1);
+
+        drop(connection);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn successful_pre_connect_wakes_timed_waiter_for_idle_reuse() {
+        let addr = test_addr(15_202);
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 1,
+        }]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        let pool = Arc::new(pool);
+        let attempt = next_pre_connect_attempt(&mut attempts).await;
+
+        let demand_connector_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&demand_connector_calls);
+        let (demand_started_tx, demand_started_rx) = oneshot::channel();
+        let demand_pool = Arc::clone(&pool);
+        let waiter = tokio::spawn(async move {
+            demand_started_tx
+                .send(())
+                .expect("demand start receiver should remain live");
+            demand_pool
+                .get_with_acquisition_timeout_and_connector(
+                    addr,
+                    Duration::from_secs(5),
+                    move || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        async { Err(TransportError::Disconnected) }
+                    },
+                )
+                .await
+        });
+        demand_started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        assert_eq!(demand_connector_calls.load(Ordering::SeqCst), 0);
+
+        attempt.succeed();
+        let connection = waiter
+            .await
+            .expect("waiter task should complete")
+            .expect("waiter should claim the newly idle transport");
+        wait_for_pre_connect_tasks(&pool).await;
+        assert_eq!(connection.addr(), addr);
+        assert_eq!(demand_connector_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+        assert!(matches!(
+            attempts.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+
+        // Raw retirement does not replenish the one-time warm-up entry.
+        drop(connection);
+        tokio::task::yield_now().await;
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_aborts_pending_pre_connect_without_idle_resurrection() {
+        let addr = test_addr(15_203);
+        let demand_halves = connected_halves().await;
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 2,
+        }]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        let attempt = next_pre_connect_attempt(&mut attempts).await;
+        let demand = pool
+            .get_with_connector(addr, move || async move { Ok(demand_halves) })
+            .await
+            .expect("the second device charge should remain available to demand");
+        assert_eq!(pool.active_count(), 2);
+
+        pool.shutdown();
+        pool.shutdown();
+        let _ = attempt.complete.send(Ok(()));
+        wait_for_pre_connect_tasks(&pool).await;
+        wait_for_active_count(&pool, 1).await;
+
+        // The sibling demand charge proves cancellation released exactly the
+        // pre-connect charge once; shutdown cannot insert the completed entry.
+        assert_eq!(pool.inner.lock().active_priority.get(&addr), Some(&1));
+        assert_eq!(pool.idle_count(), 0);
+        drop(demand);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn completed_pre_connect_after_shutdown_releases_without_idle() {
+        let addr = test_addr(15_208);
+        let mut config = test_config(1);
+        config.priority_devices = vec![crate::PriorityDevice {
+            addr,
+            max_connections: 1,
+        }];
+        let pool = ConnectionPool::new(config);
+        let reservation = {
+            let mut inner = pool.inner.lock();
+            *inner.active_priority.entry(addr).or_insert(0) += 1;
+            PendingReservation::new(
+                Arc::clone(&pool.inner),
+                Arc::clone(&pool.capacity_changed),
+                addr,
+                true,
+                None,
+            )
+        };
+        let (sink, stream) = connected_halves().await;
+        assert_eq!(pool.active_count(), 1);
+
+        pool.shutdown();
+        reservation.commit_idle(PoolEntry {
+            addr,
+            sink,
+            stream,
+            last_used: Instant::now(),
+            is_priority: true,
+        });
+
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+        assert!(!pool.inner.lock().active_priority.contains_key(&addr));
+    }
+
+    #[tokio::test]
+    async fn independent_priority_addresses_reserve_independent_pre_connect_budgets() {
+        let first_addr = test_addr(15_204);
+        let second_addr = test_addr(15_205);
+        let config = pre_connect_config(vec![
+            crate::PriorityDevice {
+                addr: first_addr,
+                max_connections: 1,
+            },
+            crate::PriorityDevice {
+                addr: second_addr,
+                max_connections: 1,
+            },
+        ]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        let first = next_pre_connect_attempt(&mut attempts).await;
+        let second = next_pre_connect_attempt(&mut attempts).await;
+
+        assert_eq!(
+            HashSet::from([first.addr, second.addr]),
+            HashSet::from([first_addr, second_addr])
+        );
+        {
+            let inner = pool.inner.lock();
+            assert_eq!(inner.active_priority.get(&first_addr), Some(&1));
+            assert_eq!(inner.active_priority.get(&second_addr), Some(&1));
+            assert_eq!(inner.active_total(), 2);
+        }
+        assert!(matches!(
+            attempts.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        pool.shutdown();
+        drop(first);
+        drop(second);
+        wait_for_pre_connect_tasks(&pool).await;
+        wait_for_active_count(&pool, 0).await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_priority_address_spawns_one_pending_pre_connect_attempt() {
+        let addr = test_addr(15_206);
+        let config = pre_connect_config(vec![
+            crate::PriorityDevice {
+                addr,
+                max_connections: 1,
+            },
+            crate::PriorityDevice {
+                addr,
+                max_connections: 3,
+            },
+        ]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        let attempt = next_pre_connect_attempt(&mut attempts).await;
+        assert_eq!(attempt.addr, addr);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(matches!(
+            attempts.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert_eq!(pool.pre_connect_tasks.len(), 1);
+        assert_eq!(pool.active_count(), 1);
+
+        pool.shutdown();
+        drop(attempt);
+        wait_for_pre_connect_tasks(&pool).await;
+        wait_for_active_count(&pool, 0).await;
+    }
+
+    #[tokio::test]
+    async fn zero_priority_cap_runs_no_pre_connect_connector() {
+        let addr = test_addr(15_207);
+        let config = pre_connect_config(vec![crate::PriorityDevice {
+            addr,
+            max_connections: 0,
+        }]);
+        let (pool, mut attempts, _retries) = pool_with_gated_pre_connect(config);
+        wait_for_pre_connect_tasks(&pool).await;
+
+        assert!(matches!(
+            attempts.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 0);
+        assert_eq!(pool.inner.lock().priority_total(addr), 0);
     }
 
     #[test]

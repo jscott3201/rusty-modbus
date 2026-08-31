@@ -22,7 +22,7 @@ pub struct PoolConfig {
     pub idle_timeout: Duration,
     /// Interval for passive idle validation and non-priority age eviction. Default: 60s.
     pub health_check_interval: Duration,
-    /// Reconnect backoff configuration.
+    /// Initial priority pre-connect retry backoff configuration.
     pub backoff: BackoffConfig,
     /// Underlying TCP transport configuration.
     pub tcp_config: TcpConfig,

@@ -37,6 +37,31 @@ capacity wait changes no accounting; cancelling a later pending connection uses
 the reservation guard to release its charge. Pool shutdown wakes blocked
 waiters, which return `PoolError::ShuttingDown` when shutdown is observed.
 
+`active_count()` reports active accounting charges, including capacity reserved
+while a demand or initial priority pre-connect TCP connector is pending. It does
+not report idle connections or expose a separate public pending metric.
+
+## Initial priority pre-connect
+
+Pre-connect is a one-time initial warm-up, not standing replenishment. Pool
+creation starts at most one task per distinct configured priority address. Before
+each TCP attempt, that task reserves one charge from the address's
+`PriorityDevice::max_connections` budget under the same pool lock used by demand
+acquisition. A zero cap starts no TCP attempt. Connector failure, cancellation,
+or shutdown releases the exact charge and wakes capacity waiters before any
+backoff retry. Every retry must reserve again; if demand has filled the budget,
+the warm-up task exits instead of opening another connection.
+
+A successful attempt atomically changes its pending active charge into one idle
+priority entry and wakes waiters. A timed demand waiter can then claim that idle
+transport without opening another connection. A fail-fast `get` racing the
+in-flight pre-connect reservation can return `PoolError::Exhausted`, because the
+pending attempt already consumes the per-address budget.
+
+After one successful warm-up, or after another path fills the address budget,
+the task exits. Retirement of that idle or checked-out connection does not
+restart pre-connect, maintain an idle target, or otherwise replenish capacity.
+
 ## Passive idle TCP validation
 
 Before checkout charges an idle entry active, the pool passively inspects each
