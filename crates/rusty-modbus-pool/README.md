@@ -155,6 +155,25 @@ proof, or guarantee of permanent future silence. This opt-in return path does
 not close the tracked F-017/F-018 recovery gaps. The existing
 `into_retiring_client` method remains the conservative always-retiring default.
 
+Each `PooledClientSession` lifecycle emits exactly one structured tracing event
+with target `rusty_modbus_pool::client_handoff` and message
+`pooled_client_session_completed`. Expected outcomes use `DEBUG`; an internal
+`transport_recovery_failed` outcome uses `WARN`. For example, an application can
+enable these events with an `EnvFilter` directive such as
+`rusty_modbus_pool::client_handoff=debug`.
+
+The event fields are bounded labels: `outcome` is `returned_to_idle`, `retired`,
+`pool_shutting_down`, or `transport_recovery_failed`; `trigger` is
+`shutdown_and_return` or `wrapper_drop`; `verdict` is `reuse_eligible`,
+`not_quiescent`, or `retire`; `retirement_reason` is a stable snake-case reason
+label (`none` when inapplicable and `other` for a future unknown reason); and
+`is_priority` is a boolean. No request, address, Unit ID, error text, or other
+high-cardinality value is recorded.
+
+Tracing is observability only. It adds no public counters, health probe,
+liveness proof, automatic raw-lease invalidation, or recovery/backoff policy,
+and it does not close F-017 or F-018.
+
 ## License
 
 Licensed under the [MIT license](LICENSE). MSRV: Rust 1.95.

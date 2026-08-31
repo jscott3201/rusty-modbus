@@ -4,7 +4,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rusty_modbus_client::{ClientConfig, ModbusClient, SessionReuseVerdict};
+use rusty_modbus_client::{
+    ClientConfig, ModbusClient, SessionRetirementReason, SessionReuseVerdict,
+};
 use rusty_modbus_frame::Frame;
 use rusty_modbus_tcp::{
     TcpRecvStream, TcpSink, TransportError,
@@ -102,6 +104,114 @@ pub enum PooledClientReturnOutcome {
     TransportRecoveryFailed,
 }
 
+#[derive(Clone, Copy)]
+enum SessionCompletionTrigger {
+    ShutdownAndReturn,
+    WrapperDrop,
+}
+
+impl SessionCompletionTrigger {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ShutdownAndReturn => "shutdown_and_return",
+            Self::WrapperDrop => "wrapper_drop",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SessionCompletionFields {
+    outcome: &'static str,
+    trigger: &'static str,
+    verdict: &'static str,
+    retirement_reason: &'static str,
+    is_priority: bool,
+}
+
+fn session_completion_fields(
+    outcome: PooledClientReturnOutcome,
+    trigger: SessionCompletionTrigger,
+    verdict: SessionReuseVerdict,
+    is_priority: bool,
+) -> SessionCompletionFields {
+    let outcome = match outcome {
+        PooledClientReturnOutcome::ReturnedToIdle => "returned_to_idle",
+        PooledClientReturnOutcome::Retired(_) => "retired",
+        PooledClientReturnOutcome::PoolShuttingDown => "pool_shutting_down",
+        PooledClientReturnOutcome::TransportRecoveryFailed => "transport_recovery_failed",
+    };
+    let (verdict, retirement_reason) = match verdict {
+        SessionReuseVerdict::ReuseEligible => ("reuse_eligible", "none"),
+        SessionReuseVerdict::NotQuiescent => ("not_quiescent", "none"),
+        SessionReuseVerdict::Retire(reason) => ("retire", retirement_reason_label(reason)),
+        // Future verdicts conservatively retire in `shutdown_and_return`; keep
+        // their observability bounded without claiming a current reason.
+        _ => ("retire", "other"),
+    };
+
+    SessionCompletionFields {
+        outcome,
+        trigger: trigger.label(),
+        verdict,
+        retirement_reason,
+        is_priority,
+    }
+}
+
+const fn retirement_reason_label(reason: SessionRetirementReason) -> &'static str {
+    match reason {
+        SessionRetirementReason::Aborted => "aborted",
+        SessionRetirementReason::FinalOwnerDropped => "final_owner_dropped",
+        SessionRetirementReason::ShutdownDeadlineExceeded => "shutdown_deadline_exceeded",
+        SessionRetirementReason::ShutdownIncomplete => "shutdown_incomplete",
+        SessionRetirementReason::BackgroundTaskFailed => "background_task_failed",
+        SessionRetirementReason::DispatchCancelled => "dispatch_cancelled",
+        SessionRetirementReason::RequestTimedOut => "request_timed_out",
+        SessionRetirementReason::SendFailed => "send_failed",
+        SessionRetirementReason::ResponseExpired => "response_expired",
+        SessionRetirementReason::UnexpectedResponseUnit => "unexpected_response_unit",
+        SessionRetirementReason::UnexpectedResponseFunction => "unexpected_response_function",
+        SessionRetirementReason::MalformedResponse => "malformed_response",
+        SessionRetirementReason::UnknownOrDuplicateResponse => "unknown_or_duplicate_response",
+        SessionRetirementReason::ResponseChannelClosed => "response_channel_closed",
+        SessionRetirementReason::ReaderDisconnected => "reader_disconnected",
+        SessionRetirementReason::ReaderTransportFailed => "reader_transport_failed",
+        SessionRetirementReason::TypedResponseDataInvalid => "typed_response_data_invalid",
+        SessionRetirementReason::TypedResponseEchoMismatch => "typed_response_echo_mismatch",
+        _ => "other",
+    }
+}
+
+fn emit_session_completion(
+    outcome: PooledClientReturnOutcome,
+    trigger: SessionCompletionTrigger,
+    verdict: SessionReuseVerdict,
+    is_priority: bool,
+) {
+    let fields = session_completion_fields(outcome, trigger, verdict, is_priority);
+    if matches!(outcome, PooledClientReturnOutcome::TransportRecoveryFailed) {
+        tracing::warn!(
+            target: "rusty_modbus_pool::client_handoff",
+            outcome = fields.outcome,
+            trigger = fields.trigger,
+            verdict = fields.verdict,
+            retirement_reason = fields.retirement_reason,
+            is_priority = fields.is_priority,
+            "pooled_client_session_completed"
+        );
+    } else {
+        tracing::debug!(
+            target: "rusty_modbus_pool::client_handoff",
+            outcome = fields.outcome,
+            trigger = fields.trigger,
+            verdict = fields.verdict,
+            retirement_reason = fields.retirement_reason,
+            is_priority = fields.is_priority,
+            "pooled_client_session_completed"
+        );
+    }
+}
+
 /// An opt-in high-level client session that can return a locally clean TCP lease.
 ///
 /// Use [`client`](Self::client) for normal high-level client operations. Only
@@ -119,6 +229,8 @@ pub struct PooledClientSession {
     // still holding an adapter before this direct vault reference is released.
     client: ModbusClient<ReusableSink>,
     vault: Arc<ReusableVault>,
+    is_priority: bool,
+    completion_recorded: bool,
 }
 
 impl PooledClientSession {
@@ -135,17 +247,42 @@ impl PooledClientSession {
     /// [`SessionReuseVerdict::ReuseEligible`]. Pool shutdown is checked atomically
     /// with active-capacity release and idle insertion. Every other path retires
     /// the transport and releases its capacity charge exactly once.
-    pub async fn shutdown_and_return(self) -> PooledClientReturnOutcome {
+    pub async fn shutdown_and_return(mut self) -> PooledClientReturnOutcome {
         self.client.shutdown().await;
         let verdict = self.client.session_reuse_verdict();
-        if verdict != SessionReuseVerdict::ReuseEligible {
-            return PooledClientReturnOutcome::Retired(verdict);
+        let outcome = if verdict != SessionReuseVerdict::ReuseEligible {
+            PooledClientReturnOutcome::Retired(verdict)
+        } else if let Some(recovered) = self.vault.recover().await {
+            recovered.return_to_pool()
+        } else {
+            PooledClientReturnOutcome::TransportRecoveryFailed
+        };
+
+        self.completion_recorded = true;
+        emit_session_completion(
+            outcome,
+            SessionCompletionTrigger::ShutdownAndReturn,
+            verdict,
+            self.is_priority,
+        );
+        outcome
+    }
+}
+
+impl Drop for PooledClientSession {
+    fn drop(&mut self) {
+        if self.completion_recorded {
+            return;
         }
 
-        let Some(recovered) = self.vault.recover().await else {
-            return PooledClientReturnOutcome::TransportRecoveryFailed;
-        };
-        recovered.return_to_pool()
+        self.completion_recorded = true;
+        let verdict = self.client.session_reuse_verdict();
+        emit_session_completion(
+            PooledClientReturnOutcome::Retired(verdict),
+            SessionCompletionTrigger::WrapperDrop,
+            verdict,
+            self.is_priority,
+        );
     }
 }
 
@@ -377,5 +514,113 @@ pub(crate) fn into_reusable_session(
         config,
     );
 
-    PooledClientSession { client, vault }
+    PooledClientSession {
+        client,
+        vault,
+        is_priority,
+        completion_recorded: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn impossible_recovered_lease_maps_transport_recovery_failure_fields() {
+        let outcome = RecoveredLease {
+            entry: None,
+            capacity: None,
+        }
+        .return_to_pool();
+        assert_eq!(outcome, PooledClientReturnOutcome::TransportRecoveryFailed);
+        assert_eq!(
+            session_completion_fields(
+                outcome,
+                SessionCompletionTrigger::ShutdownAndReturn,
+                SessionReuseVerdict::ReuseEligible,
+                false,
+            ),
+            SessionCompletionFields {
+                outcome: "transport_recovery_failed",
+                trigger: "shutdown_and_return",
+                verdict: "reuse_eligible",
+                retirement_reason: "none",
+                is_priority: false,
+            }
+        );
+    }
+
+    #[test]
+    fn current_retirement_reasons_have_stable_bounded_labels() {
+        let cases = [
+            (SessionRetirementReason::Aborted, "aborted"),
+            (
+                SessionRetirementReason::FinalOwnerDropped,
+                "final_owner_dropped",
+            ),
+            (
+                SessionRetirementReason::ShutdownDeadlineExceeded,
+                "shutdown_deadline_exceeded",
+            ),
+            (
+                SessionRetirementReason::ShutdownIncomplete,
+                "shutdown_incomplete",
+            ),
+            (
+                SessionRetirementReason::BackgroundTaskFailed,
+                "background_task_failed",
+            ),
+            (
+                SessionRetirementReason::DispatchCancelled,
+                "dispatch_cancelled",
+            ),
+            (
+                SessionRetirementReason::RequestTimedOut,
+                "request_timed_out",
+            ),
+            (SessionRetirementReason::SendFailed, "send_failed"),
+            (SessionRetirementReason::ResponseExpired, "response_expired"),
+            (
+                SessionRetirementReason::UnexpectedResponseUnit,
+                "unexpected_response_unit",
+            ),
+            (
+                SessionRetirementReason::UnexpectedResponseFunction,
+                "unexpected_response_function",
+            ),
+            (
+                SessionRetirementReason::MalformedResponse,
+                "malformed_response",
+            ),
+            (
+                SessionRetirementReason::UnknownOrDuplicateResponse,
+                "unknown_or_duplicate_response",
+            ),
+            (
+                SessionRetirementReason::ResponseChannelClosed,
+                "response_channel_closed",
+            ),
+            (
+                SessionRetirementReason::ReaderDisconnected,
+                "reader_disconnected",
+            ),
+            (
+                SessionRetirementReason::ReaderTransportFailed,
+                "reader_transport_failed",
+            ),
+            (
+                SessionRetirementReason::TypedResponseDataInvalid,
+                "typed_response_data_invalid",
+            ),
+            (
+                SessionRetirementReason::TypedResponseEchoMismatch,
+                "typed_response_echo_mismatch",
+            ),
+        ];
+
+        for (reason, expected) in cases {
+            assert_eq!(retirement_reason_label(reason), expected);
+        }
+    }
 }
