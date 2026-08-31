@@ -19,6 +19,9 @@ use crate::config::ClientConfig;
 use crate::error::ClientError;
 use crate::lifecycle::{ClientLifecycle, OperationGuard};
 use crate::reader;
+use crate::session::{
+    DispatchGuard, SessionRetirementReason, SessionReuseSafety, SessionReuseVerdict,
+};
 use crate::transaction::{self, TransactionManager};
 
 /// Whether replaying a request after an ambiguous local failure is safe.
@@ -69,6 +72,7 @@ pub struct ModbusClient<S: TransportSink + Send + 'static = TcpSink> {
     config: ClientConfig,
     connected: Arc<AtomicBool>,
     lifecycle: Arc<ClientLifecycle>,
+    reuse_safety: Arc<SessionReuseSafety>,
 }
 
 fn checked_pdu_length(pdu_len: usize) -> Result<u16, ClientError> {
@@ -175,8 +179,13 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         let txn_mgr = Arc::new(TransactionManager::new());
         let max_in_flight = config.max_in_flight.clamp(1, transaction::MAX_SLOTS);
         let connected = Arc::new(AtomicBool::new(true));
-        let lifecycle =
-            ClientLifecycle::new(max_in_flight, Arc::clone(&txn_mgr), Arc::clone(&connected));
+        let reuse_safety = txn_mgr.reuse_safety();
+        let lifecycle = ClientLifecycle::new(
+            max_in_flight,
+            Arc::clone(&txn_mgr),
+            Arc::clone(&connected),
+            Arc::clone(&reuse_safety),
+        );
 
         debug!(
             max_in_flight,
@@ -189,6 +198,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             stream,
             Arc::clone(&txn_mgr),
             Arc::clone(&connected),
+            Arc::clone(&reuse_safety),
             lifecycle.task_stop_receiver(),
         );
 
@@ -204,6 +214,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             config,
             connected,
             lifecycle,
+            reuse_safety,
         }
     }
 
@@ -245,6 +256,22 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         self.config.unit_id
     }
 
+    /// Return the sticky local session reuse-safety verdict.
+    ///
+    /// A running client that has not observed a retirement condition reports
+    /// [`SessionReuseVerdict::NotQuiescent`].
+    /// [`SessionReuseVerdict::ReuseEligible`] is published only after graceful
+    /// shutdown has sealed admission, drained logical operations and transactions,
+    /// and joined the reader and deadline tasks. Any retirement reason is sticky,
+    /// with the first observed reason retained.
+    ///
+    /// This is not a peer health or liveness check and does not recover, return,
+    /// or reinsert either transport half.
+    #[must_use]
+    pub fn session_reuse_verdict(&self) -> SessionReuseVerdict {
+        self.reuse_safety.verdict()
+    }
+
     /// Gracefully seal admission and drain already-admitted operations.
     ///
     /// The configured [`ClientConfig::shutdown_timeout`] starts when admission
@@ -272,7 +299,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             active = self.lifecycle.active_count(),
             "aborting Modbus client"
         );
-        self.lifecycle.abort();
+        self.lifecycle.abort(SessionRetirementReason::Aborted);
     }
 
     /// Send a raw request PDU and await the owned response.
@@ -333,13 +360,22 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
         // If sending fails or reaches the deadline, remove the registration so
         // the slot is not retained until a later scheduler pass.
+        let mut dispatch = DispatchGuard::armed(&self.reuse_safety);
         match poll_before_deadline_or_cancel(attempt_deadline, operation, sink.send(frame)).await {
             PollOutcome::Ready(Ok(())) => {}
             PollOutcome::Ready(Err(e)) => {
+                let reason = if matches!(&e, TransportError::Timeout) {
+                    SessionRetirementReason::RequestTimedOut
+                } else {
+                    SessionRetirementReason::SendFailed
+                };
+                self.reuse_safety.retire(reason);
                 warn!(txn_id = txn_id.0, error = %e, "failed to send Modbus request");
                 return Err(ClientError::Transport(e));
             }
             PollOutcome::Deadline => {
+                self.reuse_safety
+                    .retire(SessionRetirementReason::RequestTimedOut);
                 warn!(
                     txn_id = txn_id.0,
                     "Modbus request send reached its deadline"
@@ -348,7 +384,11 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             }
             PollOutcome::Cancelled => {
                 return match rx.try_recv() {
-                    Ok(result) => result,
+                    Ok(Ok(response)) => {
+                        dispatch.disarm();
+                        Ok(response)
+                    }
+                    Ok(Err(error)) => Err(error),
                     Err(
                         tokio::sync::oneshot::error::TryRecvError::Empty
                         | tokio::sync::oneshot::error::TryRecvError::Closed,
@@ -360,14 +400,21 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
         trace!(txn_id = txn_id.0, "sent Modbus request frame");
 
         // Await response via oneshot channel.
-        let response = if let Ok(result) = rx.await {
-            result?
-        } else {
-            warn!(
-                txn_id = txn_id.0,
-                "response channel closed before completion"
-            );
-            return Err(ClientError::ShuttingDown);
+        let response = match rx.await {
+            Ok(Ok(response)) => {
+                dispatch.disarm();
+                response
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                self.reuse_safety
+                    .retire(SessionRetirementReason::ResponseChannelClosed);
+                warn!(
+                    txn_id = txn_id.0,
+                    "response channel closed before completion"
+                );
+                return Err(ClientError::ShuttingDown);
+            }
         };
 
         let got = response.function_code();
@@ -412,10 +459,23 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
             () = operation.cancelled() => return Err(ClientError::ShuttingDown),
             sink = self.sink.lock() => sink,
         };
-        tokio::select! {
+        let mut dispatch = DispatchGuard::armed(&self.reuse_safety);
+        let result = tokio::select! {
             biased;
             () = operation.cancelled() => return Err(ClientError::ShuttingDown),
-            result = sink.send(frame) => result.map_err(ClientError::Transport)?,
+            result = sink.send(frame) => result,
+        };
+        match result {
+            Ok(()) => dispatch.disarm(),
+            Err(error) => {
+                let reason = if matches!(&error, TransportError::Timeout) {
+                    SessionRetirementReason::RequestTimedOut
+                } else {
+                    SessionRetirementReason::SendFailed
+                };
+                self.reuse_safety.retire(reason);
+                return Err(ClientError::Transport(error));
+            }
         }
         debug!("sent Modbus broadcast frame");
 
@@ -603,7 +663,8 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
 
 impl<S: TransportSink + Send + 'static> Drop for ModbusClient<S> {
     fn drop(&mut self) {
-        self.lifecycle.abort();
+        self.lifecycle
+            .abort(SessionRetirementReason::FinalOwnerDropped);
         self.lifecycle.abort_coordinator();
     }
 }
@@ -616,6 +677,7 @@ impl<S: TransportSink + Send + 'static> std::fmt::Debug for ModbusClient<S> {
             .field("lifecycle", &self.lifecycle.phase_name())
             .field("active", &self.lifecycle.active_count())
             .field("pending", &self.txn_mgr.pending_count())
+            .field("session_reuse_verdict", &self.session_reuse_verdict())
             .finish_non_exhaustive()
     }
 }

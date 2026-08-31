@@ -10,6 +10,7 @@ use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::error::ClientError;
+use crate::session::{SessionRetirementReason, SessionReuseSafety};
 use crate::transaction::TransactionManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub(crate) struct ClientLifecycle {
     tasks: Mutex<Tasks>,
     txn_mgr: Arc<TransactionManager>,
     connected: Arc<AtomicBool>,
+    reuse_safety: Arc<SessionReuseSafety>,
 }
 
 impl ClientLifecycle {
@@ -55,6 +57,7 @@ impl ClientLifecycle {
         max_in_flight: usize,
         txn_mgr: Arc<TransactionManager>,
         connected: Arc<AtomicBool>,
+        reuse_safety: Arc<SessionReuseSafety>,
     ) -> Arc<Self> {
         let (cancellation_tx, _) = watch::channel(false);
         let (task_stop_tx, _) = watch::channel(false);
@@ -74,6 +77,7 @@ impl ClientLifecycle {
             tasks: Mutex::new(Tasks::default()),
             txn_mgr,
             connected,
+            reuse_safety,
         })
     }
 
@@ -198,7 +202,7 @@ impl ClientLifecycle {
                 () = self.wait_for_cancellation() => {}
                 () = tokio::time::sleep_until(deadline) => {
                     warn!(active = self.active_count(), "Modbus client shutdown deadline elapsed");
-                    self.abort_inner();
+                    self.abort_inner(SessionRetirementReason::ShutdownDeadlineExceeded);
                 }
             }
         }
@@ -208,9 +212,19 @@ impl ClientLifecycle {
         self.join_tasks().await;
 
         self.connected.store(false, Ordering::Release);
-        {
+        let clean_shutdown = {
             let mut state = self.state.lock();
+            let clean = state.phase == Phase::Draining
+                && state.active == 0
+                && self.txn_mgr.pending_count() == 0;
             state.phase = Phase::Closed;
+            clean
+        };
+        if clean_shutdown {
+            self.reuse_safety.mark_clean_shutdown();
+        } else {
+            self.reuse_safety
+                .retire(SessionRetirementReason::ShutdownIncomplete);
         }
         self.completion_tx.send_replace(true);
         debug!("Modbus client shutdown complete");
@@ -251,11 +265,12 @@ impl ClientLifecycle {
     }
 
     /// Immediately seal admission, cancel work, and request task termination.
-    pub(crate) fn abort(&self) {
-        self.abort_inner();
+    pub(crate) fn abort(&self, reason: SessionRetirementReason) {
+        self.abort_inner(reason);
     }
 
-    fn abort_inner(&self) {
+    fn abort_inner(&self, reason: SessionRetirementReason) {
+        self.reuse_safety.retire(reason);
         {
             let mut state = self.state.lock();
             if state.phase != Phase::Closed {
@@ -301,12 +316,16 @@ impl ClientLifecycle {
             && let Err(error) = handle.await
             && !error.is_cancelled()
         {
+            self.reuse_safety
+                .retire(SessionRetirementReason::BackgroundTaskFailed);
             warn!(%error, "Modbus reader task failed during shutdown");
         }
         if let Some(handle) = deadline
             && let Err(error) = handle.await
             && !error.is_cancelled()
         {
+            self.reuse_safety
+                .retire(SessionRetirementReason::BackgroundTaskFailed);
             warn!(%error, "Modbus deadline task failed during shutdown");
         }
     }

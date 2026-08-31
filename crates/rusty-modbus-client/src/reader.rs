@@ -13,6 +13,7 @@ use tokio::sync::watch;
 use tracing::{debug, trace, warn};
 
 use crate::error::ClientError;
+use crate::session::{SessionRetirementReason, SessionReuseSafety};
 use crate::transaction::{CompletionOutcome, TransactionManager};
 
 /// Spawn the background reader task.
@@ -25,6 +26,7 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
     mut stream: R,
     txn_mgr: Arc<TransactionManager>,
     connected: Arc<AtomicBool>,
+    reuse_safety: Arc<SessionReuseSafety>,
     mut task_stop_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -90,6 +92,7 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                         }
                         Err(rusty_modbus_tcp::TransportError::Disconnected) => {
                             debug!("Modbus reader observed transport disconnect");
+                            reuse_safety.retire(SessionRetirementReason::ReaderDisconnected);
                             connected.store(false, Ordering::Relaxed);
                             txn_mgr.cancel_all(|| ClientError::Transport(
                                 rusty_modbus_tcp::TransportError::Disconnected,
@@ -98,6 +101,7 @@ pub(crate) fn spawn_reader<R: TransportStream + Send + 'static>(
                         }
                         Err(e) => {
                             warn!(error = %e, "Modbus reader stopped after transport error");
+                            reuse_safety.retire(SessionRetirementReason::ReaderTransportFailed);
                             connected.store(false, Ordering::Relaxed);
                             // Preserve the actual error description for all
                             // pending callers instead of fabricating a generic Timeout.

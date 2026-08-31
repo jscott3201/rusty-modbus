@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use rusty_modbus_client::{SessionRetirementReason, SessionReuseVerdict};
 use rusty_modbus_frame::{Frame, FrameHeader};
 use rusty_modbus_pool::{
     ClientConfig, ClientError, ConnectionPool, LeaseInvalidationReason, PoolConfig, PoolError,
@@ -197,6 +198,10 @@ async fn timed_out_late_response_cannot_cross_borrowers_and_healthy_sessions_ret
 
     client_a.shutdown().await;
     assert_eq!(
+        client_a.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::RequestTimedOut)
+    );
+    assert_eq!(
         pool.active_count(),
         1,
         "the surviving sink retains capacity"
@@ -234,6 +239,10 @@ async fn timed_out_late_response_cannot_cross_borrowers_and_healthy_sessions_ret
     assert_eq!(request_b.await.unwrap().unwrap(), vec![0xB002]);
 
     client_b.shutdown().await;
+    assert_eq!(
+        client_b.session_reuse_verdict(),
+        SessionReuseVerdict::ReuseEligible
+    );
     assert_eq!(
         pool.active_count(),
         1,
