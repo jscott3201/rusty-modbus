@@ -1,6 +1,7 @@
 # rusty-modbus-pool
 
-Modbus connection pooling with idle eviction and reconnect backoff
+Modbus connection pooling with bounded acquisition, conservative return paths,
+passive idle validation, and idle eviction
 
 Pool evidence and recovery gaps are tracked under the
 [TCP client](../../docs/conformance/ledger.md#profile-tcp-client) and
@@ -61,8 +62,14 @@ arrive after validation and before or during the next borrow. In particular, a
 late response that is already observable before checkout is retired rather than
 handed to the next borrower, but a response racing after validation remains
 possible for idle entries created by pre-connect or verdict-gated client return.
-Raw lease drop no longer creates such an idle entry. This work does not close
-F-017, F-018, or TCP-013 and does not add automatic reconnect or backoff behavior.
+Raw lease drop no longer creates such an idle entry. Across the current
+implemented return paths, raw Drop retirement, always-retiring client handoff,
+and exact verdict-gated reusable return close F-017's cross-borrower reuse
+finding. Passive observation mitigates F-018, but TCP-013 remains a
+compatibility deviation: active liveness and protocol proof, the
+post-observation race, automatic reconnect and replenishment after retirement,
+gateway composition, exact creation-bound evidence, public metrics, and
+benchmarks remain incomplete.
 
 Each passive retirement emits one `DEBUG` event with target
 `rusty_modbus_pool::idle_validation` and message
@@ -112,8 +119,10 @@ the lease nor mutates pool state, and a `None` suggestion does not prove health,
 reusability, liveness, or protocol stream synchronization. Cancellation may
 require an explicit `LeaseInvalidationReason::Cancelled` for classification
 because it may not produce a `TransportError`. Raw drop still retires when no
-classification is recorded. This API does not by itself resolve the tracked
-F-017 and F-018 recovery gaps.
+classification is recorded. Neither the helper nor caller classification alone
+proves safe reuse; F-017 is closed for current implemented return paths by their
+combined retirement and exact return gates. F-018 remains mitigated and TCP-013
+remains open for the documented health and recovery gaps.
 
 Each ordinary raw drop retirement emits one `DEBUG` event with target
 `rusty_modbus_pool::raw_lease` and message `pooled_raw_connection_retired`. Its
@@ -152,8 +161,10 @@ healthy client session is intentionally not provided.
 
 The fence prevents a timed-out, cancelled, or delayed response from one handed-
 off session from reaching a later pool borrower on the same TCP connection. It
-does not actively probe liveness, prove stream synchronization, or close the
-tracked F-017/F-018 recovery gaps. Without the `client` feature, the optional
+is one part of the combined current return paths that close F-017's
+cross-borrower reuse finding; this method alone does not prove safe reuse,
+actively probe liveness, or prove stream synchronization. F-018 remains
+mitigated and TCP-013 remains open. Without the `client` feature, the optional
 client dependency and both handoff APIs are absent. Raw drop retirement still
 applies. This handoff remains available after direct raw-half access because it
 can never return idle; prior raw access does not make starting another operation
@@ -205,7 +216,11 @@ This is a local synchronization-safety contract, not a peer-health guarantee. It
 assumes a conforming peer does not invent a future duplicate after all valid
 requests complete. There is no active probe, quiet-period test, peer-liveness
 proof, or guarantee of permanent future silence. This opt-in return path does
-not close the tracked F-017/F-018 recovery gaps. The existing
+not establish general connection health. Together with raw Drop and the
+always-retiring handoff, its exact verdict and recovery gate closes F-017 for
+current implemented return paths. F-018 remains mitigated, and TCP-013 remains
+open for the passive-observation race and outstanding liveness, synchronization,
+replenishment, integration, and evidence gaps. The existing
 `into_retiring_client` method remains an always-retiring option. For connection
 reuse, enable `client`, call `into_reusable_client(...)?` before any raw-half
 access, perform operations through `PooledClientSession::client`, then consume
@@ -228,7 +243,9 @@ high-cardinality value is recorded.
 
 Tracing is observability only. It adds no public counters, health probe,
 liveness proof, automatic raw-lease invalidation, or recovery/backoff policy,
-and it does not close F-017 or F-018.
+and it is not evidence that any return path is safe by itself. F-017 closure
+comes from the combined current return-path behavior; F-018 remains mitigated
+and TCP-013 remains open.
 
 ## License
 
