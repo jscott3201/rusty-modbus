@@ -10,7 +10,9 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
-use rusty_modbus_tcp::{TcpRecvStream, TcpSink, TcpTransport, TransportConnect};
+use rusty_modbus_tcp::{
+    TcpIdleObservation, TcpRecvStream, TcpSink, TcpTransport, TransportConnect, inspect_idle_tcp,
+};
 
 use crate::backoff::Backoff;
 use crate::config::PoolConfig;
@@ -32,13 +34,95 @@ pub(crate) struct PoolEntry {
     pub is_priority: bool,
 }
 
+/// Bounded source of one passive idle retirement event.
+#[derive(Clone, Copy)]
+pub(crate) enum IdleValidationTrigger {
+    Checkout,
+    HealthSweep,
+}
+
+impl IdleValidationTrigger {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Checkout => "checkout",
+            Self::HealthSweep => "health_sweep",
+        }
+    }
+}
+
+/// Result of inspecting one idle entry without consuming its receive data.
+pub(crate) enum IdleEntryInspection {
+    Retain(PoolEntry),
+    Retire(PoolEntry, TcpIdleObservation),
+}
+
+/// Inspect one idle entry without consuming its receive data.
+pub(crate) fn inspect_idle_entry(entry: PoolEntry) -> IdleEntryInspection {
+    let PoolEntry {
+        addr,
+        sink,
+        stream,
+        last_used,
+        is_priority,
+    } = entry;
+    let (sink, stream, observation) = inspect_idle_tcp(sink, stream);
+    let entry = PoolEntry {
+        addr,
+        sink,
+        stream,
+        last_used,
+        is_priority,
+    };
+
+    if matches!(observation, TcpIdleObservation::NoAdverseSignal) {
+        IdleEntryInspection::Retain(entry)
+    } else {
+        IdleEntryInspection::Retire(entry, observation)
+    }
+}
+
+/// Emit exactly one bounded event per passive retirement, then drop all entries
+/// outside the pool mutex and wake capacity waiters.
+pub(crate) fn finish_passive_retirements(
+    retirements: Vec<(PoolEntry, TcpIdleObservation)>,
+    trigger: IdleValidationTrigger,
+    capacity_changed: &Notify,
+) {
+    if retirements.is_empty() {
+        return;
+    }
+
+    for (entry, observation) in retirements {
+        tracing::debug!(
+            target: "rusty_modbus_pool::idle_validation",
+            reason = idle_observation_reason(observation),
+            trigger = trigger.as_str(),
+            is_priority = entry.is_priority,
+            "idle_tcp_connection_passively_retired"
+        );
+        drop(entry);
+    }
+    capacity_changed.notify_waiters();
+}
+
+const fn idle_observation_reason(observation: TcpIdleObservation) -> &'static str {
+    match observation {
+        TcpIdleObservation::NoAdverseSignal => "none",
+        TcpIdleObservation::QueuedInput => "queued_input",
+        TcpIdleObservation::PeerClosed => "peer_closed",
+        TcpIdleObservation::SocketError(_) => "socket_error",
+        TcpIdleObservation::MismatchedHalves => "mismatched_halves",
+        _ => "other",
+    }
+}
+
 /// Shared mutable pool state.
 ///
 /// The two pools are accounted **separately** (TCP Guide §4.2.1): non-priority
 /// connections are bounded by [`PoolConfig::max_connections`], while each
 /// priority device has its own budget ([`PriorityDevice::max_connections`](crate::PriorityDevice::max_connections)).
-/// Keeping them separate is what stops never-evicted idle priority connections
-/// from starving non-priority requests.
+/// Keeping them separate is what stops idle priority connections that are not
+/// age- or capacity-evicted from starving non-priority requests.
 pub(crate) struct PoolInner {
     /// Idle connections available for reuse (entries from both pools).
     pub idle: Vec<PoolEntry>,
@@ -174,9 +258,10 @@ enum Acquisition {
 
 /// Connection pool with two-pool eviction model.
 ///
-/// Priority connections (to configured addresses) are never locally evicted and
-/// live in a per-device budget separate from the non-priority pool. Non-priority
-/// connections are evicted oldest-first when the non-priority pool is full.
+/// Priority connections (to configured addresses) are never age- or
+/// capacity-evicted and live in a per-device budget separate from the
+/// non-priority pool. Known-adverse idle priority transports are still retired.
+/// Non-priority connections are evicted oldest-first when their pool is full.
 /// Capacity waiters use change broadcasts only as retry hints; the pool makes no
 /// fairness or FIFO guarantee, and `PoolInner` remains the accounting authority.
 pub struct ConnectionPool {
@@ -251,8 +336,9 @@ impl ConnectionPool {
     ///
     /// - [`PoolError::ShuttingDown`] if the pool is shutting down.
     /// - [`PoolError::Exhausted`] if the relevant pool is full and no connection
-    ///   can be evicted (priority devices are never evicted, so a priority
-    ///   request fails once the device hits its own `max_connections`).
+    ///   can be reused or capacity-evicted (priority devices are not
+    ///   capacity-evicted, so a priority request fails once the device hits its
+    ///   own `max_connections`).
     /// - [`PoolError::ConnectionFailed`] if establishing a new connection fails.
     pub async fn get(&self, addr: SocketAddr) -> Result<PooledConnection, PoolError> {
         let tcp_config = self.config.tcp_config.clone();
@@ -331,13 +417,21 @@ impl ConnectionPool {
     /// Attempt one immediate idle checkout or reservation.
     fn acquire_immediate(&self, addr: SocketAddr) -> Result<Acquisition, PoolError> {
         let is_priority = self.is_priority_addr(addr);
-        let mut inner = self.inner.lock();
-        if inner.shutting_down {
-            return Err(PoolError::ShuttingDown);
-        }
+        let mut retirements = Vec::new();
+        let acquisition = {
+            let mut inner = self.inner.lock();
+            if inner.shutting_down {
+                return Err(PoolError::ShuttingDown);
+            }
 
-        self.try_acquire_locked(&mut inner, addr, is_priority)
-            .ok_or(PoolError::Exhausted)
+            self.try_acquire_locked(&mut inner, addr, is_priority, &mut retirements)
+        };
+        finish_passive_retirements(
+            retirements,
+            IdleValidationTrigger::Checkout,
+            &self.capacity_changed,
+        );
+        acquisition.ok_or(PoolError::Exhausted)
     }
 
     /// Wait for an idle checkout or reservation using one absolute deadline.
@@ -351,13 +445,19 @@ impl ConnectionPool {
         // Always honor one shutdown-aware immediate attempt before constructing
         // the deadline. Besides preserving zero-timeout behavior, this keeps an
         // unrepresentably large timeout from rejecting available capacity.
+        let mut retirements = Vec::new();
         let initial_acquisition = {
             let mut inner = self.inner.lock();
             if inner.shutting_down {
                 return Err(PoolError::ShuttingDown);
             }
-            self.try_acquire_locked(&mut inner, addr, is_priority)
+            self.try_acquire_locked(&mut inner, addr, is_priority, &mut retirements)
         };
+        finish_passive_retirements(
+            retirements,
+            IdleValidationTrigger::Checkout,
+            &self.capacity_changed,
+        );
         if let Some(acquisition) = initial_acquisition {
             return Ok(acquisition);
         }
@@ -366,13 +466,20 @@ impl ConnectionPool {
             // Capacity may have changed after the initial full observation. Check
             // complete state once more, with sticky shutdown taking precedence,
             // before returning the deterministic overflow result.
-            let mut inner = self.inner.lock();
-            if inner.shutting_down {
-                return Err(PoolError::ShuttingDown);
-            }
-            return self
-                .try_acquire_locked(&mut inner, addr, is_priority)
-                .ok_or(PoolError::Timeout);
+            let mut retirements = Vec::new();
+            let acquisition = {
+                let mut inner = self.inner.lock();
+                if inner.shutting_down {
+                    return Err(PoolError::ShuttingDown);
+                }
+                self.try_acquire_locked(&mut inner, addr, is_priority, &mut retirements)
+            };
+            finish_passive_retirements(
+                retirements,
+                IdleValidationTrigger::Checkout,
+                &self.capacity_changed,
+            );
+            return acquisition.ok_or(PoolError::Timeout);
         };
         let mut waited = false;
 
@@ -384,6 +491,7 @@ impl ConnectionPool {
             tokio::pin!(notified);
             notified.as_mut().enable();
 
+            let mut retirements = Vec::new();
             let acquisition = {
                 let mut inner = self.inner.lock();
                 if inner.shutting_down {
@@ -394,8 +502,13 @@ impl ConnectionPool {
                 if waited && Instant::now() >= deadline {
                     return Err(PoolError::Timeout);
                 }
-                self.try_acquire_locked(&mut inner, addr, is_priority)
+                self.try_acquire_locked(&mut inner, addr, is_priority, &mut retirements)
             };
+            finish_passive_retirements(
+                retirements,
+                IdleValidationTrigger::Checkout,
+                &self.capacity_changed,
+            );
 
             if let Some(acquisition) = acquisition {
                 return Ok(acquisition);
@@ -422,22 +535,33 @@ impl ConnectionPool {
         inner: &mut PoolInner,
         addr: SocketAddr,
         is_priority: bool,
+        retirements: &mut Vec<(PoolEntry, TcpIdleObservation)>,
     ) -> Option<Acquisition> {
-        // Reuse an idle connection to this address (either pool).
-        if let Some(idx) = inner.idle.iter().position(|e| e.addr == addr) {
-            let mut entry = inner.idle.swap_remove(idx);
-            entry.last_used = Instant::now();
-            inner.charge_active(&entry);
-            return Some(Acquisition::Reused(PooledConnection::new(
-                entry,
-                Arc::clone(&self.inner),
-                Arc::clone(&self.capacity_changed),
-            )));
+        // Validate every matching idle candidate before charging it active.
+        // Inspection performs one non-waiting, non-consuming socket peek while
+        // the mutex keeps the exact entry from being concurrently checked out.
+        while let Some(idx) = inner.idle.iter().position(|entry| entry.addr == addr) {
+            let entry = inner.idle.swap_remove(idx);
+            match inspect_idle_entry(entry) {
+                IdleEntryInspection::Retain(mut entry) => {
+                    entry.last_used = Instant::now();
+                    inner.charge_active(&entry);
+                    return Some(Acquisition::Reused(PooledConnection::new(
+                        entry,
+                        Arc::clone(&self.inner),
+                        Arc::clone(&self.capacity_changed),
+                    )));
+                }
+                IdleEntryInspection::Retire(entry, observation) => {
+                    retirements.push((entry, observation));
+                }
+            }
         }
 
         // No idle connection: reserve a slot in the appropriate pool.
         let evicted = if is_priority {
-            // Priority pool: bounded by this device's own budget, never evicted.
+            // Priority pool: bounded by this device's own budget and never
+            // capacity-evicted. Passive adverse-signal retirement happened above.
             let cap = self.priority_cap(addr);
             if inner.priority_total(addr) >= cap {
                 return None;
@@ -650,14 +774,86 @@ fn find_evictable(inner: &PoolInner) -> Option<usize> {
 mod tests {
     use super::*;
     use std::future::pending;
+    use std::sync::Mutex as StdMutex;
     use std::time::Duration;
 
+    use rusty_modbus_frame::FrameHeader;
+    use rusty_modbus_tcp::TransportStream;
     use rusty_modbus_tcp::{TcpConfig, TransportError};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::oneshot;
     use tokio::sync::oneshot::error::TryRecvError;
     use tokio::task::JoinHandle;
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Subscriber, dispatcher};
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{Layer, registry};
 
     type GetTask = JoinHandle<Result<PooledConnection, PoolError>>;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CapturedIdleRetirement {
+        message: String,
+        reason: String,
+        trigger: String,
+        is_priority: bool,
+    }
+
+    #[derive(Default)]
+    struct IdleRetirementVisitor {
+        message: Option<String>,
+        reason: Option<String>,
+        trigger: Option<String>,
+        is_priority: Option<bool>,
+    }
+
+    impl Visit for IdleRetirementVisitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            match field.name() {
+                "reason" => self.reason = Some(value.to_owned()),
+                "trigger" => self.trigger = Some(value.to_owned()),
+                _ => {}
+            }
+        }
+
+        fn record_bool(&mut self, field: &Field, value: bool) {
+            if field.name() == "is_priority" {
+                self.is_priority = Some(value);
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct IdleRetirementCapture {
+        events: Arc<StdMutex<Vec<CapturedIdleRetirement>>>,
+    }
+
+    impl<S> Layer<S> for IdleRetirementCapture
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+            if event.metadata().target() != "rusty_modbus_pool::idle_validation" {
+                return;
+            }
+
+            let mut visitor = IdleRetirementVisitor::default();
+            event.record(&mut visitor);
+            self.events.lock().unwrap().push(CapturedIdleRetirement {
+                message: visitor.message.expect("idle retirement message field"),
+                reason: visitor.reason.expect("idle retirement reason field"),
+                trigger: visitor.trigger.expect("idle retirement trigger field"),
+                is_priority: visitor.is_priority.expect("idle retirement priority field"),
+            });
+        }
+    }
 
     fn test_addr(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
@@ -673,17 +869,23 @@ mod tests {
         }
     }
 
-    async fn connected_halves() -> (TcpSink, TcpRecvStream) {
+    async fn connected_halves_with_peer() -> ((TcpSink, TcpRecvStream), tokio::net::TcpStream) {
         let listener = tokio::net::TcpListener::bind(test_addr(0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let accept = tokio::spawn(async move { listener.accept().await.unwrap().0 });
+        let (halves, accepted) = tokio::join!(
+            TcpTransport::connect(TcpConfig::default(), addr),
+            listener.accept()
+        );
+        (halves.unwrap(), accepted.unwrap().0)
+    }
 
-        let halves = TcpTransport::connect(TcpConfig::default(), addr)
-            .await
-            .unwrap();
-        // Completing accept makes connection establishment deterministic. The
-        // peer can then close; these tests only need valid owned transport halves.
-        drop(accept.await.unwrap());
+    async fn connected_halves() -> (TcpSink, TcpRecvStream) {
+        let (halves, mut peer) = connected_halves_with_peer().await;
+        // Keep synthetic transport peers clean until their client half closes.
+        tokio::spawn(async move {
+            let mut buffer = [0_u8; 64];
+            while peer.read(&mut buffer).await.unwrap_or(0) != 0 {}
+        });
         halves
     }
 
@@ -696,6 +898,54 @@ mod tests {
             last_used,
             is_priority: false,
         }
+    }
+
+    async fn idle_entry_with_peer(
+        addr: SocketAddr,
+        last_used: Instant,
+        is_priority: bool,
+    ) -> (PoolEntry, tokio::net::TcpStream) {
+        let ((sink, stream), peer) = connected_halves_with_peer().await;
+        (
+            PoolEntry {
+                addr,
+                sink,
+                stream,
+                last_used,
+                is_priority,
+            },
+            peer,
+        )
+    }
+
+    async fn wait_for_entry_observation(
+        mut entry: PoolEntry,
+        expected: TcpIdleObservation,
+    ) -> PoolEntry {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let (next, observation) = match inspect_idle_entry(entry) {
+                    IdleEntryInspection::Retain(next) => {
+                        (next, TcpIdleObservation::NoAdverseSignal)
+                    }
+                    IdleEntryInspection::Retire(next, observation) => (next, observation),
+                };
+                entry = next;
+                if observation == expected {
+                    return entry;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("idle socket state should become immediately observable")
+    }
+
+    fn response_adu(transaction_id: u16) -> [u8; 12] {
+        let [high, low] = transaction_id.to_be_bytes();
+        [
+            high, low, 0x00, 0x00, 0x00, 0x06, 0xff, 0x03, 0x00, 0x00, 0x00, 0x01,
+        ]
     }
 
     fn spawn_pending_get(
@@ -747,6 +997,246 @@ mod tests {
             .await
             .expect_err("pending acquisition should be cancelled");
         assert!(error.is_cancelled());
+    }
+
+    #[test]
+    fn idle_validation_labels_are_stable_and_bounded() {
+        assert_eq!(IdleValidationTrigger::Checkout.as_str(), "checkout");
+        assert_eq!(IdleValidationTrigger::HealthSweep.as_str(), "health_sweep");
+        assert_eq!(
+            idle_observation_reason(TcpIdleObservation::QueuedInput),
+            "queued_input"
+        );
+        assert_eq!(
+            idle_observation_reason(TcpIdleObservation::PeerClosed),
+            "peer_closed"
+        );
+        assert_eq!(
+            idle_observation_reason(TcpIdleObservation::SocketError(
+                std::io::ErrorKind::ConnectionReset
+            )),
+            "socket_error"
+        );
+        assert_eq!(
+            idle_observation_reason(TcpIdleObservation::MismatchedHalves),
+            "mismatched_halves"
+        );
+    }
+
+    #[tokio::test]
+    async fn checkout_reuses_clean_idle_without_running_connector() {
+        let addr = test_addr(15_090);
+        let pool = ConnectionPool::new(test_config(1));
+        let (entry, _peer) = idle_entry_with_peer(addr, Instant::now(), false).await;
+        pool.inner.lock().idle.push(entry);
+
+        let connection = pool
+            .get_with_connector(addr, || async { Err(TransportError::Disconnected) })
+            .await
+            .expect("a clean idle entry should be reused");
+
+        assert_eq!(connection.addr(), addr);
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+        drop(connection);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn queued_late_response_is_retired_before_next_borrower() {
+        let addr = test_addr(15_091);
+        let pool = ConnectionPool::new(test_config(1));
+        let (entry, mut stale_peer) = idle_entry_with_peer(addr, Instant::now(), false).await;
+        stale_peer.write_all(&response_adu(0x1234)).await.unwrap();
+        let entry = wait_for_entry_observation(entry, TcpIdleObservation::QueuedInput).await;
+        pool.inner.lock().idle.push(entry);
+
+        let (replacement_halves, mut replacement_peer) = connected_halves_with_peer().await;
+        let (connector_entered_tx, connector_entered_rx) = oneshot::channel();
+        let mut connection = pool
+            .get_with_connector(addr, move || async move {
+                connector_entered_tx
+                    .send(())
+                    .expect("connector entry receiver should remain live");
+                Ok(replacement_halves)
+            })
+            .await
+            .expect("queued idle input should be replaced by a fresh connection");
+        connector_entered_rx
+            .await
+            .expect("checkout should run the fresh connector");
+
+        replacement_peer
+            .write_all(&response_adu(0xbeef))
+            .await
+            .unwrap();
+        let response = connection.stream().recv().await.unwrap();
+        assert!(matches!(
+            response.header,
+            FrameHeader::Mbap(header) if header.transaction_id.get() == 0xbeef
+        ));
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn checkout_retires_observable_eof_and_connects_fresh() {
+        let addr = test_addr(15_092);
+        let pool = ConnectionPool::new(test_config(1));
+        let (entry, stale_peer) = idle_entry_with_peer(addr, Instant::now(), false).await;
+        drop(stale_peer);
+        let entry = wait_for_entry_observation(entry, TcpIdleObservation::PeerClosed).await;
+        pool.inner.lock().idle.push(entry);
+
+        let replacement_halves = connected_halves().await;
+        let (connector_entered_tx, connector_entered_rx) = oneshot::channel();
+        let connection = pool
+            .get_with_connector(addr, move || async move {
+                connector_entered_tx
+                    .send(())
+                    .expect("connector entry receiver should remain live");
+                Ok(replacement_halves)
+            })
+            .await
+            .expect("closed idle connection should be replaced");
+        connector_entered_rx
+            .await
+            .expect("EOF retirement should run the fresh connector");
+
+        assert_eq!(connection.addr(), addr);
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.idle_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_same_address_entries_are_skipped_and_freed_capacity_wakes_waiter() {
+        let addr = test_addr(15_093);
+        let waiting_addr = test_addr(15_094);
+        let pool = Arc::new(ConnectionPool::new(test_config(3)));
+        let future_last_used = Instant::now() + Duration::from_mins(1);
+
+        let (invalid_one, mut peer_one) = idle_entry_with_peer(addr, future_last_used, false).await;
+        let (valid, _valid_peer) = idle_entry_with_peer(addr, future_last_used, false).await;
+        let (invalid_two, mut peer_two) = idle_entry_with_peer(addr, future_last_used, false).await;
+        peer_one.write_all(&[0x01]).await.unwrap();
+        peer_two.write_all(&[0x02]).await.unwrap();
+        let invalid_one =
+            wait_for_entry_observation(invalid_one, TcpIdleObservation::QueuedInput).await;
+        let invalid_two =
+            wait_for_entry_observation(invalid_two, TcpIdleObservation::QueuedInput).await;
+        {
+            let mut inner = pool.inner.lock();
+            // swap_remove visits invalid_one, invalid_two, then valid.
+            inner.idle.push(invalid_one);
+            inner.idle.push(valid);
+            inner.idle.push(invalid_two);
+            assert_eq!(inner.non_priority_total(), 3);
+        }
+
+        let (waiter, waiter_entered) =
+            spawn_pending_timed_get(Arc::clone(&pool), waiting_addr, Duration::from_secs(5));
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        let reused = pool
+            .get_with_connector(addr, || async { Err(TransportError::Disconnected) })
+            .await
+            .expect("checkout should skip adverse entries and reuse the clean one");
+        waiter_entered
+            .await
+            .expect("passive retirements should wake the capacity waiter");
+        assert_eq!(pool.active_count(), 2);
+        assert_eq!(pool.idle_count(), 0);
+        assert_eq!(pool.inner.lock().non_priority_total(), 2);
+
+        abort_pending(waiter).await;
+        assert_eq!(pool.active_count(), 1);
+        drop(reused);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.idle_count(), 1);
+        assert_eq!(pool.inner.lock().non_priority_total(), 1);
+    }
+
+    #[tokio::test]
+    async fn health_sweep_validates_both_pools_before_non_priority_age_eviction() {
+        let pool = ConnectionPool::new(test_config(8));
+        let now = Instant::now();
+        let expired = now - Duration::from_secs(2);
+
+        let (priority_clean, _priority_clean_peer) =
+            idle_entry_with_peer(test_addr(15_095), expired, true).await;
+        let (priority_queued, mut priority_queued_peer) =
+            idle_entry_with_peer(test_addr(15_096), now, true).await;
+        let (non_priority_queued, mut non_priority_queued_peer) =
+            idle_entry_with_peer(test_addr(15_097), now, false).await;
+        let (non_priority_expired, _non_priority_expired_peer) =
+            idle_entry_with_peer(test_addr(15_098), expired, false).await;
+        let (non_priority_clean, _non_priority_clean_peer) =
+            idle_entry_with_peer(test_addr(15_099), now, false).await;
+
+        priority_queued_peer.write_all(&[0x01]).await.unwrap();
+        non_priority_queued_peer.write_all(&[0x02]).await.unwrap();
+        let priority_queued =
+            wait_for_entry_observation(priority_queued, TcpIdleObservation::QueuedInput).await;
+        let non_priority_queued =
+            wait_for_entry_observation(non_priority_queued, TcpIdleObservation::QueuedInput).await;
+        {
+            let mut inner = pool.inner.lock();
+            inner.idle = vec![
+                priority_clean,
+                priority_queued,
+                non_priority_queued,
+                non_priority_expired,
+                non_priority_clean,
+            ];
+        }
+
+        let capture = IdleRetirementCapture::default();
+        let dispatch = tracing::Dispatch::new(registry().with(capture.clone()));
+        let continued = dispatcher::with_default(&dispatch, || {
+            health::run_health_check(
+                &pool.inner,
+                &pool.capacity_changed,
+                now,
+                Duration::from_secs(1),
+            )
+        });
+
+        assert!(continued);
+        let inner = pool.inner.lock();
+        assert_eq!(inner.idle.len(), 2);
+        assert!(
+            inner
+                .idle
+                .iter()
+                .any(|entry| entry.addr == test_addr(15_095) && entry.is_priority)
+        );
+        assert!(
+            inner
+                .idle
+                .iter()
+                .any(|entry| entry.addr == test_addr(15_099) && !entry.is_priority)
+        );
+        drop(inner);
+
+        assert_eq!(
+            capture.events.lock().unwrap().as_slice(),
+            [
+                CapturedIdleRetirement {
+                    message: "idle_tcp_connection_passively_retired".to_owned(),
+                    reason: "queued_input".to_owned(),
+                    trigger: "health_sweep".to_owned(),
+                    is_priority: true,
+                },
+                CapturedIdleRetirement {
+                    message: "idle_tcp_connection_passively_retired".to_owned(),
+                    reason: "queued_input".to_owned(),
+                    trigger: "health_sweep".to_owned(),
+                    is_priority: false,
+                },
+            ]
+        );
     }
 
     #[tokio::test]

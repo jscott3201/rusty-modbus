@@ -13,13 +13,14 @@ pub struct PoolConfig {
     /// Priority devices have their own per-device budgets
     /// ([`PriorityDevice::max_connections`]) and do **not** count against this.
     pub max_connections: usize,
-    /// Priority device entries — connections to these addresses are never evicted.
+    /// Priority device entries — healthy/unknown connections to these addresses
+    /// are never age- or capacity-evicted. Known-adverse idle transports are retired.
     pub priority_devices: Vec<PriorityDevice>,
     /// Pre-connect to priority devices at pool creation time. Default: `true`.
     pub pre_connect: bool,
     /// Idle timeout before a non-priority connection is eligible for eviction. Default: 300s.
     pub idle_timeout: Duration,
-    /// Health check interval for probing idle connections. Default: 60s.
+    /// Interval for passive idle validation and non-priority age eviction. Default: 60s.
     pub health_check_interval: Duration,
     /// Reconnect backoff configuration.
     pub backoff: BackoffConfig,
@@ -41,7 +42,8 @@ impl Default for PoolConfig {
     }
 }
 
-/// A priority device entry — connections to this address are never locally evicted.
+/// A priority device entry — healthy/unknown connections to this address are never
+/// age- or capacity-evicted; known-adverse idle transports are retired.
 #[derive(Debug, Clone)]
 pub struct PriorityDevice {
     /// Device socket address.

@@ -14,7 +14,7 @@ pub mod listener;
 pub mod transport;
 
 pub use config::{AccessControl, AccessMode, TcpConfig, TcpServerConfig};
-pub use connect::{TcpRecvStream, TcpSink, TcpTransport};
+pub use connect::{TcpIdleObservation, TcpRecvStream, TcpSink, TcpTransport, inspect_idle_tcp};
 pub use error::{TcpError, TransportError};
 pub use listener::{
     ConnectionGuard, TcpServerListener, TcpServerMetrics, TcpServerMetricsSnapshot,
