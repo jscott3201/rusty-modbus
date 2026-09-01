@@ -136,6 +136,18 @@ pub enum ClientError {
         actual: u8,
     },
 
+    /// A normal FC14 Read File Record response contained a different number of
+    /// response groups than the validated request contained sub-request groups.
+    #[error(
+        "unexpected FC14 Read File Record response-group count: expected {expected}, got {actual}"
+    )]
+    UnexpectedFileRecordSubResponseCount {
+        /// Number of validated request sub-groups.
+        expected: usize,
+        /// Number of normal-response groups returned by the server.
+        actual: usize,
+    },
+
     /// A Read Device Identification continuation did not advance to a higher
     /// object ID. Without this guard, a malformed peer can keep the client in
     /// an unbounded `more_follows` loop.

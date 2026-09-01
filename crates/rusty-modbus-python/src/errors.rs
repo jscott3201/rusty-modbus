@@ -139,6 +139,11 @@ pub fn client_error_to_pyerr(err: ClientError) -> PyErr {
         } => ModbusError::new_err(format!(
             "unexpected response padding for function 0x{function_code:02X}: byte 0x{actual:02X} sets bits selected by 0x{invalid_mask:02X}"
         )),
+        ClientError::UnexpectedFileRecordSubResponseCount { expected, actual } => {
+            ModbusError::new_err(format!(
+                "unexpected FC14 Read File Record response-group count: expected {expected}, got {actual}"
+            ))
+        }
         ClientError::InvalidDeviceIdentificationContinuation {
             previous_object_id,
             next_object_id,
