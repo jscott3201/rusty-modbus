@@ -1,6 +1,6 @@
 # Rusty Modbus Benchmark Report
 
-Last updated: 2026-08-26
+Last updated: 2026-08-31
 
 This document records the current local and Docker performance baseline for the
 Modbus/TCP client/server path. The focus is single-connection pipelining: one
@@ -35,18 +35,20 @@ samples. It uses only the Python standard library. Its three run modes are:
   recorded commands. This mode requires `cargo-nextest`, `cargo-deny`,
   `cargo-audit`, Python 3.14, and `uv` in addition to the pinned Rust toolchain.
 - `bench-smoke`: runs one-second TCP `read` and `mixed` loopback samples at
-  in-flight depths 1, 8, and 16, followed by the pipelined TCP Criterion smoke
-  target.
+  in-flight depths 1, 8, and 16, followed by the pipelined TCP Criterion
+  throughput rows and both `tcp_pool` lifecycle rows.
 - `bench-full`: runs five TCP repetitions at depths 1, 2, 4, 8, and 16, then
-  runs the registered TCP Criterion targets. Stress measurements default to
-  five seconds with a one-second warmup. Codec, server-only, TLS, and RTU
-  targets are outside both benchmark modes.
+  discovers and runs all registered `tcp_*` Criterion targets, including
+  `tcp_pool`. Stress measurements default to five seconds with a one-second
+  warmup. Codec, server-only, TLS, and RTU targets are outside both benchmark
+  modes.
 
-The benchmark samples measure TCP loopback performance and transport health;
-they are not protocol-conformance evidence. The recorded commands in
-`correctness` provide the correctness evidence. `.github/workflows/baseline.yml`
-runs on Ubuntu only: pull requests and pushes run `bench-smoke`, the Monday
-schedule runs `bench-full`, and manual runs select any mode.
+The throughput samples measure TCP loopback performance. The pool lifecycle
+rows are narrower observations of the exact work described below, not transport
+health or protocol-conformance evidence. The recorded commands in `correctness`
+provide the correctness evidence. `.github/workflows/baseline.yml` runs on
+Ubuntu only: pull requests and pushes run `bench-smoke`, the Monday schedule
+runs `bench-full`, and manual runs select any mode.
 
 Run a mode from the repository root and identify the runner:
 
@@ -55,6 +57,50 @@ python3 scripts/baseline.py correctness --runner-label local-workstation
 python3 scripts/baseline.py bench-smoke --runner-label local-workstation
 python3 scripts/baseline.py bench-full --runner-label local-workstation
 ```
+
+### Uncontended TCP pool lifecycle target
+
+Run both lifecycle rows directly with:
+
+```bash
+scripts/bench-local.sh tcp-pool --quick --noplot
+```
+
+Both `tcp_pool` rows use one benchmark task and borrower, a one-connection
+non-priority pool, no capacity wait, no configured priority device, no
+pre-connect, replenishment, or probe, and long idle/health intervals. There is
+no concurrent pool activity or Modbus request. "Uncontended" does not exclude
+OS or Tokio runtime scheduling.
+
+- `tcp_pool/fresh_get_raw_drop` measures one public `pool.get(addr)` that opens
+  a fresh loopback TCP connection, black-boxes only its public address, and
+  drops the raw lease so it retires. It includes loopback TCP establishment and
+  raw-lease drop; it is not pure pool overhead.
+- `tcp_pool/reusable_checkout_handoff_shutdown_return` starts with one idle
+  lease seeded outside timing. Each iteration checks it out, hands the pristine
+  lease directly to a reusable client with a bounded zero-retry configuration,
+  gracefully shuts down the client, recovers the transport, and returns it to
+  idle. It includes reusable-client construction, child-task lifecycle,
+  graceful shutdown, transport recovery, and idle return; it is not pure pool
+  overhead.
+
+Each row creates its Tokio runtime, loopback server, and pool outside its timed
+loop. The reusable seed handoff/return is also outside timing. Custom batch
+timing stops before exact return-outcome and pool-accounting assertions. Pool
+shutdown, final accounting assertions, and server stop are cleanup outside
+timing.
+
+These rows and their reports are observational only. They define no threshold,
+budget, improvement/regression label, comparison verdict, or accepted baseline;
+the two intentionally different rows must not be compared with each other.
+Results do not establish cross-run or cross-host comparability, liveness,
+health, reconnect behavior, fairness, contention behavior, protocol behavior,
+or any gateway, TLS, or RTU claim.
+
+Because report comparison requires identical complete scenario-key sets, an
+older report without `tcp_pool/*` keys fails closed when compared with a newer
+report. Recollect both operands with identical target sets rather than partially
+matching them.
 
 Benchmark modes accept bounded `--duration`, `--warmup`, and `--repetitions`
 overrides. All run modes accept `--output-root` and `--run-id`. The default
@@ -235,6 +281,7 @@ scripts/bench-local.sh codec --quick --noplot
 scripts/bench-local.sh store --quick --noplot
 scripts/bench-local.sh handler --quick --noplot
 scripts/bench-local.sh tcp-pipelined --quick --noplot
+scripts/bench-local.sh tcp-pool --quick --noplot
 ```
 
 Criterion quick-mode rows are run through the individual script modes instead

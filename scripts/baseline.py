@@ -851,7 +851,10 @@ def benchmark_criterion_specs(
     mode: str, repo_root: Path, bench_targets: Sequence[str], run_dir: Path
 ) -> list[CommandSpec]:
     if mode == "bench-smoke":
-        definitions = (("tcp_throughput", "tcp_pipelined"),)
+        definitions = (
+            ("tcp_throughput", "tcp_pipelined"),
+            ("tcp_pool", None),
+        )
     else:
         definitions = tuple(
             (target, None)

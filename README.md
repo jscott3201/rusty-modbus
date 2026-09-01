@@ -317,12 +317,13 @@ cargo check -p rusty-modbus --features full --examples
 # License/advisory checks
 cargo deny check
 
-# Fast benchmark smoke: codec microbenches + single-connection pipelined TCP
+# Fast benchmark smoke: codec + pipelined TCP + uncontended pool lifecycle rows
 scripts/bench-local.sh smoke
 
 # Focused benchmark runs
 scripts/bench-local.sh codec --quick --noplot
 scripts/bench-local.sh tcp-pipelined --quick --noplot
+scripts/bench-local.sh tcp-pool --quick --noplot
 scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --operation mixed --json
 
 # Docker benchmark target
