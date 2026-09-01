@@ -2466,7 +2466,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
     def test_report_rejects_non_scalar_selector_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             run = self.make_report_run(root, run_id="invalid-report-selectors")
             populate_benchmark_evidence(run)
             run.finalize()
@@ -2567,7 +2567,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
     def test_cli_report_validation_rejects_malformed_render_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             run = self.make_report_run(root, run_id="cli-validation")
             populate_benchmark_evidence(run)
             run.finalize()
@@ -2670,7 +2670,7 @@ class BaselineHarnessTests(unittest.TestCase):
 
     def test_criterion_identity_is_proven_from_target_sha_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            parent = Path(directory)
+            parent = Path(directory).resolve()
             valid_root = parent / "valid"
             valid_root.mkdir()
             run = self.make_report_run(valid_root, run_id="lock-proof")
