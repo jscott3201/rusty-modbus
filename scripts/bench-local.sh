@@ -7,6 +7,7 @@
 #   scripts/bench-local.sh store --quick
 #   scripts/bench-local.sh handler --quick
 #   scripts/bench-local.sh tcp --quick --noplot
+#   scripts/bench-local.sh tcp-pool --quick --noplot
 #   scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --json
 set -euo pipefail
 
@@ -29,6 +30,7 @@ case "$mode" in
   smoke)
     run cargo bench -p rusty-modbus-benchmarks --bench codec -- --noplot --profile-time "$profile_time"
     run cargo bench -p rusty-modbus-benchmarks --bench tcp_throughput tcp_pipelined -- --noplot --profile-time "$profile_time"
+    run cargo bench -p rusty-modbus-benchmarks --bench tcp_pool -- --noplot --profile-time "$profile_time"
     ;;
   codec)
     run cargo bench -p rusty-modbus-benchmarks --bench codec -- "$@"
@@ -45,6 +47,9 @@ case "$mode" in
   tcp-pipelined)
     run cargo bench -p rusty-modbus-benchmarks --bench tcp_throughput tcp_pipelined -- "$@"
     ;;
+  tcp-pool)
+    run cargo bench -p rusty-modbus-benchmarks --bench tcp_pool -- "$@"
+    ;;
   stress)
     run cargo run --release -p rusty-modbus-benchmarks --bin stress-test -- "$@"
     ;;
@@ -53,7 +58,7 @@ case "$mode" in
     ;;
   *)
     cat >&2 <<'USAGE'
-Usage: scripts/bench-local.sh [smoke|codec|store|handler|tcp|tcp-pipelined|stress|all] [args...]
+Usage: scripts/bench-local.sh [smoke|codec|store|handler|tcp|tcp-pipelined|tcp-pool|stress|all] [args...]
 
 Examples:
   scripts/bench-local.sh smoke
@@ -61,6 +66,7 @@ Examples:
   scripts/bench-local.sh store --quick --noplot
   scripts/bench-local.sh handler --quick --noplot
   scripts/bench-local.sh tcp-pipelined --quick --noplot
+  scripts/bench-local.sh tcp-pool --quick --noplot
   scripts/bench-local.sh stress --duration 10 --clients 1 --in-flight 8 --json
 USAGE
     exit 2

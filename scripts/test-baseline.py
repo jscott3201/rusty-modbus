@@ -1676,11 +1676,32 @@ class BaselineHarnessTests(unittest.TestCase):
         self.assertEqual({item["in_flight"] for item in full}, {1, 2, 4, 8, 16})
 
         specs = baseline.benchmark_criterion_specs(
-            "bench-smoke", ROOT, ["codec", "tcp_throughput"], ROOT / "artifact"
+            "bench-smoke",
+            ROOT,
+            ["codec", "tcp_pool", "tcp_throughput"],
+            ROOT / "artifact",
         )
-        self.assertEqual([spec.label for spec in specs], ["criterion-tcp_throughput"])
+        self.assertEqual(
+            [spec.label for spec in specs],
+            ["criterion-tcp_throughput", "criterion-tcp_pool"],
+        )
         self.assertTrue(all(spec.argv[-2:] == ("--quick", "--noplot") for spec in specs))
         self.assertIn("tcp_pipelined", specs[0].argv)
+        self.assertEqual(
+            specs[1].argv,
+            (
+                "cargo",
+                "bench",
+                "-p",
+                "rusty-modbus-benchmarks",
+                "--bench",
+                "tcp_pool",
+                "--locked",
+                "--",
+                "--quick",
+                "--noplot",
+            ),
+        )
 
         full_specs = baseline.benchmark_criterion_specs(
             "bench-full",
@@ -1690,6 +1711,7 @@ class BaselineHarnessTests(unittest.TestCase):
                 "rtu_tcp_latency",
                 "server_handler",
                 "tcp_latency",
+                "tcp_pool",
                 "tcp_throughput",
                 "tls_latency",
             ],
@@ -1699,6 +1721,7 @@ class BaselineHarnessTests(unittest.TestCase):
             [spec.label for spec in full_specs],
             [
                 "criterion-tcp_latency",
+                "criterion-tcp_pool",
                 "criterion-tcp_throughput",
             ],
         )

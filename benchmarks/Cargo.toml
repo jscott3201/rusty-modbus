@@ -15,7 +15,7 @@ rusty-modbus-tls = { path = "../crates/rusty-modbus-tls" }
 rusty-modbus-client = { path = "../crates/rusty-modbus-client" }
 rusty-modbus-server = { path = "../crates/rusty-modbus-server" }
 rusty-modbus-sim = { path = "../crates/rusty-modbus-sim" }
-rusty-modbus-pool = { path = "../crates/rusty-modbus-pool" }
+rusty-modbus-pool = { path = "../crates/rusty-modbus-pool", features = ["client"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "net"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
 bytes = "1"
@@ -51,6 +51,10 @@ harness = false
 
 [[bench]]
 name = "tcp_throughput"
+harness = false
+
+[[bench]]
+name = "tcp_pool"
 harness = false
 
 [[bench]]
