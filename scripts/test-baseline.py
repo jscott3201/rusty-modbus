@@ -311,6 +311,285 @@ def disabled_policy_fixture() -> dict:
     }
 
 
+def controlled_evidence_contract_fixture() -> dict:
+    runner_id = "synthetic-controlled-runner"
+    profile = {"profile_id": "synthetic-control-profile", "version": "synthetic-v1"}
+    method = {"method_id": "synthetic-effect-uncertainty", "version": "synthetic-v1"}
+    approval_id = "synthetic-contract-approval"
+    promotion_rule_id = "synthetic-explicit-promotion-rule"
+
+    def retained(evidence_id: str, kind: str, digest_digit: int) -> dict:
+        return {
+            "evidence_id": evidence_id,
+            "kind": kind,
+            "locator": f"opaque:synthetic/{evidence_id}",
+            "recorded_utc": "2026-01-01T00:00:00Z",
+            "retained_until_utc": "2027-01-01T00:00:00Z",
+            "sha256": f"{digest_digit:064x}",
+        }
+
+    def run(
+        run_id: str,
+        target_sha: str,
+        artifact_evidence_id: str,
+        producer_digest: str,
+        scenario_digest: str,
+    ) -> dict:
+        return {
+            "artifact_evidence_id": artifact_evidence_id,
+            "control_profile": dict(profile),
+            "producer_set_sha256": producer_digest,
+            "run_id": run_id,
+            "runner_id": runner_id,
+            "sample_unit": baseline.CONTROLLED_SAMPLE_UNIT,
+            "scenario_set_sha256": scenario_digest,
+            "statistical_method": dict(method),
+            "target_sha": target_sha,
+        }
+
+    target_old = "a" * 40
+    target_current = "b" * 40
+    producer_old = "1" * 64
+    scenarios_old = "2" * 64
+    producer_current = "3" * 64
+    scenarios_current = "4" * 64
+    document = {
+        "approval": {
+            "approval_id": approval_id,
+            "approved_utc": "2026-02-01T00:00:00Z",
+            "authority_id": "synthetic-owner-authority",
+            "evidence_id": "evidence-approval-record",
+            "scope_sha256": "0" * 64,
+        },
+        "approval_authority": {
+            "authority_id": "synthetic-owner-authority",
+            "evidence_id": "evidence-approval-authority",
+            "validation_semantics": baseline.CONTROLLED_APPROVAL_VALIDATION_SEMANTICS,
+            "version": "synthetic-v1",
+        },
+        "baseline_lifecycle": {
+            "initial_state": "candidate",
+            "promotion_rule_evidence_id": "evidence-promotion-rule",
+            "promotion_rule_id": promotion_rule_id,
+            "promotion_path": [
+                {"from_state": from_state, "to_state": to_state}
+                for from_state, to_state in baseline.CONTROLLED_BASELINE_PROMOTION_PATH
+            ],
+            "selection": "explicit_baseline_id_only",
+            "supersession_transition": {
+                "from_state": "approved",
+                "to_state": "superseded",
+            },
+        },
+        "baselines": [
+            {
+                "artifact_evidence_id": "evidence-run-old-a",
+                "baseline_id": "synthetic-baseline-old",
+                "promotion_chain": [
+                    {
+                        "evidence_id": "evidence-variance-old",
+                        "from_state": "candidate",
+                        "to_state": "variance_collected",
+                        "variance_study_id": "synthetic-study-old",
+                    },
+                    {
+                        "evidence_id": "evidence-promotion-old",
+                        "from_state": "variance_collected",
+                        "rule_evidence_id": "evidence-promotion-rule",
+                        "rule_id": promotion_rule_id,
+                        "to_state": "promotion_pending",
+                    },
+                    {
+                        "approval_id": approval_id,
+                        "evidence_id": "evidence-approval-record",
+                        "from_state": "promotion_pending",
+                        "to_state": "approved",
+                    },
+                ],
+                "run_id": "synthetic-old-a",
+                "state": "superseded",
+                "supersession": {
+                    "evidence_id": "evidence-supersession-old",
+                    "from_state": "approved",
+                    "successor_baseline_id": "synthetic-baseline-current",
+                    "to_state": "superseded",
+                },
+                "target_sha": target_old,
+            },
+            {
+                "artifact_evidence_id": "evidence-run-current-a",
+                "baseline_id": "synthetic-baseline-current",
+                "promotion_chain": [
+                    {
+                        "evidence_id": "evidence-variance-current",
+                        "from_state": "candidate",
+                        "to_state": "variance_collected",
+                        "variance_study_id": "synthetic-study-current",
+                    },
+                    {
+                        "evidence_id": "evidence-promotion-current",
+                        "from_state": "variance_collected",
+                        "rule_evidence_id": "evidence-promotion-rule",
+                        "rule_id": promotion_rule_id,
+                        "to_state": "promotion_pending",
+                    },
+                    {
+                        "approval_id": approval_id,
+                        "evidence_id": "evidence-approval-record",
+                        "from_state": "promotion_pending",
+                        "to_state": "approved",
+                    },
+                ],
+                "run_id": "synthetic-current-a",
+                "state": "approved",
+                "supersession": None,
+                "target_sha": target_current,
+            },
+        ],
+        "budget_rules": [
+            {
+                "budget_rule_id": "synthetic-throughput-minimum",
+                "direction": "minimum",
+                "evidence_id": "evidence-budget-throughput",
+                "limit": 1.0,
+                "metric": "throughput",
+                "scenario_identity": {
+                    "identity_sha256": "5" * 64,
+                    "match": "exact_complete_identity",
+                    "scenario_id": "synthetic-tcp-read-depth-8",
+                },
+                "unit": "operations_per_second",
+            },
+            {
+                "budget_rule_id": "synthetic-p99-maximum",
+                "direction": "maximum",
+                "evidence_id": "evidence-budget-p99",
+                "limit": 1.0,
+                "metric": "p99_latency",
+                "scenario_identity": {
+                    "identity_sha256": "6" * 64,
+                    "match": "exact_complete_identity",
+                    "scenario_id": "synthetic-tcp-mixed-depth-8",
+                },
+                "unit": "ms",
+            },
+        ],
+        "contract_id": "synthetic-controlled-evidence-contract",
+        "contract_schema": {
+            "name": baseline.CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_NAME,
+            "version": baseline.CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_VERSION,
+        },
+        "control": {
+            "binding": {
+                "evidence_ids": ["evidence-runner-profile-binding"],
+                "profile_id": profile["profile_id"],
+                "profile_version": profile["version"],
+                "proof_semantics": baseline.CONTROLLED_BINDING_PROOF_SEMANTICS,
+                "runner_id": runner_id,
+            },
+            "profile": {
+                "evidence_ids": ["evidence-control-profile"],
+                **profile,
+            },
+            "runner": {
+                "evidence_ids": [
+                    "evidence-controlled-runner-b",
+                    "evidence-controlled-runner-a",
+                ],
+                "runner_id": runner_id,
+            },
+        },
+        "evidence_retention": [
+            retained("evidence-analysis-plan", "analysis_plan", 1),
+            retained("evidence-approval-authority", "approval_authority", 2),
+            retained("evidence-approval-record", "approval_record", 3),
+            retained("evidence-promotion-current", "baseline_promotion", 4),
+            retained("evidence-promotion-old", "baseline_promotion", 5),
+            retained("evidence-promotion-rule", "baseline_promotion_rule", 6),
+            retained("evidence-supersession-old", "baseline_supersession", 7),
+            retained("evidence-run-current-a", "benchmark_artifact", 8),
+            retained("evidence-run-current-b", "benchmark_artifact", 9),
+            retained("evidence-run-old-a", "benchmark_artifact", 10),
+            retained("evidence-run-old-b", "benchmark_artifact", 11),
+            retained("evidence-budget-p99", "budget_rule", 12),
+            retained("evidence-budget-throughput", "budget_rule", 13),
+            retained("evidence-control-profile", "control_profile", 14),
+            retained("evidence-controlled-runner-a", "controlled_runner", 15),
+            retained("evidence-controlled-runner-b", "controlled_runner", 16),
+            retained("evidence-runner-profile-binding", "runner_profile_binding", 17),
+            retained("evidence-variance-current", "variance_analysis", 18),
+            retained("evidence-variance-old", "variance_analysis", 19),
+        ],
+        "semantics": dict(baseline.CONTROLLED_EVIDENCE_CONTRACT_SEMANTICS),
+        "statistical_method": {
+            "analysis_plan_evidence_id": "evidence-analysis-plan",
+            **method,
+            "minimum_independent_runs": 2,
+            "outputs": {"effect": "required", "uncertainty": "required"},
+            "sample_unit": baseline.CONTROLLED_SAMPLE_UNIT,
+            "scenario_alignment": "exact_complete_set",
+        },
+        "variance_studies": [
+            {
+                "analysis_evidence_id": "evidence-variance-old",
+                "control_profile": dict(profile),
+                "producer_set_sha256": producer_old,
+                "runner_id": runner_id,
+                "runs": [
+                    run(
+                        "synthetic-old-a",
+                        target_old,
+                        "evidence-run-old-a",
+                        producer_old,
+                        scenarios_old,
+                    ),
+                    run(
+                        "synthetic-old-b",
+                        target_old,
+                        "evidence-run-old-b",
+                        producer_old,
+                        scenarios_old,
+                    ),
+                ],
+                "scenario_set_sha256": scenarios_old,
+                "statistical_method": dict(method),
+                "study_id": "synthetic-study-old",
+                "target_sha": target_old,
+            },
+            {
+                "analysis_evidence_id": "evidence-variance-current",
+                "control_profile": dict(profile),
+                "producer_set_sha256": producer_current,
+                "runner_id": runner_id,
+                "runs": [
+                    run(
+                        "synthetic-current-a",
+                        target_current,
+                        "evidence-run-current-a",
+                        producer_current,
+                        scenarios_current,
+                    ),
+                    run(
+                        "synthetic-current-b",
+                        target_current,
+                        "evidence-run-current-b",
+                        producer_current,
+                        scenarios_current,
+                    ),
+                ],
+                "scenario_set_sha256": scenarios_current,
+                "statistical_method": dict(method),
+                "study_id": "synthetic-study-current",
+                "target_sha": target_current,
+            },
+        ],
+    }
+    document["approval"]["scope_sha256"] = (
+        baseline._controlled_evidence_contract_approval_scope_sha256(document)
+    )
+    return document
+
+
 class BaselineHarnessTests(unittest.TestCase):
     def make_run(
         self,
@@ -358,6 +637,11 @@ class BaselineHarnessTests(unittest.TestCase):
             target_sha=target_sha or fixture_sha,
             mode=mode,
         )
+
+    def assert_controlled_contract_invalid(self, document: dict) -> None:
+        self.assertTrue(baseline.validate_controlled_evidence_contract(document))
+        with self.assertRaises(baseline.BaselineError):
+            baseline.controlled_evidence_contract_json_text(document)
 
     def test_full_sha_and_clean_tree_are_required(self) -> None:
         self.assertEqual(baseline.validate_full_sha(SHA), SHA)
@@ -908,6 +1192,428 @@ class BaselineHarnessTests(unittest.TestCase):
                     "reports/baseline-link.json",
                     "reports/candidate.json",
                 )
+
+    def test_controlled_evidence_contract_is_valid_canonical_and_permutation_stable(
+        self,
+    ) -> None:
+        document = controlled_evidence_contract_fixture()
+        snapshot = copy.deepcopy(document)
+        self.assertEqual(baseline.validate_controlled_evidence_contract(document), [])
+        rendered = baseline.controlled_evidence_contract_json_text(document)
+        digest = baseline.controlled_evidence_contract_sha256(document)
+        self.assertTrue(rendered.endswith("\n"))
+        self.assertEqual(len(digest), 64)
+        self.assertEqual(document, snapshot)
+
+        permuted = copy.deepcopy(document)
+        permuted["variance_studies"].reverse()
+        for study in permuted["variance_studies"]:
+            study["runs"].reverse()
+        permuted["baselines"].reverse()
+        permuted["budget_rules"].reverse()
+        permuted["evidence_retention"].reverse()
+        permuted["control"]["runner"]["evidence_ids"].reverse()
+        self.assertEqual(baseline.validate_controlled_evidence_contract(permuted), [])
+        self.assertEqual(
+            baseline.controlled_evidence_contract_json_text(permuted), rendered
+        )
+        self.assertEqual(baseline.controlled_evidence_contract_sha256(permuted), digest)
+
+        canonical = json.loads(rendered)
+        self.assertEqual(
+            [study["study_id"] for study in canonical["variance_studies"]],
+            sorted(study["study_id"] for study in canonical["variance_studies"]),
+        )
+        self.assertEqual(
+            canonical["control"]["runner"]["evidence_ids"],
+            sorted(canonical["control"]["runner"]["evidence_ids"]),
+        )
+        self.assertFalse(
+            {"verdict", "significance", "calculation", "attestation", "environment"}
+            & set(rendered.split('"'))
+        )
+
+        changed_approval_record = copy.deepcopy(document)
+        changed_approval_record["approval"]["approved_utc"] = "2026-03-01T00:00:00Z"
+        self.assertEqual(
+            baseline.validate_controlled_evidence_contract(changed_approval_record), []
+        )
+        self.assertEqual(
+            baseline._controlled_evidence_contract_approval_scope_sha256(
+                changed_approval_record
+            ),
+            baseline._controlled_evidence_contract_approval_scope_sha256(document),
+        )
+        self.assertNotEqual(
+            baseline.controlled_evidence_contract_sha256(changed_approval_record), digest
+        )
+
+    def test_controlled_evidence_contract_rejects_unknown_missing_or_unsupported_schema(
+        self,
+    ) -> None:
+        cases = []
+        missing = controlled_evidence_contract_fixture()
+        missing.pop("approval_authority")
+        cases.append(missing)
+        extra = controlled_evidence_contract_fixture()
+        extra["performance_verdict"] = "pass"
+        cases.append(extra)
+        unknown_name = controlled_evidence_contract_fixture()
+        unknown_name["contract_schema"]["name"] = "unknown-contract"
+        cases.append(unknown_name)
+        unknown_version = controlled_evidence_contract_fixture()
+        unknown_version["contract_schema"]["version"] = 2
+        cases.append(unknown_version)
+        boolean_version = controlled_evidence_contract_fixture()
+        boolean_version["contract_schema"]["version"] = True
+        cases.append(boolean_version)
+        alpha = controlled_evidence_contract_fixture()
+        alpha["statistical_method"]["alpha"] = 0.05
+        cases.append(alpha)
+        significance = controlled_evidence_contract_fixture()
+        significance["statistical_method"]["outputs"]["significance"] = "required"
+        cases.append(significance)
+        unknown_state = controlled_evidence_contract_fixture()
+        unknown_state["baselines"][0]["state"] = "accepted"
+        cases.append(unknown_state)
+        for position, malformed in enumerate(cases):
+            with self.subTest(case=position):
+                self.assert_controlled_contract_invalid(malformed)
+
+    def test_controlled_evidence_contract_rejects_duplicates_and_unresolved_references(
+        self,
+    ) -> None:
+        cases = []
+        duplicate_evidence = controlled_evidence_contract_fixture()
+        duplicate_evidence["evidence_retention"].append(
+            copy.deepcopy(duplicate_evidence["evidence_retention"][0])
+        )
+        cases.append(duplicate_evidence)
+        duplicate_study = controlled_evidence_contract_fixture()
+        duplicate_study["variance_studies"].append(
+            copy.deepcopy(duplicate_study["variance_studies"][0])
+        )
+        cases.append(duplicate_study)
+        duplicate_baseline = controlled_evidence_contract_fixture()
+        duplicate_baseline["baselines"][1]["baseline_id"] = duplicate_baseline[
+            "baselines"
+        ][0]["baseline_id"]
+        cases.append(duplicate_baseline)
+        duplicate_run = controlled_evidence_contract_fixture()
+        duplicate_run["variance_studies"][1]["runs"].append(
+            copy.deepcopy(duplicate_run["variance_studies"][0]["runs"][0])
+        )
+        cases.append(duplicate_run)
+        duplicate_binding = controlled_evidence_contract_fixture()
+        duplicate_binding["control"]["binding"]["evidence_ids"].append(
+            duplicate_binding["control"]["binding"]["evidence_ids"][0]
+        )
+        cases.append(duplicate_binding)
+        unresolved_runner = controlled_evidence_contract_fixture()
+        unresolved_runner["control"]["runner"]["evidence_ids"][0] = "missing-evidence"
+        cases.append(unresolved_runner)
+        unresolved_artifact = controlled_evidence_contract_fixture()
+        unresolved_artifact["variance_studies"][0]["runs"][0][
+            "artifact_evidence_id"
+        ] = "missing-evidence"
+        cases.append(unresolved_artifact)
+        unresolved_successor = controlled_evidence_contract_fixture()
+        unresolved_successor["baselines"][0]["supersession"][
+            "successor_baseline_id"
+        ] = "missing-baseline"
+        cases.append(unresolved_successor)
+        for position, malformed in enumerate(cases):
+            with self.subTest(case=position):
+                self.assert_controlled_contract_invalid(malformed)
+
+    def test_controlled_evidence_contract_rejects_malformed_identity_and_retention(
+        self,
+    ) -> None:
+        cases = []
+        malformed_sha = controlled_evidence_contract_fixture()
+        malformed_sha["variance_studies"][0]["target_sha"] = "abc"
+        cases.append(malformed_sha)
+        malformed_digest = controlled_evidence_contract_fixture()
+        malformed_digest["evidence_retention"][0]["sha256"] = "not-a-digest"
+        cases.append(malformed_digest)
+        uppercase_digest = controlled_evidence_contract_fixture()
+        uppercase_digest["variance_studies"][0]["producer_set_sha256"] = "A" * 64
+        cases.append(uppercase_digest)
+        malformed_timestamp = controlled_evidence_contract_fixture()
+        malformed_timestamp["evidence_retention"][0]["recorded_utc"] = (
+            "2026-01-01T00:00:00+00:00"
+        )
+        cases.append(malformed_timestamp)
+        reversed_retention = controlled_evidence_contract_fixture()
+        reversed_retention["evidence_retention"][0]["retained_until_utc"] = (
+            "2025-01-01T00:00:00Z"
+        )
+        cases.append(reversed_retention)
+        malformed_locator = controlled_evidence_contract_fixture()
+        malformed_locator["evidence_retention"][0]["locator"] = "opaque:has space"
+        cases.append(malformed_locator)
+        oversized_locator = controlled_evidence_contract_fixture()
+        oversized_locator["evidence_retention"][0]["locator"] = "x" * 513
+        cases.append(oversized_locator)
+        malformed_scope = controlled_evidence_contract_fixture()
+        malformed_scope["approval"]["scope_sha256"] = "0" * 63
+        cases.append(malformed_scope)
+        for position, malformed in enumerate(cases):
+            with self.subTest(case=position):
+                self.assert_controlled_contract_invalid(malformed)
+
+    def test_controlled_evidence_contract_rejects_variance_coherence_mismatches(
+        self,
+    ) -> None:
+        cases = []
+        insufficient = controlled_evidence_contract_fixture()
+        insufficient["variance_studies"][0]["runs"].pop()
+        cases.append(insufficient)
+        boolean_minimum = controlled_evidence_contract_fixture()
+        boolean_minimum["statistical_method"]["minimum_independent_runs"] = True
+        cases.append(boolean_minimum)
+        profile_mismatch = controlled_evidence_contract_fixture()
+        profile_mismatch["variance_studies"][0]["runs"][0]["control_profile"][
+            "profile_id"
+        ] = "synthetic-other-profile"
+        cases.append(profile_mismatch)
+        method_mismatch = controlled_evidence_contract_fixture()
+        method_mismatch["variance_studies"][0]["runs"][0]["statistical_method"][
+            "version"
+        ] = "synthetic-v2"
+        cases.append(method_mismatch)
+        target_mismatch = controlled_evidence_contract_fixture()
+        target_mismatch["variance_studies"][0]["runs"][0]["target_sha"] = "c" * 40
+        cases.append(target_mismatch)
+        scenario_mismatch = controlled_evidence_contract_fixture()
+        scenario_mismatch["variance_studies"][0]["runs"][0][
+            "scenario_set_sha256"
+        ] = "7" * 64
+        cases.append(scenario_mismatch)
+        producer_mismatch = controlled_evidence_contract_fixture()
+        producer_mismatch["variance_studies"][0]["runs"][0][
+            "producer_set_sha256"
+        ] = "8" * 64
+        cases.append(producer_mismatch)
+        incomplete_sample = controlled_evidence_contract_fixture()
+        incomplete_sample["variance_studies"][0]["runs"][0]["sample_unit"] = (
+            "partial_bench-full_run"
+        )
+        cases.append(incomplete_sample)
+        partial_alignment = controlled_evidence_contract_fixture()
+        partial_alignment["statistical_method"]["scenario_alignment"] = "intersection"
+        cases.append(partial_alignment)
+        for position, malformed in enumerate(cases):
+            with self.subTest(case=position):
+                self.assert_controlled_contract_invalid(malformed)
+
+    def test_controlled_evidence_contract_requires_distinct_variance_artifacts(
+        self,
+    ) -> None:
+        reused_evidence = controlled_evidence_contract_fixture()
+        first_run, second_run = reused_evidence["variance_studies"][0]["runs"]
+        second_run["artifact_evidence_id"] = first_run["artifact_evidence_id"]
+        errors = baseline.validate_controlled_evidence_contract(reused_evidence)
+        self.assertIn("distinct benchmark artifact evidence IDs", errors[0])
+        self.assert_controlled_contract_invalid(reused_evidence)
+
+        reused_content = controlled_evidence_contract_fixture()
+        evidence_by_id = {
+            evidence["evidence_id"]: evidence
+            for evidence in reused_content["evidence_retention"]
+        }
+        evidence_by_id["evidence-run-old-b"]["sha256"] = evidence_by_id[
+            "evidence-run-old-a"
+        ]["sha256"]
+        errors = baseline.validate_controlled_evidence_contract(reused_content)
+        self.assertIn("distinct benchmark artifact content digests", errors[0])
+        self.assert_controlled_contract_invalid(reused_content)
+
+    def test_controlled_evidence_contract_lifecycle_prefixes_and_approval_are_strict(
+        self,
+    ) -> None:
+        for state, prefix_length in (
+            ("candidate", 0),
+            ("variance_collected", 1),
+            ("promotion_pending", 2),
+        ):
+            with self.subTest(valid_prefix=state):
+                partial = controlled_evidence_contract_fixture()
+                record = partial["baselines"][1]
+                record["state"] = state
+                record["promotion_chain"] = record["promotion_chain"][:prefix_length]
+                record["supersession"] = None
+                partial["baselines"] = [record]
+                partial["approval"] = None
+                self.assertEqual(
+                    baseline.validate_controlled_evidence_contract(partial), []
+                )
+
+        cases = []
+        bad_initial = controlled_evidence_contract_fixture()
+        bad_initial["baseline_lifecycle"]["initial_state"] = "approved"
+        cases.append(bad_initial)
+        direct_lifecycle_path = controlled_evidence_contract_fixture()
+        direct_lifecycle_path["baseline_lifecycle"]["promotion_path"] = [
+            {"from_state": "candidate", "to_state": "approved"}
+        ]
+        cases.append(direct_lifecycle_path)
+        direct_approval = controlled_evidence_contract_fixture()
+        direct_approval["baselines"][1]["promotion_chain"] = [
+            {
+                "approval_id": direct_approval["approval"]["approval_id"],
+                "evidence_id": direct_approval["approval"]["evidence_id"],
+                "from_state": "candidate",
+                "to_state": "approved",
+            }
+        ]
+        cases.append(direct_approval)
+        omitted_stage = controlled_evidence_contract_fixture()
+        omitted_stage["baselines"][1]["promotion_chain"].pop(1)
+        cases.append(omitted_stage)
+        reordered_stages = controlled_evidence_contract_fixture()
+        reordered_stages["baselines"][1]["promotion_chain"][0:2] = reversed(
+            reordered_stages["baselines"][1]["promotion_chain"][0:2]
+        )
+        cases.append(reordered_stages)
+        skipped_stage = controlled_evidence_contract_fixture()
+        skipped_stage["baselines"][1]["promotion_chain"][1].update(
+            {"from_state": "candidate", "to_state": "promotion_pending"}
+        )
+        cases.append(skipped_stage)
+        wrong_partial_prefix = controlled_evidence_contract_fixture()
+        wrong_partial = wrong_partial_prefix["baselines"][1]
+        wrong_partial["state"] = "promotion_pending"
+        wrong_partial["promotion_chain"] = wrong_partial["promotion_chain"][1:]
+        wrong_partial_prefix["baselines"] = [wrong_partial]
+        cases.append(wrong_partial_prefix)
+        early_approval = controlled_evidence_contract_fixture()
+        early_record = early_approval["baselines"][1]
+        early_record["state"] = "promotion_pending"
+        early_record["promotion_chain"] = early_record["promotion_chain"][:2]
+        early_record["promotion_chain"][1]["approval_id"] = early_approval["approval"][
+            "approval_id"
+        ]
+        early_approval["baselines"] = [early_record]
+        cases.append(early_approval)
+        missing_approval = controlled_evidence_contract_fixture()
+        missing_approval["approval"] = None
+        cases.append(missing_approval)
+        authority_mismatch = controlled_evidence_contract_fixture()
+        authority_mismatch["approval"]["authority_id"] = "synthetic-other-authority"
+        cases.append(authority_mismatch)
+        scope_mismatch = controlled_evidence_contract_fixture()
+        scope_mismatch["approval"]["scope_sha256"] = "f" * 64
+        cases.append(scope_mismatch)
+        unresolved_study = controlled_evidence_contract_fixture()
+        unresolved_study["baselines"][1]["promotion_chain"][0][
+            "variance_study_id"
+        ] = "missing-study"
+        cases.append(unresolved_study)
+        variance_evidence_mismatch = controlled_evidence_contract_fixture()
+        variance_evidence_mismatch["baselines"][1]["promotion_chain"][0][
+            "evidence_id"
+        ] = "evidence-variance-old"
+        cases.append(variance_evidence_mismatch)
+        rule_evidence_mismatch = controlled_evidence_contract_fixture()
+        rule_evidence_mismatch["baselines"][1]["promotion_chain"][1][
+            "rule_evidence_id"
+        ] = "evidence-promotion-old"
+        cases.append(rule_evidence_mismatch)
+        approval_evidence_mismatch = controlled_evidence_contract_fixture()
+        approval_evidence_mismatch["baselines"][1]["promotion_chain"][2][
+            "evidence_id"
+        ] = "evidence-promotion-current"
+        cases.append(approval_evidence_mismatch)
+        approved_with_successor = controlled_evidence_contract_fixture()
+        approved_with_successor["baselines"][1]["supersession"] = copy.deepcopy(
+            approved_with_successor["baselines"][0]["supersession"]
+        )
+        cases.append(approved_with_successor)
+        successor_not_approved = controlled_evidence_contract_fixture()
+        successor_not_approved["baselines"][1]["state"] = "candidate"
+        successor_not_approved["baselines"][1]["promotion_chain"] = []
+        cases.append(successor_not_approved)
+        bad_supersession = controlled_evidence_contract_fixture()
+        bad_supersession["baselines"][0]["supersession"]["from_state"] = "candidate"
+        cases.append(bad_supersession)
+        for position, malformed in enumerate(cases):
+            with self.subTest(case=position):
+                self.assert_controlled_contract_invalid(malformed)
+
+    def test_controlled_evidence_contract_rejects_budget_selectors_pairings_and_limits(
+        self,
+    ) -> None:
+        cases = []
+        wildcard = controlled_evidence_contract_fixture()
+        wildcard["budget_rules"][0]["scenario_identity"]["scenario_id"] = "*"
+        cases.append(wildcard)
+        partial_match = controlled_evidence_contract_fixture()
+        partial_match["budget_rules"][0]["scenario_identity"]["match"] = "prefix"
+        cases.append(partial_match)
+        partial_selector = controlled_evidence_contract_fixture()
+        partial_selector["budget_rules"][0]["scenario_identity"].pop("identity_sha256")
+        cases.append(partial_selector)
+        wrong_metric = controlled_evidence_contract_fixture()
+        wrong_metric["budget_rules"][0]["metric"] = "median"
+        cases.append(wrong_metric)
+        wrong_unit = controlled_evidence_contract_fixture()
+        wrong_unit["budget_rules"][0]["unit"] = "ms"
+        cases.append(wrong_unit)
+        wrong_direction = controlled_evidence_contract_fixture()
+        wrong_direction["budget_rules"][0]["direction"] = "maximum"
+        cases.append(wrong_direction)
+        for invalid_limit in (True, -1, math.nan, math.inf, -math.inf):
+            invalid = controlled_evidence_contract_fixture()
+            invalid["budget_rules"][0]["limit"] = invalid_limit
+            cases.append(invalid)
+        verdict = controlled_evidence_contract_fixture()
+        verdict["budget_rules"][0]["verdict"] = "pass"
+        cases.append(verdict)
+        calculation = controlled_evidence_contract_fixture()
+        calculation["budget_rules"][0]["calculation"] = "candidate-baseline"
+        cases.append(calculation)
+        duplicate_id = controlled_evidence_contract_fixture()
+        duplicate_id["budget_rules"][1]["budget_rule_id"] = duplicate_id[
+            "budget_rules"
+        ][0]["budget_rule_id"]
+        cases.append(duplicate_id)
+        for position, malformed in enumerate(cases):
+            with self.subTest(case=position):
+                self.assert_controlled_contract_invalid(malformed)
+
+    def test_controlled_evidence_integrity_labels_and_locators_confer_no_authority(
+        self,
+    ) -> None:
+        cases = []
+        signature_claim = controlled_evidence_contract_fixture()
+        signature_claim["semantics"]["integrity"] = "sha256_is_a_signature"
+        cases.append(signature_claim)
+        runner_label = controlled_evidence_contract_fixture()
+        runner_label["control"]["runner"]["label"] = "controlled"
+        cases.append(runner_label)
+        no_profile_evidence = controlled_evidence_contract_fixture()
+        no_profile_evidence["control"]["profile"]["evidence_ids"] = []
+        cases.append(no_profile_evidence)
+        digest_as_binding = controlled_evidence_contract_fixture()
+        digest_as_binding["control"]["binding"]["evidence_ids"] = ["a" * 64]
+        cases.append(digest_as_binding)
+        locator_as_authority = controlled_evidence_contract_fixture()
+        locator_as_authority["approval_authority"]["evidence_id"] = (
+            "opaque:synthetic/authority"
+        )
+        cases.append(locator_as_authority)
+        attestation_field = controlled_evidence_contract_fixture()
+        attestation_field["evidence_retention"][0]["attestation"] = True
+        cases.append(attestation_field)
+        for position, malformed in enumerate(cases):
+            with self.subTest(case=position):
+                self.assert_controlled_contract_invalid(malformed)
+
+        parser = baseline.build_parser()
+        self.assertNotIn("controlled-evidence-contract", parser.format_help())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["validate-controlled-evidence-contract", "contract.json"])
 
     def test_checked_in_disabled_policy_is_strict_and_canonical(self) -> None:
         relative = "benchmarks/policy/benchmark-budget-policy-v1.json"
