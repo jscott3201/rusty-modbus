@@ -123,6 +123,42 @@ pub(crate) fn finish_passive_retirements(
     capacity_changed.notify_waiters();
 }
 
+/// Coherent aggregate lifecycle metrics for one connection pool.
+///
+/// Lifetime counters start at zero for each pool, increase monotonically with
+/// saturating `u64` arithmetic, and remain readable after pool shutdown while
+/// the [`ConnectionPool`] value exists. The snapshot has no per-device or
+/// retirement-reason dimensions.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PoolMetricsSnapshot {
+    /// Current accounting charges across the priority and non-priority pools.
+    ///
+    /// This includes checked-out raw and client leases plus pending demand and
+    /// priority-maintenance connection reservations. It is not a live-socket
+    /// count.
+    pub active_connections: usize,
+    /// Connections currently retained idle by the pool.
+    pub idle_connections: usize,
+    /// Successful connector results committed to the pool-managed lifecycle.
+    ///
+    /// Commitment means becoming an active lease or a retained idle entry. Idle
+    /// reuse does not increment this counter. A successful connection discarded
+    /// before commitment because of shutdown, maintenance stop, or a redundant
+    /// idle target does not increment it.
+    pub connections_created: u64,
+    /// Connector futures that resolved with an error after reserving capacity.
+    ///
+    /// Demand and priority-maintenance failures are included. Capacity
+    /// exhaustion or timeout, shutdown rejection, operation or probe errors,
+    /// and cancellation of a connector future are excluded.
+    pub connection_failures: u64,
+    /// Committed connections permanently removed from the pool lifecycle.
+    ///
+    /// This aggregate exposes no retirement reason or other dimensions.
+    pub connections_retired: u64,
+}
+
 const fn idle_observation_reason(observation: TcpIdleObservation) -> &'static str {
     match observation {
         TcpIdleObservation::NoAdverseSignal => "none",
@@ -151,15 +187,23 @@ pub(crate) struct PoolInner {
     /// including checked-out connections and pending connection establishment,
     /// counted per device address so each device's budget is independent.
     pub active_priority: HashMap<SocketAddr, usize>,
+    /// Aggregate active accounting charges across both pools.
+    active_connections: usize,
     /// Whether the pool is shutting down.
     pub shutting_down: bool,
+    /// Successful connections committed to the pool lifecycle.
+    connections_created: u64,
+    /// Connector futures that resolved with an error after reservation.
+    connection_failures: u64,
+    /// Committed connections permanently removed from the pool lifecycle.
+    connections_retired: u64,
 }
 
 impl PoolInner {
     /// Total active accounting charges across both pools, including pending
     /// connection establishment.
     pub(crate) fn active_total(&self) -> usize {
-        self.active_non_priority + self.active_priority.values().sum::<usize>()
+        self.active_connections
     }
 
     /// Active + idle connections to a specific priority device (its pool size).
@@ -185,25 +229,80 @@ impl PoolInner {
 
     /// Increment the active counter for a connection being checked out.
     pub(crate) fn charge_active(&mut self, entry: &PoolEntry) {
-        if entry.is_priority {
-            *self.active_priority.entry(entry.addr).or_insert(0) += 1;
+        self.charge_active_for(entry.is_priority, entry.addr);
+    }
+
+    /// Increment the active counter for a new reservation.
+    fn charge_active_for(&mut self, is_priority: bool, addr: SocketAddr) {
+        if is_priority {
+            *self.active_priority.entry(addr).or_insert(0) += 1;
         } else {
             self.active_non_priority += 1;
         }
+        self.active_connections += 1;
     }
 
     /// Decrement the active counter when a connection retires, returns to idle,
     /// or a pending connect attempt fails.
-    pub(crate) fn release_active(&mut self, is_priority: bool, addr: SocketAddr) {
-        if is_priority {
+    pub(crate) fn release_active(&mut self, is_priority: bool, addr: SocketAddr) -> bool {
+        let released = if is_priority {
             if let Some(c) = self.active_priority.get_mut(&addr) {
+                let released = *c != 0;
                 *c = c.saturating_sub(1);
                 if *c == 0 {
                     self.active_priority.remove(&addr);
                 }
+                released
+            } else {
+                false
             }
         } else {
+            let released = self.active_non_priority != 0;
             self.active_non_priority = self.active_non_priority.saturating_sub(1);
+            released
+        };
+        if released {
+            self.active_connections = self.active_connections.saturating_sub(1);
+        }
+        released
+    }
+
+    /// Release an active charge because its committed connection retired.
+    pub(crate) fn retire_active(&mut self, is_priority: bool, addr: SocketAddr) {
+        if self.release_active(is_priority, addr) {
+            self.record_connection_retired();
+        }
+    }
+
+    /// Record one connection committed to the pool lifecycle.
+    fn record_connection_created(&mut self) {
+        self.connections_created = self.connections_created.saturating_add(1);
+    }
+
+    /// Record one connector error after a capacity reservation.
+    fn record_connection_failure(&mut self) {
+        self.connection_failures = self.connection_failures.saturating_add(1);
+    }
+
+    /// Record one committed connection permanently leaving the pool lifecycle.
+    fn record_connection_retired(&mut self) {
+        self.connections_retired = self.connections_retired.saturating_add(1);
+    }
+
+    /// Record multiple committed connections permanently leaving the lifecycle.
+    pub(crate) fn record_connections_retired(&mut self, count: usize) {
+        let count = u64::try_from(count).unwrap_or(u64::MAX);
+        self.connections_retired = self.connections_retired.saturating_add(count);
+    }
+
+    /// Copy one coherent aggregate metrics snapshot.
+    fn metrics(&self) -> PoolMetricsSnapshot {
+        PoolMetricsSnapshot {
+            active_connections: self.active_total(),
+            idle_connections: self.idle.len(),
+            connections_created: self.connections_created,
+            connection_failures: self.connection_failures,
+            connections_retired: self.connections_retired,
         }
     }
 }
@@ -243,6 +342,13 @@ impl PendingReservation {
 
     /// Transfer ownership of the active charge to the returned lease.
     fn commit(mut self, entry: PoolEntry) -> PooledConnection {
+        {
+            let mut inner = self.pool.lock();
+            inner.record_connection_created();
+            if self.evicted.is_some() {
+                inner.record_connection_retired();
+            }
+        }
         let connection = PooledConnection::new(
             entry,
             Arc::clone(&self.pool),
@@ -272,6 +378,7 @@ impl PendingReservation {
             if inner.shutting_down || inner.priority_idle_count(self.addr) != 0 {
                 Some(entry)
             } else {
+                inner.record_connection_created();
                 inner.idle.push(entry);
                 None
             }
@@ -280,6 +387,34 @@ impl PendingReservation {
         self.capacity_changed.notify_waiters();
         drop(rejected);
     }
+
+    /// Record one connector error and synchronously roll back its reservation.
+    fn fail(mut self) {
+        self.rollback(true);
+    }
+
+    /// Release the pending charge and restore or retire a tentative LRU victim.
+    fn rollback(&mut self, connection_failed: bool) {
+        let mut inner = self.pool.lock();
+        if connection_failed {
+            inner.record_connection_failure();
+        }
+        inner.release_active(self.is_priority, self.addr);
+        let mut retired = None;
+        if let Some(entry) = self.evicted.take() {
+            if inner.shutting_down {
+                inner.record_connection_retired();
+                retired = Some(entry);
+            } else {
+                // Preserve the original entry, including its LRU timestamp.
+                inner.idle.push(entry);
+            }
+        }
+        self.committed = true;
+        drop(inner);
+        self.capacity_changed.notify_waiters();
+        drop(retired);
+    }
 }
 
 impl Drop for PendingReservation {
@@ -287,17 +422,7 @@ impl Drop for PendingReservation {
         if self.committed {
             return;
         }
-
-        let mut inner = self.pool.lock();
-        inner.release_active(self.is_priority, self.addr);
-        if !inner.shutting_down
-            && let Some(entry) = self.evicted.take()
-        {
-            // Preserve the original entry, including its LRU timestamp.
-            inner.idle.push(entry);
-        }
-        drop(inner);
-        self.capacity_changed.notify_waiters();
+        self.rollback(false);
     }
 }
 
@@ -444,7 +569,11 @@ impl ConnectionPool {
             idle: Vec::new(),
             active_non_priority: 0,
             active_priority: HashMap::new(),
+            active_connections: 0,
             shutting_down: false,
+            connections_created: 0,
+            connection_failures: 0,
+            connections_retired: 0,
         }));
         let capacity_changed = Arc::new(Notify::new());
 
@@ -722,6 +851,7 @@ impl ConnectionPool {
                     )));
                 }
                 IdleEntryInspection::Retire(entry, observation) => {
+                    inner.record_connection_retired();
                     retirements.push((entry, observation));
                 }
             }
@@ -735,18 +865,18 @@ impl ConnectionPool {
             if inner.priority_total(addr) >= cap {
                 return None;
             }
-            *inner.active_priority.entry(addr).or_insert(0) += 1;
+            inner.charge_active_for(true, addr);
             None
         } else {
             // Non-priority pool: bounded by max_connections, LRU-evicted.
             if inner.non_priority_total() < self.config.max_connections {
-                inner.active_non_priority += 1;
+                inner.charge_active_for(false, addr);
                 None
             } else if let Some(idx) = find_evictable(inner) {
                 // Evict to stay within the cap, but keep the entry in hand:
                 // rollback restores it unchanged.
                 let evicted = inner.idle.swap_remove(idx);
-                inner.active_non_priority += 1;
+                inner.charge_active_for(false, addr);
                 Some(evicted)
             } else {
                 return None;
@@ -791,7 +921,7 @@ impl ConnectionPool {
                     }
                     Err(e) => {
                         // Use the same guard rollback as future cancellation.
-                        drop(reservation);
+                        reservation.fail();
                         Err(PoolError::ConnectionFailed(e))
                     }
                 }
@@ -816,6 +946,8 @@ impl ConnectionPool {
         {
             let mut inner = self.inner.lock();
             inner.shutting_down = true;
+            let retired = inner.idle.len();
+            inner.record_connections_retired(retired);
             inner.idle.clear();
         }
         self.capacity_changed.notify_waiters();
@@ -900,6 +1032,17 @@ impl ConnectionPool {
     #[must_use]
     pub fn idle_count(&self) -> usize {
         self.inner.lock().idle.len()
+    }
+
+    /// Return a coherent aggregate snapshot of pool lifecycle metrics.
+    ///
+    /// This takes the pool's accounting mutex once and copies the current gauges
+    /// and lifetime counters in O(1) time without allocation. Lifetime counters
+    /// remain available after [`shutdown`](Self::shutdown) while this pool value
+    /// exists. See [`PoolMetricsSnapshot`] for exact field semantics.
+    #[must_use]
+    pub fn metrics(&self) -> PoolMetricsSnapshot {
+        self.inner.lock().metrics()
     }
 
     /// Check if an address is a priority device.
@@ -1205,7 +1348,7 @@ impl<C, R, W> PriorityMaintenanceTask<C, R, W> {
         };
 
         let Ok((sink, stream)) = connect_result else {
-            drop(reservation);
+            reservation.fail();
             return PriorityConnectOutcome::Failed;
         };
         if priority_maintenance_should_stop(&self.maintenance_stop) {
@@ -1315,6 +1458,7 @@ fn claim_priority_probe(
                 };
             }
             IdleEntryInspection::Retire(entry, observation) => {
+                pool.record_connection_retired();
                 retirements.push((entry, observation));
             }
         }
@@ -1484,7 +1628,7 @@ fn reserve_priority_maintenance(
         return PriorityMaintenanceReservation::Unavailable;
     }
 
-    *pool.active_priority.entry(addr).or_insert(0) += 1;
+    pool.charge_active_for(true, addr);
     PriorityMaintenanceReservation::Reserved(PendingReservation::new(
         Arc::clone(inner),
         Arc::clone(capacity_changed),
@@ -2105,6 +2249,28 @@ mod tests {
             .await
             .expect_err("pending acquisition should be cancelled");
         assert!(error.is_cancelled());
+    }
+
+    fn assert_metrics(
+        pool: &ConnectionPool,
+        active_connections: usize,
+        idle_connections: usize,
+        connections_created: u64,
+        connection_failures: u64,
+        connections_retired: u64,
+    ) {
+        assert_eq!(pool.active_count(), active_connections);
+        assert_eq!(pool.idle_count(), idle_connections);
+        assert_eq!(
+            pool.metrics(),
+            PoolMetricsSnapshot {
+                active_connections,
+                idle_connections,
+                connections_created,
+                connection_failures,
+                connections_retired,
+            }
+        );
     }
 
     #[tokio::test]
@@ -3003,7 +3169,7 @@ mod tests {
         let pool = ConnectionPool::new(config);
         let reservation = {
             let mut inner = pool.inner.lock();
-            *inner.active_priority.entry(addr).or_insert(0) += 1;
+            inner.charge_active_for(true, addr);
             PendingReservation::new(
                 Arc::clone(&pool.inner),
                 Arc::clone(&pool.capacity_changed),
@@ -4014,5 +4180,251 @@ mod tests {
             assert_eq!(inner.idle[0].last_used, original_last_used);
             assert!(inner.non_priority_total() <= pool.config.max_connections);
         }
+    }
+
+    #[tokio::test]
+    async fn metrics_fresh_pool_and_cancelled_reservation_have_exact_zero_counters() {
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        assert_metrics(&pool, 0, 0, 0, 0, 0);
+
+        let (pending, entered) = spawn_pending_get(Arc::clone(&pool), test_addr(15_300));
+        entered.await.unwrap();
+        assert_metrics(&pool, 1, 0, 0, 0, 0);
+
+        abort_pending(pending).await;
+        assert_metrics(&pool, 0, 0, 0, 0, 0);
+        pool.shutdown();
+        assert_metrics(&pool, 0, 0, 0, 0, 0);
+    }
+
+    #[tokio::test]
+    async fn metrics_demand_failure_retry_and_raw_retirement_are_exact() {
+        let pool = ConnectionPool::new(test_config(1));
+        let addr = test_addr(15_301);
+
+        let failed = pool
+            .get_with_connector(addr, || async { Err(TransportError::Disconnected) })
+            .await;
+        assert!(matches!(failed, Err(PoolError::ConnectionFailed(_))));
+        assert_metrics(&pool, 0, 0, 0, 1, 0);
+
+        let connection = acquired_connection(&pool, addr).await;
+        assert_metrics(&pool, 1, 0, 1, 1, 0);
+        assert!(matches!(
+            pool.get_with_connector(addr, || async { Err(TransportError::Disconnected) })
+                .await,
+            Err(PoolError::Exhausted)
+        ));
+        assert_metrics(&pool, 1, 0, 1, 1, 0);
+
+        drop(connection);
+        assert_metrics(&pool, 0, 0, 1, 1, 1);
+    }
+
+    #[tokio::test]
+    async fn metrics_lru_replacement_counts_only_committed_changes() {
+        let idle_addr = test_addr(15_302);
+        let replacement_addr = test_addr(15_303);
+        let pool = Arc::new(ConnectionPool::new(test_config(1)));
+        let entry = idle_entry(idle_addr, Instant::now() - Duration::from_secs(1)).await;
+        {
+            let mut inner = pool.inner.lock();
+            inner.idle.push(entry);
+            inner.record_connection_created();
+        }
+        assert_metrics(&pool, 0, 1, 1, 0, 0);
+
+        let (cancelled, entered) = spawn_pending_get(Arc::clone(&pool), replacement_addr);
+        entered.await.unwrap();
+        assert_metrics(&pool, 1, 0, 1, 0, 0);
+        abort_pending(cancelled).await;
+        assert_metrics(&pool, 0, 1, 1, 0, 0);
+
+        let failed = pool
+            .get_with_connector(replacement_addr, || async {
+                Err(TransportError::Disconnected)
+            })
+            .await;
+        assert!(matches!(failed, Err(PoolError::ConnectionFailed(_))));
+        assert_metrics(&pool, 0, 1, 1, 1, 0);
+
+        let replacement = acquired_connection(&pool, replacement_addr).await;
+        assert_metrics(&pool, 1, 0, 2, 1, 1);
+        drop(replacement);
+        assert_metrics(&pool, 0, 0, 2, 1, 2);
+    }
+
+    #[tokio::test]
+    async fn metrics_passive_checkout_and_health_retire_each_removed_entry_once() {
+        let checkout_addr = test_addr(15_304);
+        let pool = ConnectionPool::new(test_config(4));
+        let (adverse, mut adverse_peer) =
+            idle_entry_with_peer(checkout_addr, Instant::now(), false).await;
+        adverse_peer.write_all(&[0x01]).await.unwrap();
+        let adverse = wait_for_entry_observation(adverse, TcpIdleObservation::QueuedInput).await;
+        {
+            let mut inner = pool.inner.lock();
+            inner.idle.push(adverse);
+            inner.record_connection_created();
+        }
+
+        let replacement = acquired_connection(&pool, checkout_addr).await;
+        assert_metrics(&pool, 1, 0, 2, 0, 1);
+        drop(replacement);
+        assert_metrics(&pool, 0, 0, 2, 0, 2);
+
+        let now = Instant::now();
+        let expired = idle_entry(test_addr(15_305), now - Duration::from_secs(2)).await;
+        let (adverse, adverse_peer) = idle_entry_with_peer(test_addr(15_306), now, false).await;
+        drop(adverse_peer);
+        let adverse = wait_for_entry_observation(adverse, TcpIdleObservation::PeerClosed).await;
+        {
+            let mut inner = pool.inner.lock();
+            inner.idle.push(expired);
+            inner.record_connection_created();
+            inner.idle.push(adverse);
+            inner.record_connection_created();
+        }
+        assert_metrics(&pool, 0, 2, 4, 0, 2);
+
+        assert!(health::run_health_check(
+            &pool.inner,
+            &pool.capacity_changed,
+            now,
+            Duration::from_secs(1),
+        ));
+        assert_metrics(&pool, 0, 0, 4, 0, 4);
+    }
+
+    #[tokio::test]
+    async fn metrics_shutdown_counts_idle_then_later_active_retirement_once() {
+        let pool = ConnectionPool::new(test_config(2));
+        let idle = idle_entry(test_addr(15_307), Instant::now()).await;
+        {
+            let mut inner = pool.inner.lock();
+            inner.idle.push(idle);
+            inner.record_connection_created();
+        }
+        let active = acquired_connection(&pool, test_addr(15_308)).await;
+        assert_metrics(&pool, 1, 1, 2, 0, 0);
+
+        pool.shutdown();
+        assert_metrics(&pool, 1, 0, 2, 0, 1);
+        pool.shutdown();
+        assert_metrics(&pool, 1, 0, 2, 0, 1);
+
+        drop(active);
+        assert_metrics(&pool, 0, 0, 2, 0, 2);
+    }
+
+    #[tokio::test]
+    async fn metrics_priority_maintenance_failure_creation_and_replenishment_are_exact() {
+        let addr = test_addr(15_309);
+        let config = replenishment_config(vec![crate::PriorityDevice::new(addr, 1)]);
+        let (pool, mut attempts, mut retries, mut fallbacks) =
+            pool_with_gated_priority_maintenance(config);
+
+        let failed = next_priority_maintenance_attempt(&mut attempts).await;
+        assert_metrics(&pool, 1, 0, 0, 0, 0);
+        failed.fail();
+        let retry = next_retry_wait(&mut retries).await;
+        assert_metrics(&pool, 0, 0, 0, 1, 0);
+        retry.resume();
+
+        next_priority_maintenance_attempt(&mut attempts)
+            .await
+            .succeed();
+        let idle_fallback = next_fallback_wait(&mut fallbacks).await;
+        assert_metrics(&pool, 0, 1, 1, 1, 0);
+
+        let checked_out = pool
+            .get_with_connector(addr, || async { Err(TransportError::Disconnected) })
+            .await
+            .expect("maintenance-created idle entry should be reusable");
+        let active_fallback = next_fallback_wait(&mut fallbacks).await;
+        assert!(idle_fallback.complete.send(()).is_err());
+        assert_metrics(&pool, 1, 0, 1, 1, 0);
+
+        drop(checked_out);
+        let replenishment = next_priority_maintenance_attempt(&mut attempts).await;
+        assert!(active_fallback.complete.send(()).is_err());
+        assert_metrics(&pool, 1, 0, 1, 1, 1);
+        replenishment.succeed();
+        let replenished_fallback = next_fallback_wait(&mut fallbacks).await;
+        assert_metrics(&pool, 0, 1, 2, 1, 1);
+
+        pool.shutdown_and_wait().await;
+        assert!(replenished_fallback.complete.send(()).is_err());
+        assert_metrics(&pool, 0, 0, 2, 1, 2);
+    }
+
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    async fn metrics_client_returns_reuse_and_retirement_paths_are_exact() {
+        let pool = ConnectionPool::new(test_config(1));
+        let addr = test_addr(15_310);
+
+        let retiring = acquired_connection(&pool, addr)
+            .await
+            .into_retiring_client(ClientConfig::default());
+        retiring.shutdown().await;
+        drop(retiring);
+        assert_metrics(&pool, 0, 0, 1, 0, 1);
+
+        let adverse = acquired_connection(&pool, addr)
+            .await
+            .into_reusable_client(ClientConfig::default())
+            .unwrap();
+        adverse.client().abort();
+        assert!(matches!(
+            adverse.shutdown_and_return().await,
+            PooledClientReturnOutcome::Retired(_)
+        ));
+        assert_metrics(&pool, 0, 0, 2, 0, 2);
+
+        let clean = acquired_connection(&pool, addr)
+            .await
+            .into_reusable_client(ClientConfig::default())
+            .unwrap();
+        assert_eq!(
+            clean.shutdown_and_return().await,
+            PooledClientReturnOutcome::ReturnedToIdle
+        );
+        assert_metrics(&pool, 0, 1, 3, 0, 2);
+
+        let reused = pool
+            .get_with_connector(addr, || async { Err(TransportError::Disconnected) })
+            .await
+            .expect("clean returned entry should be reused without connecting")
+            .into_reusable_client(ClientConfig::default())
+            .unwrap();
+        assert_metrics(&pool, 1, 0, 3, 0, 2);
+        assert_eq!(
+            reused.shutdown_and_return().await,
+            PooledClientReturnOutcome::ReturnedToIdle
+        );
+        assert_metrics(&pool, 0, 1, 3, 0, 2);
+
+        pool.shutdown();
+        assert_metrics(&pool, 0, 0, 3, 0, 3);
+    }
+
+    #[tokio::test]
+    async fn metrics_lifetime_counters_saturate_without_wrapping() {
+        let pool = ConnectionPool::new(test_config(1));
+        {
+            let mut inner = pool.inner.lock();
+            inner.connections_created = u64::MAX - 1;
+            inner.connection_failures = u64::MAX - 1;
+            inner.connections_retired = u64::MAX - 1;
+            inner.record_connection_created();
+            inner.record_connection_created();
+            inner.record_connection_failure();
+            inner.record_connection_failure();
+            inner.record_connection_retired();
+            inner.record_connections_retired(usize::MAX);
+        }
+
+        assert_metrics(&pool, 0, 0, u64::MAX, u64::MAX, u64::MAX);
     }
 }

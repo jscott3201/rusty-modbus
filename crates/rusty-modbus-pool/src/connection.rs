@@ -288,7 +288,7 @@ impl PooledConnection {
         let addr = entry.addr;
         {
             let mut inner = self.pool.lock();
-            inner.release_active(is_priority, addr);
+            inner.retire_active(is_priority, addr);
         }
 
         // Retire the TCP halves only after releasing the pool mutex.

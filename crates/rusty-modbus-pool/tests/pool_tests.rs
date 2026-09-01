@@ -6,7 +6,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_pool::{
-    BackoffConfig, ConnectionPool, LeaseInvalidationReason, PoolConfig, PoolError, PriorityDevice,
+    BackoffConfig, ConnectionPool, LeaseInvalidationReason, PoolConfig, PoolError,
+    PoolMetricsSnapshot, PriorityDevice,
 };
 #[cfg(feature = "client")]
 use rusty_modbus_pool::{ClientConfig, PooledClientReturnOutcome};
@@ -183,6 +184,19 @@ fn replenishing_priority_config(addr: SocketAddr, max_connections: usize) -> Poo
         priority_devices: vec![PriorityDevice::new(addr, max_connections)],
         ..pool_config_for(addr)
     }
+}
+
+#[tokio::test]
+async fn public_metrics_snapshot_is_root_exported_and_fresh_pool_is_zero() {
+    let pool = ConnectionPool::new(PoolConfig {
+        pre_connect: false,
+        ..PoolConfig::default()
+    });
+    let snapshot: PoolMetricsSnapshot = pool.metrics();
+
+    assert_eq!(snapshot, PoolMetricsSnapshot::default());
+    assert_eq!(snapshot.active_connections, pool.active_count());
+    assert_eq!(snapshot.idle_connections, pool.idle_count());
 }
 
 #[tokio::test]

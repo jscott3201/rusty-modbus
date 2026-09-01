@@ -72,6 +72,10 @@ pub(crate) fn run_health_check(
         }
     }
     pool.idle = retained;
+    let retirement_count = age_evictions
+        .len()
+        .saturating_add(passive_retirements.len());
+    pool.record_connections_retired(retirement_count);
     drop(pool);
 
     let passively_freed = !passive_retirements.is_empty();

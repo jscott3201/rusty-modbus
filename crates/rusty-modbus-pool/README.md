@@ -38,8 +38,42 @@ the reservation guard to release its charge. Pool shutdown wakes blocked
 waiters, which return `PoolError::ShuttingDown` when shutdown is observed.
 
 `active_count()` reports active accounting charges, including capacity reserved
-while a demand or priority-maintenance TCP connector is pending. It does
-not report idle connections or expose a separate public pending metric.
+while a demand or priority-maintenance TCP connector is pending. It does not
+report idle connections or expose a separate public pending metric. The
+aggregate snapshot described below reports the same active gauge together with
+the idle gauge and lifetime lifecycle counters.
+
+## Aggregate lifecycle metrics
+
+`ConnectionPool::metrics()` takes the pool accounting mutex once and copies a
+coherent, allocation-free `PoolMetricsSnapshot`. Applications can poll this
+dependency-free value and adapt it to their own exporter. It has no labels,
+callbacks, observers, registry, per-device dimensions, pending gauge, or
+first-party Prometheus/OpenTelemetry coupling.
+
+`active_connections` is the current accounting charge across both pools. It
+includes checked-out raw and client leases plus pending demand and priority-
+maintenance reservations, so it is not a live-socket count.
+`idle_connections` is the number of entries currently retained idle. These
+gauges have the same stable-point semantics as `active_count()` and
+`idle_count()`.
+
+The three lifetime counters start at zero for each pool, saturate at `u64::MAX`,
+never decrease, and remain readable after shutdown while the `ConnectionPool`
+value exists:
+
+- `connections_created` counts successful connector results committed as an
+  active lease or retained idle entry. Idle reuse does not increment it, nor
+  does a successful maintenance connection discarded before commitment because
+  shutdown, cooperative stop, or a redundant idle target won.
+- `connection_failures` counts demand and priority-maintenance connector futures
+  that resolve `Err` after reservation. Capacity exhaustion/timeouts, shutdown
+  rejection, operation/probe errors, and connector cancellation do not count.
+- `connections_retired` counts committed connections permanently removed from
+  the pool lifecycle, without exposing a reason or other dimension.
+
+All counter updates occur under the same `PoolInner` mutex as capacity and idle
+state. They are derived from lifecycle transitions rather than tracing events.
 
 ## Pool shutdown and bounded quiescence
 
@@ -194,8 +228,10 @@ Enable them only for explicitly configured TCP priority targets whose selected
 addresses are safe to read at the requested cadence. A successful probe means one
 validated read plus a local reusable-session verdict. It is not permanent
 liveness, proof of future silence, a general protocol-synchronization guarantee,
-or a health threshold. Probes never target checked-out sessions and add no metric,
-gateway, TLS, RTU, Python, CLI, write, or retry behavior.
+or a health threshold. Probes never target checked-out sessions and add no
+probe-specific metric, gateway, TLS, RTU, Python, CLI, write, or retry behavior.
+Their ordinary connection creation and retirement lifecycle effects are included
+in the aggregate pool snapshot.
 
 Enabling `client` adds this public field, so downstream client-enabled exhaustive
 `PriorityDevice` literals must now specify `probe: None` (or `Some(...)`). Use
@@ -246,8 +282,8 @@ implemented return paths, raw Drop retirement, always-retiring client handoff,
 and exact verdict-gated reusable return close F-017's cross-borrower reuse
 finding. Passive observation mitigates F-018, but TCP-013 remains a compatibility
 deviation: active liveness and protocol proof, the post-observation race, default
-recovery policy, gateway composition, exact creation-bound evidence, public
-metrics, and benchmarks remain incomplete. Opt-in one-idle replenishment does
+recovery policy, gateway composition, exact broader creation-bound evidence, and
+benchmarks remain incomplete. Opt-in one-idle replenishment does
 not close TCP-013, F-018, or PR-403.
 
 Each passive retirement emits one `DEBUG` event with target
@@ -423,9 +459,10 @@ label (`none` when inapplicable and `other` for a future unknown reason); and
 `is_priority` is a boolean. No request, address, Unit ID, error text, or other
 high-cardinality value is recorded.
 
-This client-handoff tracing is observability only. It adds no public counters,
-liveness proof, automatic raw-lease invalidation, or recovery/backoff policy,
-and it is not evidence that any return path is safe by itself. F-017 closure
+This client-handoff tracing is observability only. Events do not drive or
+dimension the aggregate lifecycle counters, add a liveness proof, automatically
+invalidate raw leases, or add recovery/backoff policy, and they are not evidence
+that any return path is safe by itself. F-017 closure
 comes from the combined current return-path behavior; F-018 remains mitigated
 and TCP-013 remains open.
 
