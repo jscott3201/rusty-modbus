@@ -18,7 +18,7 @@ import time
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Sequence
 
 SCHEMA_VERSION = 1
@@ -30,6 +30,11 @@ REPORT_JSON_NAME = "benchmark-report-v1.json"
 REPORT_MARKDOWN_NAME = "benchmark-report-v1.md"
 COMPARISON_SCHEMA_NAME = "benchmark-comparison"
 COMPARISON_SCHEMA_VERSION = 1
+POLICY_SCHEMA_NAME = "benchmark-budget-policy"
+POLICY_SCHEMA_VERSION = 1
+CONTROLLED_EVALUATION_SCHEMA_NAME = "benchmark-controlled-evaluation"
+CONTROLLED_EVALUATION_SCHEMA_VERSION = 1
+CONTROLLED_NOT_ELIGIBLE_EXIT = 3
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
 SUPPORTED_CRITERION_VERSION = "0.5.1"
@@ -39,8 +44,21 @@ FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 RUNNER_LABEL = re.compile(r"[^\x00-\x1f\x7f]{1,128}\Z")
 COMMAND_ID = re.compile(r"[0-9]{3}-[a-z0-9-]+\Z")
+BENCH_TARGET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+POLICY_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
+SHA256_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 MODES = ("correctness", "bench-smoke", "bench-full")
 BENCHMARK_MODES = ("bench-smoke", "bench-full")
+POLICY_ACTIVATION_BLOCKERS = (
+    "no_approved_controlled_baseline",
+    "no_approved_repeated_variance_evidence_or_statistical_method",
+    "no_approved_controlled_runner_or_profile",
+    "no_approved_budgets_or_approval_path",
+)
+CONTROLLED_EVALUATION_REASON_CODES = (
+    "policy_disabled",
+    *POLICY_ACTIVATION_BLOCKERS,
+)
 REPORT_EVIDENCE = {
     "artifact_validity": "valid",
     "budget_decision": "not_evaluated",
@@ -1432,6 +1450,49 @@ def criterion_version_from_target_lock(repo_root: Path, target_sha: str) -> str:
     return version
 
 
+def benchmark_targets_from_target_manifest(repo_root: Path, target_sha: str) -> list[str]:
+    target_sha = validate_full_sha(target_sha)
+    try:
+        completed = subprocess.run(
+            ("git", "cat-file", "blob", f"{target_sha}:benchmarks/Cargo.toml"),
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+    except OSError as error:
+        raise BaselineError(
+            f"cannot read target-SHA benchmark manifest evidence: {error}"
+        ) from error
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise BaselineError(
+            f"target-SHA benchmark manifest evidence is unavailable for {target_sha}: {detail}"
+        )
+    try:
+        manifest = tomllib.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise BaselineError(f"target-SHA benchmark manifest evidence is malformed: {error}") from error
+    benches = manifest.get("bench")
+    if not isinstance(benches, list) or not benches:
+        raise BaselineError("target-SHA benchmark manifest has no [[bench]] inventory")
+    names = []
+    for position, bench in enumerate(benches):
+        if not isinstance(bench, dict):
+            raise BaselineError(
+                f"target-SHA benchmark manifest bench entry {position} must be a table"
+            )
+        name = bench.get("name")
+        if not isinstance(name, str) or not BENCH_TARGET_NAME.fullmatch(name):
+            raise BaselineError(
+                f"target-SHA benchmark manifest bench entry {position} has an unusable name"
+            )
+        names.append(name)
+    if len(names) != len(set(names)):
+        raise BaselineError("target-SHA benchmark manifest contains duplicate bench names")
+    return sorted(names)
+
+
 def verified_criterion_version(
     repo_root: Path, target_sha: str, *, declared_version: str | None = None
 ) -> str:
@@ -1688,7 +1749,11 @@ def _report_stress_scenarios(
 
 
 def _report_criterion_scenarios(
-    repo_root: Path, run_dir: Path, summary: dict[str, Any]
+    repo_root: Path,
+    run_dir: Path,
+    summary: dict[str, Any],
+    *,
+    expected_targets: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     results = summary.get("criterion_results")
     if not isinstance(results, list) or not results:
@@ -1705,7 +1770,16 @@ def _report_criterion_scenarios(
     if parsed_results != results:
         raise BaselineError("Criterion parsed estimates do not match summary.json")
 
+    expected_roots = (
+        {
+            f"{position:02d}-{target}": target
+            for position, target in enumerate(expected_targets, 1)
+        }
+        if expected_targets is not None
+        else None
+    )
     seen_sources: set[str] = set()
+    observed_targets: set[str] = set()
     scenarios = []
     for result in sorted(
         results, key=lambda item: (str(item.get("benchmark_id")), str(item.get("source")))
@@ -1730,6 +1804,14 @@ def _report_criterion_scenarios(
             raise BaselineError(
                 "Criterion source must match the exact new/estimates.json private layout"
             )
+        if expected_roots is not None:
+            target = expected_roots.get(source_parts[2])
+            if target is None:
+                raise BaselineError(
+                    "Criterion source must use its canonical registered target root: "
+                    f"{source_parts[2]}"
+                )
+            observed_targets.add(target)
         estimates = result.get("estimates")
         if not isinstance(estimates, dict) or _read_json_object(
             source_path, f"Criterion source {source}"
@@ -1776,6 +1858,13 @@ def _report_criterion_scenarios(
                 "producer_id": CRITERION_PRODUCER_ID,
                 "sources": [{"private_estimates_json": source}],
             }
+        )
+    if expected_roots is not None and observed_targets != set(expected_roots.values()):
+        expected = set(expected_roots.values())
+        raise BaselineError(
+            "Criterion target coverage does not match target-SHA benchmark manifest; "
+            f"missing={sorted(expected - observed_targets)}, "
+            f"extra={sorted(observed_targets - expected)}"
         )
     return scenarios
 
@@ -1849,10 +1938,26 @@ def build_benchmark_report(
     )
     recorded_environment = _validate_report_environment(environment)
     criterion_version = verified_criterion_version(repo_root, target_sha)
+    expected_criterion_targets = None
+    if mode == "bench-full":
+        expected_criterion_targets = [
+            target
+            for target in benchmark_targets_from_target_manifest(repo_root, target_sha)
+            if target.startswith("tcp_")
+        ]
+        if not expected_criterion_targets:
+            raise BaselineError(
+                "target-SHA benchmark manifest registers no tcp_* Criterion targets"
+            )
     stress_scenarios_report, correctness = _report_stress_scenarios(
         repo_root, run_dir, mode, summary
     )
-    criterion_scenarios = _report_criterion_scenarios(repo_root, run_dir, summary)
+    criterion_scenarios = _report_criterion_scenarios(
+        repo_root,
+        run_dir,
+        summary,
+        expected_targets=expected_criterion_targets,
+    )
     report = {
         "correctness": correctness,
         "evidence": dict(REPORT_EVIDENCE),
@@ -3235,6 +3340,432 @@ def compare_report_files(
     return build_benchmark_comparison(baseline_report, candidate_report)
 
 
+def _strict_repository_relative_parts(value: Any, label: str) -> tuple[str, ...]:
+    if not isinstance(value, str) or not value:
+        raise BaselineError(f"{label} must be a non-empty repository-relative path")
+    if "\\" in value:
+        raise BaselineError(f"{label} must use forward-slash path separators")
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        raise BaselineError(f"{label} must be repository-relative, not absolute")
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise BaselineError(f"{label} must not contain empty or traversal components")
+    return tuple(parts)
+
+
+def _repository_local_input(
+    repo_root: Path, value: str, label: str, *, expected: str
+) -> Path:
+    repo_root = repo_root.resolve()
+    parts = _strict_repository_relative_parts(value, label)
+    candidate = repo_root.joinpath(*parts)
+    _reject_symlink_components(candidate, repo_root, label)
+    resolved = candidate.resolve()
+    try:
+        relative = resolved.relative_to(repo_root)
+    except ValueError as error:
+        raise BaselineError(f"{label} must be inside the repository") from error
+    if not relative.parts:
+        raise BaselineError(f"{label} must not be the repository root")
+    if expected == "file" and not resolved.is_file():
+        raise BaselineError(f"{label} does not exist or is not a file: {value}")
+    if expected == "directory" and not resolved.is_dir():
+        raise BaselineError(f"{label} does not exist or is not a directory: {value}")
+    return resolved
+
+
+def _reject_duplicate_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise BaselineError("JSON document contains a duplicate object key")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_json_constant(_value: str) -> Any:
+    raise BaselineError("JSON document contains a non-finite numeric constant")
+
+
+def _read_strict_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise BaselineError(f"cannot read {label}: {error}") from error
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_json_object,
+            parse_constant=_reject_nonfinite_json_constant,
+        )
+    except BaselineError:
+        raise
+    except json.JSONDecodeError as error:
+        raise BaselineError(f"cannot parse {label}: {error}") from error
+    if not isinstance(value, dict):
+        raise BaselineError(f"{label} root must be an object")
+    return value
+
+
+def validate_policy_document(policy: Any) -> list[str]:
+    if not isinstance(policy, dict):
+        return ["policy root must be an object"]
+    if any(not isinstance(key, str) for key in policy):
+        return ["policy object keys must be strings"]
+    try:
+        policy = _require_exact_keys(
+            policy,
+            {
+                "activation_blockers",
+                "approval",
+                "approved_baseline",
+                "budget_rules",
+                "control_profile",
+                "policy_id",
+                "policy_schema",
+                "policy_state",
+                "statistical_method",
+                "thresholds",
+                "variance_evidence",
+            },
+            "policy",
+        )
+        schema = _require_exact_keys(
+            policy["policy_schema"], {"name", "version"}, "policy_schema"
+        )
+        if (
+            schema["name"] != POLICY_SCHEMA_NAME
+            or _strict_int(schema["version"], "policy_schema.version", minimum=1)
+            != POLICY_SCHEMA_VERSION
+        ):
+            raise BaselineError("policy schema is unsupported")
+
+        policy_id = _require_nonempty_string(policy["policy_id"], "policy_id")
+        if not POLICY_ID.fullmatch(policy_id):
+            raise BaselineError("policy_id must be a lowercase bounded identifier")
+        state = _require_nonempty_string(policy["policy_state"], "policy_state")
+        if state != "disabled":
+            raise BaselineError("policy state is unsupported; only disabled is implemented")
+
+        blockers = policy["activation_blockers"]
+        if not isinstance(blockers, list) or not blockers:
+            raise BaselineError("activation_blockers must be a non-empty list")
+        if any(not isinstance(blocker, str) or not blocker for blocker in blockers):
+            raise BaselineError("activation_blockers must contain non-empty reason codes")
+        if len(blockers) != len(set(blockers)):
+            raise BaselineError("activation_blockers must not contain duplicates")
+        if set(blockers) != set(POLICY_ACTIVATION_BLOCKERS):
+            raise BaselineError("activation_blockers must be the complete supported disabled set")
+
+        inactive_values = {
+            "approval": None,
+            "approved_baseline": None,
+            "budget_rules": [],
+            "control_profile": None,
+            "statistical_method": None,
+            "thresholds": [],
+            "variance_evidence": [],
+        }
+        for field, inactive_value in inactive_values.items():
+            if policy[field] != inactive_value:
+                raise BaselineError(
+                    f"disabled policy field {field} must contain no active value or evidence"
+                )
+        if not _all_numbers_finite(policy):
+            raise BaselineError("policy contains a non-finite or unsupported value")
+    except BaselineError as error:
+        return [str(error)]
+    return []
+
+
+def canonical_policy_document(policy: Any) -> dict[str, Any]:
+    errors = validate_policy_document(policy)
+    if errors:
+        raise BaselineError("policy validation failed: " + "; ".join(errors))
+    return {
+        "activation_blockers": list(POLICY_ACTIVATION_BLOCKERS),
+        "approval": None,
+        "approved_baseline": None,
+        "budget_rules": [],
+        "control_profile": None,
+        "policy_id": policy["policy_id"],
+        "policy_schema": {
+            "name": POLICY_SCHEMA_NAME,
+            "version": POLICY_SCHEMA_VERSION,
+        },
+        "policy_state": "disabled",
+        "statistical_method": None,
+        "thresholds": [],
+        "variance_evidence": [],
+    }
+
+
+def policy_json_text(policy: Any) -> str:
+    canonical = canonical_policy_document(policy)
+    return json.dumps(
+        canonical, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+    ) + "\n"
+
+
+def policy_canonical_sha256(policy: Any) -> str:
+    return hashlib.sha256(policy_json_text(policy).encode("utf-8")).hexdigest()
+
+
+def load_policy_file(repo_root: Path, value: str) -> dict[str, Any]:
+    path = _repository_local_input(repo_root, value, "policy path", expected="file")
+    policy = _read_strict_json_object(path, "benchmark policy")
+    errors = validate_policy_document(policy)
+    if errors:
+        raise BaselineError("policy validation failed: " + "; ".join(errors))
+    return canonical_policy_document(policy)
+
+
+def _controlled_operand_identity(report: dict[str, Any]) -> dict[str, str]:
+    return {
+        "mode": report["run"]["mode"],
+        "run_id": report["run"]["run_id"],
+        "source_artifact": report["source_artifact"]["path"],
+        "target_sha": report["run"]["target_sha"],
+    }
+
+
+def _controlled_run_identity(value: dict[str, Any]) -> tuple[str, str]:
+    return value["target_sha"], value["run_id"]
+
+
+def _validate_controlled_operand_identity(value: Any, label: str) -> dict[str, Any]:
+    identity = _require_exact_keys(
+        value, {"mode", "run_id", "source_artifact", "target_sha"}, label
+    )
+    if identity["mode"] != "bench-full":
+        raise BaselineError(f"{label}.mode must be bench-full")
+    target_sha = validate_full_sha(
+        _require_nonempty_string(identity["target_sha"], f"{label}.target_sha")
+    )
+    run_id = validate_run_id(
+        _require_nonempty_string(identity["run_id"], f"{label}.run_id")
+    )
+    source_parts = _strict_repository_relative_parts(
+        identity["source_artifact"], f"{label}.source_artifact"
+    )
+    if len(source_parts) < 3 or source_parts[-3:] != (
+        f"baseline-v{SCHEMA_VERSION}",
+        target_sha,
+        run_id,
+    ):
+        raise BaselineError(f"{label}.source_artifact does not match its run identity")
+    return identity
+
+
+def build_controlled_evaluation(
+    policy: Any, baseline_report: Any, candidate_report: Any
+) -> dict[str, Any]:
+    policy = canonical_policy_document(policy)
+    for label, report in (("baseline", baseline_report), ("candidate", candidate_report)):
+        errors = validate_report_document(report)
+        if errors:
+            raise BaselineError(f"{label} report validation failed: " + "; ".join(errors))
+        if report["run"]["mode"] != "bench-full":
+            raise BaselineError("controlled evaluation requires bench-full operands")
+
+    baseline_identity = _controlled_operand_identity(baseline_report)
+    candidate_identity = _controlled_operand_identity(candidate_report)
+    if _controlled_run_identity(baseline_identity) == _controlled_run_identity(
+        candidate_identity
+    ):
+        raise BaselineError("controlled evaluation operands must have distinct identities")
+
+    comparison = build_benchmark_comparison(baseline_report, candidate_report)
+    evaluation = {
+        "controlled_evaluation_schema": {
+            "name": CONTROLLED_EVALUATION_SCHEMA_NAME,
+            "version": CONTROLLED_EVALUATION_SCHEMA_VERSION,
+        },
+        "observational_comparison": comparison,
+        "operands": {
+            "baseline": baseline_identity,
+            "candidate": candidate_identity,
+        },
+        "performance_enforcement": {
+            "reason_codes": list(CONTROLLED_EVALUATION_REASON_CODES),
+            "state": "not_eligible",
+        },
+        "policy": {
+            "activation_blockers": list(POLICY_ACTIVATION_BLOCKERS),
+            "canonical_sha256": policy_canonical_sha256(policy),
+            "id": policy["policy_id"],
+            "schema": dict(policy["policy_schema"]),
+            "state": policy["policy_state"],
+        },
+    }
+    errors = validate_controlled_evaluation_document(evaluation)
+    if errors:
+        raise BaselineError("generated controlled evaluation is invalid: " + "; ".join(errors))
+    return evaluation
+
+
+def validate_controlled_evaluation_document(evaluation: Any) -> list[str]:
+    if not isinstance(evaluation, dict):
+        return ["controlled evaluation root must be an object"]
+    if any(not isinstance(key, str) for key in evaluation):
+        return ["controlled evaluation object keys must be strings"]
+    try:
+        evaluation = _require_exact_keys(
+            evaluation,
+            {
+                "controlled_evaluation_schema",
+                "observational_comparison",
+                "operands",
+                "performance_enforcement",
+                "policy",
+            },
+            "controlled evaluation",
+        )
+        schema = _require_exact_keys(
+            evaluation["controlled_evaluation_schema"],
+            {"name", "version"},
+            "controlled_evaluation_schema",
+        )
+        if (
+            schema["name"] != CONTROLLED_EVALUATION_SCHEMA_NAME
+            or _strict_int(
+                schema["version"], "controlled_evaluation_schema.version", minimum=1
+            )
+            != CONTROLLED_EVALUATION_SCHEMA_VERSION
+        ):
+            raise BaselineError("controlled evaluation schema is unsupported")
+
+        policy = _require_exact_keys(
+            evaluation["policy"],
+            {"activation_blockers", "canonical_sha256", "id", "schema", "state"},
+            "policy",
+        )
+        policy_schema = _require_exact_keys(
+            policy["schema"], {"name", "version"}, "policy.schema"
+        )
+        if (
+            policy_schema["name"] != POLICY_SCHEMA_NAME
+            or _strict_int(policy_schema["version"], "policy.schema.version", minimum=1)
+            != POLICY_SCHEMA_VERSION
+        ):
+            raise BaselineError("controlled evaluation policy schema is unsupported")
+        policy_id = _require_nonempty_string(policy["id"], "policy.id")
+        if not POLICY_ID.fullmatch(policy_id):
+            raise BaselineError("policy.id is malformed")
+        if policy["state"] != "disabled":
+            raise BaselineError("controlled evaluation policy state must be disabled")
+        if policy["activation_blockers"] != list(POLICY_ACTIVATION_BLOCKERS):
+            raise BaselineError("controlled evaluation policy blockers are not canonical")
+        digest = _require_nonempty_string(
+            policy["canonical_sha256"], "policy.canonical_sha256"
+        )
+        if not SHA256_DIGEST.fullmatch(digest):
+            raise BaselineError("policy.canonical_sha256 must be a lowercase SHA-256 digest")
+        referenced_policy = {
+            "activation_blockers": policy["activation_blockers"],
+            "approval": None,
+            "approved_baseline": None,
+            "budget_rules": [],
+            "control_profile": None,
+            "policy_id": policy_id,
+            "policy_schema": policy_schema,
+            "policy_state": policy["state"],
+            "statistical_method": None,
+            "thresholds": [],
+            "variance_evidence": [],
+        }
+        if digest != policy_canonical_sha256(referenced_policy):
+            raise BaselineError("policy.canonical_sha256 does not match the disabled policy")
+
+        enforcement = _require_exact_keys(
+            evaluation["performance_enforcement"],
+            {"reason_codes", "state"},
+            "performance_enforcement",
+        )
+        if enforcement["state"] != "not_eligible":
+            raise BaselineError("performance enforcement state must be not_eligible")
+        if enforcement["reason_codes"] != list(CONTROLLED_EVALUATION_REASON_CODES):
+            raise BaselineError("performance enforcement reason codes are not canonical")
+
+        operands = _require_exact_keys(
+            evaluation["operands"], {"baseline", "candidate"}, "operands"
+        )
+        baseline_identity = _validate_controlled_operand_identity(
+            operands["baseline"], "operands.baseline"
+        )
+        candidate_identity = _validate_controlled_operand_identity(
+            operands["candidate"], "operands.candidate"
+        )
+        if _controlled_run_identity(baseline_identity) == _controlled_run_identity(
+            candidate_identity
+        ):
+            raise BaselineError("controlled evaluation operands must have distinct identities")
+
+        comparison = evaluation["observational_comparison"]
+        comparison_errors = validate_comparison_document(comparison)
+        if comparison_errors:
+            raise BaselineError(
+                "observational comparison is invalid: " + "; ".join(comparison_errors)
+            )
+        comparison_operands = comparison["operands"]
+        for label, identity in (
+            ("baseline", baseline_identity),
+            ("candidate", candidate_identity),
+        ):
+            comparison_operand = comparison_operands[label]
+            expected_identity = {
+                "mode": comparison_operand["run"]["mode"],
+                "run_id": comparison_operand["run"]["run_id"],
+                "source_artifact": comparison_operand["source_artifact"]["path"],
+                "target_sha": comparison_operand["run"]["target_sha"],
+            }
+            if identity != expected_identity:
+                raise BaselineError(
+                    f"controlled evaluation {label} identity does not match comparison"
+                )
+        if not _all_numbers_finite(evaluation):
+            raise BaselineError("controlled evaluation contains an unsupported value")
+    except BaselineError as error:
+        return [str(error)]
+    return []
+
+
+def controlled_evaluation_json_text(evaluation: Any) -> str:
+    errors = validate_controlled_evaluation_document(evaluation)
+    if errors:
+        raise BaselineError("cannot serialize controlled evaluation: " + "; ".join(errors))
+    return json.dumps(
+        evaluation, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+    ) + "\n"
+
+
+def _reject_artifact_tree_symlinks(run_dir: Path, label: str) -> None:
+    for path in run_dir.rglob("*"):
+        if path.is_symlink():
+            relative = path.relative_to(run_dir).as_posix()
+            raise BaselineError(f"{label} must not contain symlinks: {relative}")
+
+
+def controlled_evaluate_artifacts(
+    repo_root: Path,
+    policy_file: str,
+    baseline_run_dir: str,
+    candidate_run_dir: str,
+) -> dict[str, Any]:
+    policy = load_policy_file(repo_root, policy_file)
+    baseline_dir = _repository_local_input(
+        repo_root, baseline_run_dir, "baseline artifact directory", expected="directory"
+    )
+    candidate_dir = _repository_local_input(
+        repo_root, candidate_run_dir, "candidate artifact directory", expected="directory"
+    )
+    _reject_artifact_tree_symlinks(baseline_dir, "baseline artifact directory")
+    _reject_artifact_tree_symlinks(candidate_dir, "candidate artifact directory")
+    baseline_report = build_benchmark_report(repo_root, baseline_dir)
+    candidate_report = build_benchmark_report(repo_root, candidate_dir)
+    return build_controlled_evaluation(policy, baseline_report, candidate_report)
+
+
 def run_correctness(run: ArtifactRun) -> None:
     for spec in correctness_plan(run.repo_root):
         run.run_command(spec)
@@ -3413,6 +3944,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare_report.add_argument("baseline_report_json")
     compare_report.add_argument("candidate_report_json")
+    validate_policy = subparsers.add_parser(
+        "validate-policy", help="strictly validate a disabled benchmark policy manifest"
+    )
+    validate_policy.add_argument("policy_json")
+    controlled_evaluate = subparsers.add_parser(
+        "controlled-evaluate",
+        help="rebuild complete artifacts and emit a fail-closed controlled preflight",
+    )
+    controlled_evaluate.add_argument("policy_json")
+    controlled_evaluate.add_argument("baseline_run_dir")
+    controlled_evaluate.add_argument("candidate_run_dir")
     return parser
 
 
@@ -3503,6 +4045,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             sys.stdout.write(comparison_json_text(comparison))
             return 0
+        if args.command == "validate-policy":
+            load_policy_file(repo_root, args.policy_json)
+            print(f"benchmark policy valid: {args.policy_json}")
+            return 0
+        if args.command == "controlled-evaluate":
+            evaluation = controlled_evaluate_artifacts(
+                repo_root,
+                args.policy_json,
+                args.baseline_run_dir,
+                args.candidate_run_dir,
+            )
+            sys.stdout.write(controlled_evaluation_json_text(evaluation))
+            return CONTROLLED_NOT_ELIGIBLE_EXIT
         status, _ = run_mode(args, repo_root)
         return status
     except BaselineError as error:

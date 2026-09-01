@@ -74,6 +74,9 @@ def initialize_git_lock_fixture(
     *,
     criterion_versions: tuple[str, ...] = ("0.5.1",),
     include_lock: bool = True,
+    benchmark_targets: tuple[str, ...] = ("tcp_throughput",),
+    include_benchmark_manifest: bool = True,
+    benchmark_manifest_text: str | None = None,
 ) -> str:
     def git(*args: str) -> subprocess.CompletedProcess[bytes]:
         return subprocess.run(
@@ -104,6 +107,27 @@ def initialize_git_lock_fixture(
                 ]
             )
         (root / "Cargo.lock").write_text("\n".join(lines))
+    if include_benchmark_manifest:
+        benchmarks = root / "benchmarks"
+        benchmarks.mkdir()
+        if benchmark_manifest_text is None:
+            manifest_lines = [
+                "[package]",
+                'name = "fixture-benchmarks"',
+                'version = "0.0.0"',
+                "",
+            ]
+            for target in benchmark_targets:
+                manifest_lines.extend(
+                    [
+                        "[[bench]]",
+                        f'name = "{target}"',
+                        "harness = false",
+                        "",
+                    ]
+                )
+            benchmark_manifest_text = "\n".join(manifest_lines)
+        (benchmarks / "Cargo.toml").write_text(benchmark_manifest_text)
     git("add", ".")
     git(
         "-c",
@@ -149,8 +173,14 @@ def environment_fixture(runner_label: str = "unit-test") -> dict:
     }
 
 
-def populate_benchmark_evidence(run: baseline.ArtifactRun) -> None:
-    scenarios = baseline.stress_scenarios("bench-smoke", 1)
+def populate_benchmark_evidence(
+    run: baseline.ArtifactRun,
+    *,
+    measurement_offset: float = 0.0,
+    criterion_targets: tuple[str, ...] = ("tcp_throughput",),
+) -> None:
+    repetitions = 5 if run.mode == "bench-full" else 1
+    scenarios = baseline.stress_scenarios(run.mode, repetitions)
     parsed_dir = run.run_dir / "stress" / "parsed"
     parsed_dir.mkdir(parents=True)
     for index, scenario in enumerate(scenarios, 1):
@@ -158,8 +188,8 @@ def populate_benchmark_evidence(run: baseline.ArtifactRun) -> None:
             operation=scenario["operation"],
             in_flight=scenario["in_flight"],
             warmup_secs=1,
-            throughput_ops_sec=float(100 + index),
-            per_client_ops_sec=float(100 + index),
+            throughput_ops_sec=float(100 + index) + measurement_offset,
+            per_client_ops_sec=float(100 + index) + measurement_offset,
         )
         sample["repetition"] = scenario["repetition"]
         command_id = f"{index:03d}-stress-{scenario['operation']}-d{scenario['in_flight']}-r1"
@@ -200,26 +230,30 @@ def populate_benchmark_evidence(run: baseline.ArtifactRun) -> None:
         run.command_records.append(command)
 
     run.stress_aggregates = baseline.aggregate_stress_samples(run.stress_samples, scenarios)
-    criterion_home = run.run_dir / "criterion" / "raw" / "01-tcp-throughput"
-    estimate = criterion_home / "tcp_pipelined" / "new" / "estimates.json"
-    estimate.parent.mkdir(parents=True)
-    baseline.write_json(
-        estimate,
-        {
-            "mean": {
-                "confidence_interval": {
-                    "confidence_level": 0.95,
-                    "lower_bound": 9.0,
-                    "upper_bound": 11.0,
-                },
-                "point_estimate": 10.0,
-                "standard_error": 0.1,
-            }
-        },
-    )
-    run.criterion_results = baseline.parse_criterion_estimates(
-        criterion_home, run.repo_root
-    )
+    run.criterion_results = []
+    for index, target in enumerate(sorted(criterion_targets), 1):
+        criterion_home = run.run_dir / "criterion" / "raw" / f"{index:02d}-{target}"
+        benchmark_id = "tcp_pipelined" if target == "tcp_throughput" else f"{target}/fixture"
+        estimate = criterion_home / benchmark_id / "new" / "estimates.json"
+        estimate.parent.mkdir(parents=True)
+        baseline.write_json(
+            estimate,
+            {
+                "mean": {
+                    "confidence_interval": {
+                        "confidence_level": 0.95,
+                        "lower_bound": 9.0 + measurement_offset,
+                        "upper_bound": 11.0 + measurement_offset,
+                    },
+                    "point_estimate": 10.0 + measurement_offset,
+                    "standard_error": 0.1,
+                }
+            },
+        )
+        run.criterion_results.extend(
+            baseline.parse_criterion_estimates(criterion_home, run.repo_root)
+        )
+    run.criterion_results.sort(key=lambda item: item["source"].encode("utf-8"))
     baseline.write_json(
         run.run_dir / "criterion" / "parsed-estimates.json", run.criterion_results
     )
@@ -258,6 +292,25 @@ def shifted_report_fixture(
     return candidate
 
 
+def disabled_policy_fixture() -> dict:
+    return {
+        "activation_blockers": list(baseline.POLICY_ACTIVATION_BLOCKERS),
+        "approval": None,
+        "approved_baseline": None,
+        "budget_rules": [],
+        "control_profile": None,
+        "policy_id": "rusty-modbus-benchmark-budget-policy",
+        "policy_schema": {
+            "name": baseline.POLICY_SCHEMA_NAME,
+            "version": baseline.POLICY_SCHEMA_VERSION,
+        },
+        "policy_state": "disabled",
+        "statistical_method": None,
+        "thresholds": [],
+        "variance_evidence": [],
+    }
+
+
 class BaselineHarnessTests(unittest.TestCase):
     def make_run(
         self,
@@ -267,13 +320,14 @@ class BaselineHarnessTests(unittest.TestCase):
         dirty: bool = False,
         allow_dirty: bool = False,
         target_sha: str = SHA,
+        mode: str = "bench-smoke",
     ) -> baseline.ArtifactRun:
         run = baseline.ArtifactRun(
             repo_root=root,
             output_root=root / "bench-output",
             target_sha=target_sha,
             run_id=run_id,
-            mode="bench-smoke",
+            mode=mode,
             runner_label="unit-test",
             dirty=dirty,
             allow_dirty=allow_dirty,
@@ -289,16 +343,20 @@ class BaselineHarnessTests(unittest.TestCase):
         criterion_versions: tuple[str, ...] = ("0.5.1",),
         include_lock: bool = True,
         target_sha: str | None = None,
+        mode: str = "bench-smoke",
+        benchmark_targets: tuple[str, ...] = ("tcp_throughput",),
     ) -> baseline.ArtifactRun:
         fixture_sha = initialize_git_lock_fixture(
             root,
             criterion_versions=criterion_versions,
             include_lock=include_lock,
+            benchmark_targets=benchmark_targets,
         )
         return self.make_run(
             root,
             run_id=run_id,
             target_sha=target_sha or fixture_sha,
+            mode=mode,
         )
 
     def test_full_sha_and_clean_tree_are_required(self) -> None:
@@ -850,6 +908,642 @@ class BaselineHarnessTests(unittest.TestCase):
                     "reports/baseline-link.json",
                     "reports/candidate.json",
                 )
+
+    def test_checked_in_disabled_policy_is_strict_and_canonical(self) -> None:
+        relative = "benchmarks/policy/benchmark-budget-policy-v1.json"
+        policy = baseline.load_policy_file(ROOT, relative)
+        self.assertEqual(baseline.validate_policy_document(policy), [])
+        self.assertEqual((ROOT / relative).read_text(), baseline.policy_json_text(policy))
+
+        reversed_blockers = copy.deepcopy(policy)
+        reversed_blockers["activation_blockers"].reverse()
+        self.assertEqual(baseline.validate_policy_document(reversed_blockers), [])
+        self.assertEqual(
+            baseline.policy_canonical_sha256(reversed_blockers),
+            baseline.policy_canonical_sha256(policy),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(baseline.main(["validate-policy", relative]), 0)
+        self.assertEqual(stdout.getvalue(), f"benchmark policy valid: {relative}\n")
+
+    def test_disabled_policy_rejects_unknown_or_active_content(self) -> None:
+        policy = disabled_policy_fixture()
+        cases: dict[str, tuple[tuple[object, ...], object]] = {
+            "unknown-schema": (("policy_schema", "name"), "unknown-policy"),
+            "unknown-version": (("policy_schema", "version"), 2),
+            "boolean-version": (("policy_schema", "version"), True),
+            "unknown-state": (("policy_state",), "active"),
+            "malformed-id": (("policy_id",), "Owner Approval"),
+            "duplicate-blocker": (
+                ("activation_blockers",),
+                [*baseline.POLICY_ACTIVATION_BLOCKERS, baseline.POLICY_ACTIVATION_BLOCKERS[0]],
+            ),
+            "missing-blocker": (
+                ("activation_blockers",),
+                list(baseline.POLICY_ACTIVATION_BLOCKERS[:-1]),
+            ),
+            "approved-baseline": (("approved_baseline",), {"target_sha": "a" * 40}),
+            "control-profile": (("control_profile",), {"runner": "controlled"}),
+            "variance-evidence": (("variance_evidence",), [{"digest": "a" * 64}]),
+            "duplicate-evidence": (
+                ("variance_evidence",),
+                [{"digest": "a" * 64}, {"digest": "a" * 64}],
+            ),
+            "budget-rule": (("budget_rules",), [{"metric": "throughput"}]),
+            "threshold": (("thresholds",), [5.0]),
+            "non-finite-threshold": (("thresholds",), [math.inf]),
+            "statistical-method": (("statistical_method",), "unsupported"),
+            "approval": (("approval",), {"owner": "not-authority"}),
+        }
+        for label, (path, invalid_value) in cases.items():
+            with self.subTest(case=label):
+                malformed = copy.deepcopy(policy)
+                target = malformed
+                for part in path[:-1]:
+                    target = target[part]
+                target[path[-1]] = invalid_value
+                self.assertTrue(baseline.validate_policy_document(malformed))
+                with self.assertRaises(baseline.BaselineError):
+                    baseline.policy_json_text(malformed)
+
+        missing = copy.deepcopy(policy)
+        missing.pop("approval")
+        self.assertTrue(baseline.validate_policy_document(missing))
+        extra = copy.deepcopy(policy)
+        extra["owner"] = "not-authority"
+        self.assertTrue(baseline.validate_policy_document(extra))
+
+    def test_policy_loader_rejects_duplicate_absolute_traversal_and_symlink_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy_path = root / "policy.json"
+            policy_path.write_text(baseline.policy_json_text(disabled_policy_fixture()))
+            self.assertEqual(baseline.load_policy_file(root, "policy.json"), disabled_policy_fixture())
+
+            with self.assertRaisesRegex(baseline.BaselineError, "repository-relative"):
+                baseline.load_policy_file(root, str(policy_path))
+            with self.assertRaisesRegex(baseline.BaselineError, "traversal"):
+                baseline.load_policy_file(root, "../policy.json")
+
+            duplicate = root / "duplicate.json"
+            duplicate.write_text(
+                policy_path.read_text().replace(
+                    '  "policy_id": "rusty-modbus-benchmark-budget-policy",\n',
+                    '  "policy_id": "rusty-modbus-benchmark-budget-policy",\n'
+                    '  "policy_id": "duplicate",\n',
+                )
+            )
+            with self.assertRaisesRegex(baseline.BaselineError, "duplicate object key"):
+                baseline.load_policy_file(root, "duplicate.json")
+
+            nonfinite = root / "nonfinite.json"
+            nonfinite.write_text(policy_path.read_text().replace('"version": 1', '"version": NaN'))
+            with self.assertRaisesRegex(baseline.BaselineError, "non-finite"):
+                baseline.load_policy_file(root, "nonfinite.json")
+
+            link = root / "policy-link.json"
+            try:
+                link.symlink_to(policy_path.name)
+            except OSError:
+                return
+            with self.assertRaisesRegex(baseline.BaselineError, "symlinks"):
+                baseline.load_policy_file(root, "policy-link.json")
+
+    def test_controlled_evaluate_emits_canonical_not_eligible_document_and_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline_run = self.make_report_run(
+                root, run_id="controlled-baseline", mode="bench-full"
+            )
+            candidate_run = self.make_run(
+                root,
+                run_id="controlled-candidate",
+                target_sha=baseline_run.target_sha,
+                mode="bench-full",
+            )
+            populate_benchmark_evidence(baseline_run)
+            populate_benchmark_evidence(candidate_run, measurement_offset=7.0)
+            baseline_run.finalize()
+            candidate_run.finalize()
+            policy_path = root / "policy.json"
+            policy_path.write_text(baseline.policy_json_text(disabled_policy_fixture()))
+
+            baseline_relative = baseline_run.run_dir.relative_to(root.resolve()).as_posix()
+            candidate_relative = candidate_run.run_dir.relative_to(root.resolve()).as_posix()
+            evaluation = baseline.controlled_evaluate_artifacts(
+                root, "policy.json", baseline_relative, candidate_relative
+            )
+            self.assertEqual(baseline.validate_controlled_evaluation_document(evaluation), [])
+            self.assertEqual(
+                evaluation["performance_enforcement"],
+                {
+                    "reason_codes": list(baseline.CONTROLLED_EVALUATION_REASON_CODES),
+                    "state": "not_eligible",
+                },
+            )
+            self.assertEqual(
+                evaluation["observational_comparison"]["evidence"],
+                baseline.COMPARISON_EVIDENCE,
+            )
+            self.assertNotIn("decision", evaluation["performance_enforcement"])
+            self.assertNotIn("verdict", evaluation["performance_enforcement"])
+            rendered = baseline.controlled_evaluation_json_text(evaluation)
+            self.assertEqual(rendered, baseline.controlled_evaluation_json_text(evaluation))
+
+            script = root / "scripts" / "baseline.py"
+            script.parent.mkdir()
+            shutil.copyfile(Path(baseline.__file__), script)
+            before = {
+                path.relative_to(root.resolve()).as_posix(): path.read_bytes()
+                for run in (baseline_run, candidate_run)
+                for path in run.run_dir.rglob("*")
+                if path.is_file()
+            }
+            completed = subprocess.run(
+                (
+                    sys.executable,
+                    str(script),
+                    "controlled-evaluate",
+                    "policy.json",
+                    baseline_relative,
+                    candidate_relative,
+                ),
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                completed.returncode, baseline.CONTROLLED_NOT_ELIGIBLE_EXIT, completed.stderr
+            )
+            self.assertEqual(completed.stderr, "")
+            self.assertEqual(completed.stdout, rendered)
+            self.assertEqual(json.loads(completed.stdout), evaluation)
+            after = {
+                path.relative_to(root.resolve()).as_posix(): path.read_bytes()
+                for run in (baseline_run, candidate_run)
+                for path in run.run_dir.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+            self.assertFalse(any(path.name == "latest" for path in root.rglob("*")))
+
+            (candidate_run.run_dir / "summary.csv").write_text("tampered\n")
+            invalid = subprocess.run(
+                (
+                    sys.executable,
+                    str(script),
+                    "controlled-evaluate",
+                    "policy.json",
+                    baseline_relative,
+                    candidate_relative,
+                ),
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(invalid.returncode, 1)
+            self.assertEqual(invalid.stdout, "")
+            self.assertIn("checksum mismatch", invalid.stderr)
+
+    def test_controlled_evaluation_document_rejects_hostile_identity_and_digest_fields(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline_run = self.make_report_run(
+                root, run_id="evaluation-baseline", mode="bench-full"
+            )
+            candidate_run = self.make_run(
+                root,
+                run_id="evaluation-candidate",
+                target_sha=baseline_run.target_sha,
+                mode="bench-full",
+            )
+            populate_benchmark_evidence(baseline_run)
+            populate_benchmark_evidence(candidate_run)
+            baseline_run.finalize()
+            candidate_run.finalize()
+            evaluation = baseline.build_controlled_evaluation(
+                disabled_policy_fixture(),
+                baseline.build_benchmark_report(root, baseline_run.run_dir),
+                baseline.build_benchmark_report(root, candidate_run.run_dir),
+            )
+
+            cases = {
+                "boolean-version": (
+                    ("controlled_evaluation_schema", "version"),
+                    True,
+                ),
+                "unknown-version": (("controlled_evaluation_schema", "version"), 2),
+                "malformed-digest": (("policy", "canonical_sha256"), "not-a-digest"),
+                "tampered-digest": (("policy", "canonical_sha256"), "b" * 64),
+                "boolean-digest": (("policy", "canonical_sha256"), True),
+                "malformed-sha": (("operands", "candidate", "target_sha"), "abc"),
+                "malformed-run": (("operands", "candidate", "run_id"), "../candidate"),
+                "absolute-source": (
+                    ("operands", "candidate", "source_artifact"),
+                    "/tmp/candidate",
+                ),
+                "traversal-source": (
+                    ("operands", "candidate", "source_artifact"),
+                    "bench-output/../candidate",
+                ),
+                "duplicate-reason": (
+                    ("performance_enforcement", "reason_codes"),
+                    [
+                        *baseline.CONTROLLED_EVALUATION_REASON_CODES,
+                        baseline.CONTROLLED_EVALUATION_REASON_CODES[0],
+                    ],
+                ),
+            }
+            for label, (path, invalid_value) in cases.items():
+                with self.subTest(case=label):
+                    malformed = copy.deepcopy(evaluation)
+                    target = malformed
+                    for part in path[:-1]:
+                        target = target[part]
+                    target[path[-1]] = invalid_value
+                    self.assertTrue(
+                        baseline.validate_controlled_evaluation_document(malformed)
+                    )
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.controlled_evaluation_json_text(malformed)
+
+    def test_controlled_evaluate_rejects_invalid_artifacts_and_unsafe_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline_run = self.make_report_run(
+                root, run_id="reject-baseline", mode="bench-full"
+            )
+            candidate_run = self.make_run(
+                root,
+                run_id="reject-candidate",
+                target_sha=baseline_run.target_sha,
+                mode="bench-full",
+            )
+            populate_benchmark_evidence(baseline_run)
+            populate_benchmark_evidence(candidate_run)
+            baseline_run.finalize()
+            candidate_run.finalize()
+            (root / "policy.json").write_text(
+                baseline.policy_json_text(disabled_policy_fixture())
+            )
+            baseline_relative = baseline_run.run_dir.relative_to(root.resolve()).as_posix()
+            candidate_relative = candidate_run.run_dir.relative_to(root.resolve()).as_posix()
+            snapshot = root / "candidate-snapshot"
+            shutil.copytree(candidate_run.run_dir, snapshot)
+
+            def restore_candidate() -> None:
+                shutil.rmtree(candidate_run.run_dir)
+                shutil.copytree(snapshot, candidate_run.run_dir)
+
+            def evaluate() -> dict:
+                return baseline.controlled_evaluate_artifacts(
+                    root, "policy.json", baseline_relative, candidate_relative
+                )
+
+            (candidate_run.run_dir / "summary.csv").write_text("tampered\n")
+            with self.assertRaisesRegex(baseline.BaselineError, "checksum mismatch"):
+                evaluate()
+
+            restore_candidate()
+            provenance_path = candidate_run.run_dir / "provenance.json"
+            summary_path = candidate_run.run_dir / "summary.json"
+            provenance = json.loads(provenance_path.read_text())
+            summary = json.loads(summary_path.read_text())
+            provenance.update(
+                {"baseline_eligible": False, "dirty": True, "dirty_override": True}
+            )
+            summary.update(
+                {
+                    "baseline_valid": False,
+                    "invalid_reasons": ["dirty non-ignored worktree"],
+                    "status": "invalid",
+                }
+            )
+            baseline.write_json(provenance_path, provenance)
+            baseline.write_json(summary_path, summary)
+            baseline.write_checksums(root, candidate_run.run_dir)
+            with self.assertRaises(baseline.BaselineError):
+                evaluate()
+
+            restore_candidate()
+            provenance = json.loads(provenance_path.read_text())
+            summary = json.loads(summary_path.read_text())
+            provenance["baseline_eligible"] = False
+            summary.update(
+                {
+                    "baseline_valid": False,
+                    "invalid_reasons": ["synthetic command failure"],
+                    "status": "failed",
+                }
+            )
+            baseline.write_json(provenance_path, provenance)
+            baseline.write_json(summary_path, summary)
+            baseline.write_checksums(root, candidate_run.run_dir)
+            with self.assertRaises(baseline.BaselineError):
+                evaluate()
+
+            restore_candidate()
+            criterion_source = json.loads(summary_path.read_text())["criterion_results"][0][
+                "source"
+            ]
+            (root / criterion_source).unlink()
+            baseline.write_checksums(root, candidate_run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "missing"):
+                evaluate()
+
+            restore_candidate()
+            with self.assertRaisesRegex(baseline.BaselineError, "repository-relative"):
+                baseline.controlled_evaluate_artifacts(
+                    root,
+                    "policy.json",
+                    str(baseline_run.run_dir),
+                    candidate_relative,
+                )
+            with self.assertRaisesRegex(baseline.BaselineError, "traversal"):
+                baseline.controlled_evaluate_artifacts(
+                    root,
+                    "policy.json",
+                    baseline_relative,
+                    "bench-output/../reject-candidate",
+                )
+            link = root / "candidate-link"
+            try:
+                link.symlink_to(
+                    candidate_run.run_dir.relative_to(root.resolve()),
+                    target_is_directory=True,
+                )
+            except OSError:
+                return
+            with self.assertRaisesRegex(baseline.BaselineError, "symlinks"):
+                baseline.controlled_evaluate_artifacts(
+                    root, "policy.json", baseline_relative, "candidate-link"
+                )
+
+    def test_controlled_evaluate_rejects_smoke_same_or_incompatible_operands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline_run = self.make_report_run(
+                root, run_id="compatible-baseline", mode="bench-full"
+            )
+            candidate_run = self.make_run(
+                root,
+                run_id="compatible-candidate",
+                target_sha=baseline_run.target_sha,
+                mode="bench-full",
+            )
+            smoke_run = self.make_run(
+                root,
+                run_id="smoke-candidate",
+                target_sha=baseline_run.target_sha,
+                mode="bench-smoke",
+            )
+            for run in (baseline_run, candidate_run, smoke_run):
+                populate_benchmark_evidence(run)
+                run.finalize()
+            (root / "policy.json").write_text(
+                baseline.policy_json_text(disabled_policy_fixture())
+            )
+            baseline_relative = baseline_run.run_dir.relative_to(root.resolve()).as_posix()
+            candidate_relative = candidate_run.run_dir.relative_to(root.resolve()).as_posix()
+            smoke_relative = smoke_run.run_dir.relative_to(root.resolve()).as_posix()
+
+            with self.assertRaisesRegex(baseline.BaselineError, "distinct identities"):
+                baseline.controlled_evaluate_artifacts(
+                    root, "policy.json", baseline_relative, baseline_relative
+                )
+            with self.assertRaisesRegex(baseline.BaselineError, "bench-full"):
+                baseline.controlled_evaluate_artifacts(
+                    root, "policy.json", baseline_relative, smoke_relative
+                )
+
+            baseline_report = baseline.build_benchmark_report(root, baseline_run.run_dir)
+            candidate_report = baseline.build_benchmark_report(root, candidate_run.run_dir)
+            copied_identity = copy.deepcopy(candidate_report)
+            copied_identity["run"].update(baseline_report["run"])
+            copied_identity["source_artifact"]["path"] = (
+                "copied-evidence/"
+                + "/".join(baseline_report["source_artifact"]["path"].split("/")[-3:])
+            )
+            with self.assertRaisesRegex(baseline.BaselineError, "distinct identities"):
+                baseline.build_controlled_evaluation(
+                    disabled_policy_fixture(), baseline_report, copied_identity
+                )
+
+            producer_mismatch = copy.deepcopy(candidate_report)
+            producer_mismatch["producers"][-1]["version"] = "unsupported"
+            with self.assertRaisesRegex(baseline.BaselineError, "producer"):
+                baseline.build_controlled_evaluation(
+                    disabled_policy_fixture(), baseline_report, producer_mismatch
+                )
+
+            mode_mismatch = copy.deepcopy(candidate_report)
+            mode_mismatch["run"]["mode"] = "bench-smoke"
+            with self.assertRaisesRegex(baseline.BaselineError, "bench-full"):
+                baseline.build_controlled_evaluation(
+                    disabled_policy_fixture(), baseline_report, mode_mismatch
+                )
+
+            scenario_mismatch = copy.deepcopy(candidate_report)
+            removed = scenario_mismatch["scenarios"].pop(0)
+            scenario_mismatch["correctness"]["stress_sample_count"] -= removed["identity"][
+                "repetitions"
+            ]
+            with self.assertRaisesRegex(baseline.BaselineError, "scenario sets"):
+                baseline.build_controlled_evaluation(
+                    disabled_policy_fixture(), baseline_report, scenario_mismatch
+                )
+
+            parser = baseline.build_parser()
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(["controlled-evaluate", "policy.json"])
+            self.assertFalse(any(path.name == "latest" for path in root.rglob("*")))
+
+    def test_target_sha_benchmark_manifest_inventory_is_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            valid_root = parent / "valid"
+            valid_root.mkdir()
+            valid_sha = initialize_git_lock_fixture(
+                valid_root,
+                benchmark_targets=("tcp_throughput", "codec", "tcp_pool"),
+            )
+            self.assertEqual(
+                baseline.benchmark_targets_from_target_manifest(valid_root, valid_sha),
+                ["codec", "tcp_pool", "tcp_throughput"],
+            )
+            (valid_root / "benchmarks" / "Cargo.toml").write_text("not valid TOML = [")
+            self.assertEqual(
+                baseline.benchmark_targets_from_target_manifest(valid_root, valid_sha),
+                ["codec", "tcp_pool", "tcp_throughput"],
+            )
+
+            cases = (
+                (
+                    "unavailable",
+                    lambda root: initialize_git_lock_fixture(
+                        root, include_benchmark_manifest=False
+                    ),
+                    "unavailable",
+                ),
+                (
+                    "malformed",
+                    lambda root: initialize_git_lock_fixture(
+                        root,
+                        benchmark_manifest_text="[[bench]\nname = 'tcp_throughput'\n",
+                    ),
+                    "malformed",
+                ),
+                (
+                    "duplicate",
+                    lambda root: initialize_git_lock_fixture(
+                        root, benchmark_targets=("tcp_pool", "tcp_pool")
+                    ),
+                    "duplicate",
+                ),
+                (
+                    "empty",
+                    lambda root: initialize_git_lock_fixture(root, benchmark_targets=()),
+                    r"no \[\[bench\]\] inventory",
+                ),
+            )
+            for label, initialize, expected_error in cases:
+                with self.subTest(case=label):
+                    root = parent / label
+                    root.mkdir()
+                    target_sha = initialize(root)
+                    with self.assertRaisesRegex(baseline.BaselineError, expected_error):
+                        baseline.benchmark_targets_from_target_manifest(root, target_sha)
+
+    def test_controlled_evaluate_rejects_symmetric_missing_criterion_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            targets = ("tcp_pool", "tcp_throughput")
+            baseline_run = self.make_report_run(
+                root,
+                run_id="complete-target-baseline",
+                mode="bench-full",
+                benchmark_targets=targets,
+            )
+            candidate_run = self.make_run(
+                root,
+                run_id="complete-target-candidate",
+                target_sha=baseline_run.target_sha,
+                mode="bench-full",
+            )
+            for run in (baseline_run, candidate_run):
+                populate_benchmark_evidence(run, criterion_targets=targets)
+                run.finalize()
+            (root / "policy.json").write_text(
+                baseline.policy_json_text(disabled_policy_fixture())
+            )
+            baseline_relative = baseline_run.run_dir.relative_to(root.resolve()).as_posix()
+            candidate_relative = candidate_run.run_dir.relative_to(root.resolve()).as_posix()
+            self.assertEqual(
+                baseline.controlled_evaluate_artifacts(
+                    root, "policy.json", baseline_relative, candidate_relative
+                )["performance_enforcement"]["state"],
+                "not_eligible",
+            )
+
+            def remove_target(run: baseline.ArtifactRun, target_root: str) -> None:
+                shutil.rmtree(run.run_dir / "criterion" / "raw" / target_root)
+                summary_path = run.run_dir / "summary.json"
+                summary = json.loads(summary_path.read_text())
+                marker = f"/criterion/raw/{target_root}/"
+                retained = [
+                    result
+                    for result in summary["criterion_results"]
+                    if marker not in f"/{result['source']}"
+                ]
+                self.assertEqual(
+                    len(summary["criterion_results"]) - len(retained), 1
+                )
+                summary["criterion_results"] = retained
+                baseline.write_json(summary_path, summary)
+                baseline.write_json(
+                    run.run_dir / "criterion" / "parsed-estimates.json", retained
+                )
+                baseline.write_checksums(root, run.run_dir)
+
+            for run in (baseline_run, candidate_run):
+                remove_target(run, "01-tcp_pool")
+
+            with self.assertRaisesRegex(baseline.BaselineError, "target coverage"):
+                baseline.controlled_evaluate_artifacts(
+                    root, "policy.json", baseline_relative, candidate_relative
+                )
+
+            script = root / "scripts" / "baseline.py"
+            script.parent.mkdir()
+            shutil.copyfile(Path(baseline.__file__), script)
+            completed = subprocess.run(
+                (
+                    sys.executable,
+                    str(script),
+                    "controlled-evaluate",
+                    "policy.json",
+                    baseline_relative,
+                    candidate_relative,
+                ),
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")
+            self.assertIn("Criterion target coverage", completed.stderr)
+
+    def test_full_report_rejects_extra_criterion_target_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(
+                root,
+                run_id="extra-target",
+                mode="bench-full",
+                benchmark_targets=("tcp_throughput",),
+            )
+            populate_benchmark_evidence(run)
+            run.finalize()
+
+            extra_home = run.run_dir / "criterion" / "raw" / "02-tcp_extra"
+            extra_estimate = extra_home / "tcp_extra" / "fixture" / "new" / "estimates.json"
+            extra_estimate.parent.mkdir(parents=True)
+            baseline.write_json(
+                extra_estimate,
+                {
+                    "mean": {
+                        "confidence_interval": {
+                            "confidence_level": 0.95,
+                            "lower_bound": 9.0,
+                            "upper_bound": 11.0,
+                        },
+                        "point_estimate": 10.0,
+                        "standard_error": 0.1,
+                    }
+                },
+            )
+            extra_results = baseline.parse_criterion_estimates(extra_home, root)
+            summary_path = run.run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text())
+            summary["criterion_results"].extend(extra_results)
+            summary["criterion_results"].sort(
+                key=lambda item: item["source"].encode("utf-8")
+            )
+            baseline.write_json(summary_path, summary)
+            baseline.write_json(
+                run.run_dir / "criterion" / "parsed-estimates.json",
+                summary["criterion_results"],
+            )
+            baseline.write_checksums(root, run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "canonical registered target root"):
+                baseline.build_benchmark_report(root, run.run_dir)
 
     def test_report_render_rejects_overwrite_traversal_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

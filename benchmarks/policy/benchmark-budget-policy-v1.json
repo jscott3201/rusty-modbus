@@ -1,0 +1,21 @@
+{
+  "activation_blockers": [
+    "no_approved_controlled_baseline",
+    "no_approved_repeated_variance_evidence_or_statistical_method",
+    "no_approved_controlled_runner_or_profile",
+    "no_approved_budgets_or_approval_path"
+  ],
+  "approval": null,
+  "approved_baseline": null,
+  "budget_rules": [],
+  "control_profile": null,
+  "policy_id": "rusty-modbus-benchmark-budget-policy",
+  "policy_schema": {
+    "name": "benchmark-budget-policy",
+    "version": 1
+  },
+  "policy_state": "disabled",
+  "statistical_method": null,
+  "thresholds": [],
+  "variance_evidence": []
+}

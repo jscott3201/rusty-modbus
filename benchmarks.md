@@ -1,6 +1,6 @@
 # Rusty Modbus Benchmark Report
 
-Last updated: 2026-08-31
+Last updated: 2026-09-01
 
 This document records the current local and Docker performance baseline for the
 Modbus/TCP client/server path. The focus is single-connection pipelining: one
@@ -243,6 +243,90 @@ budget verdict, confidence inference, statistical test, accepted baseline, or
 performance decision. It generates no timestamp. Scenario-key ordering,
 sorted-key JSON, and a trailing newline make repeated rendering of identical
 inputs byte-identical.
+
+### Disabled benchmark budget policy preflight
+
+The checked-in
+`benchmarks/policy/benchmark-budget-policy-v1.json` manifest uses the separate
+`benchmark-budget-policy` schema version `1`. The production policy state is
+explicitly `disabled`. It contains no numeric threshold, budget rule, approved
+baseline, variance evidence, statistical method, controlled runner/profile, or
+approval record. It does not name an owner or turn arbitrary text into approval.
+Validate it from the repository root with:
+
+```bash
+python3 scripts/baseline.py validate-policy \
+  benchmarks/policy/benchmark-budget-policy-v1.json
+```
+
+Policy loading is strict and fail-closed. The validator requires the exact v1
+keys and types, rejects unsupported schemas and states, duplicate or incomplete
+blocker sets, non-finite or boolean numeric substitutions, active values in a
+disabled policy, and absolute, traversal, or symlink policy paths. Object key
+order and activation-blocker order do not change canonical policy identity.
+Unsupported future active policy content is rejected rather than partially
+evaluated.
+
+`controlled-evaluate` is a read-only preparation command. It requires an
+explicit policy and two explicit, distinct `bench-full` artifact directories:
+
+```bash
+set +e
+python3 scripts/baseline.py controlled-evaluate \
+  benchmarks/policy/benchmark-budget-policy-v1.json \
+  bench-output/baseline-v1/<BASELINE-SHA>/<BASELINE-RUN-ID> \
+  bench-output/baseline-v1/<CANDIDATE-SHA>/<CANDIDATE-RUN-ID> \
+  > controlled-evaluation-v1.json
+status=$?
+set -e
+test "$status" -eq 3
+```
+
+All three operands must be repository-relative, traversal-free paths inside the
+current checkout and must not use symlinks. Both complete artifact directories,
+including their checksum inventories, are validated. Reports are rebuilt from
+the retained raw artifact sources; copied `benchmark-report-v1.json` files are
+not trusted as evaluation inputs. The rebuilt reports must have matching
+producers, mode, and exact complete scenario sets. Missing, expired, failed,
+dirty, partial, checksum-invalid, duplicate-identity, smoke-mode, or otherwise
+incompatible evidence is rejected. There is no implicit `latest` lookup,
+download, fallback, partial matching, persistence, artifact mutation, or
+baseline promotion.
+
+With the checked-in disabled policy, successful preflight emits canonical
+`benchmark-controlled-evaluation` schema version `1` JSON to standard output
+and exits `3`. The document records `performance_enforcement.state` as
+`not_eligible` with these bounded reason codes:
+
+- `policy_disabled`
+- `no_approved_controlled_baseline`
+- `no_approved_repeated_variance_evidence_or_statistical_method`
+- `no_approved_controlled_runner_or_profile`
+- `no_approved_budgets_or_approval_path`
+
+Exit `3` is intentionally nonzero so this result cannot be interpreted as an
+enforcing or passing performance gate. Invalid policy or artifact input exits
+`1` and emits no evaluation document or performance decision. The embedded
+comparison remains the unchanged observational v1 comparison:
+`performance_comparability` and runner isolation are `not_proven`, while budget
+and statistical decisions remain `not_evaluated`. In particular, a declared
+runner label and recorded environment are not a controlled-runner proof, and
+the preflight does not claim environment equality.
+
+Checksums provide an integrity inventory only; neither policy validation nor
+controlled evaluation authenticates artifacts, attests a runner, establishes
+approval authority, or accepts either operand as a baseline. Pull-request/push
+`bench-smoke` and scheduled/manual `bench-full` workflow runs remain collection
+only and non-enforcing. The workflow has finite artifact retention and performs
+no controlled evaluation.
+
+Future activation requires, at minimum, all of the following to be separately
+defined and approved before an active schema/state can be implemented: a
+controlled baseline and promotion rules; repeated variance evidence and a
+statistical method; a controlled runner and control profile; and numeric budgets
+plus an explicit approval path. This disabled preflight defines none of those
+items and emits no performance pass/fail, improvement, regression, or threshold
+verdict.
 
 The measured report below remains the June 2026 baseline; the harness does not
 replace those numbers until a clean, committed-SHA run is recorded.
