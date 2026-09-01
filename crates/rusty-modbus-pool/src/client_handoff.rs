@@ -29,7 +29,7 @@ impl Drop for RetirementGuard {
     fn drop(&mut self) {
         {
             let mut inner = self.pool.lock();
-            inner.release_active(self.is_priority, self.addr);
+            inner.retire_active(self.is_priority, self.addr);
         }
         self.capacity_changed.notify_waiters();
     }
@@ -342,7 +342,7 @@ impl Drop for ActiveCapacityGuard {
                 "reusable handoff lost its active capacity charge"
             );
             self.armed = false;
-            inner.release_active(self.is_priority, self.addr);
+            inner.retire_active(self.is_priority, self.addr);
         }
         self.capacity_changed.notify_waiters();
     }
@@ -431,7 +431,11 @@ impl RecoveredLease {
         // No fallible operation occurs between these two statements.
         if let Some(capacity) = self.capacity.as_mut() {
             capacity.armed = false;
-            inner.release_active(capacity.is_priority, capacity.addr);
+            if inner.shutting_down {
+                inner.retire_active(capacity.is_priority, capacity.addr);
+            } else {
+                inner.release_active(capacity.is_priority, capacity.addr);
+            }
         }
 
         let shutting_down = inner.shutting_down;

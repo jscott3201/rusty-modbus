@@ -25,7 +25,7 @@ pub mod pool;
 pub use config::{BackoffConfig, PoolConfig, PriorityDevice};
 pub use connection::{LeaseInvalidationReason, PooledConnection};
 pub use error::PoolError;
-pub use pool::ConnectionPool;
+pub use pool::{ConnectionPool, PoolMetricsSnapshot};
 
 #[cfg(feature = "client")]
 pub use client_handoff::{PooledClientReturnOutcome, PooledClientSession};
