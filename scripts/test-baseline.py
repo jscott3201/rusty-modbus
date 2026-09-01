@@ -74,6 +74,9 @@ def initialize_git_lock_fixture(
     *,
     criterion_versions: tuple[str, ...] = ("0.5.1",),
     include_lock: bool = True,
+    benchmark_targets: tuple[str, ...] = ("tcp_throughput",),
+    include_benchmark_manifest: bool = True,
+    benchmark_manifest_text: str | None = None,
 ) -> str:
     def git(*args: str) -> subprocess.CompletedProcess[bytes]:
         return subprocess.run(
@@ -104,6 +107,27 @@ def initialize_git_lock_fixture(
                 ]
             )
         (root / "Cargo.lock").write_text("\n".join(lines))
+    if include_benchmark_manifest:
+        benchmarks = root / "benchmarks"
+        benchmarks.mkdir()
+        if benchmark_manifest_text is None:
+            manifest_lines = [
+                "[package]",
+                'name = "fixture-benchmarks"',
+                'version = "0.0.0"',
+                "",
+            ]
+            for target in benchmark_targets:
+                manifest_lines.extend(
+                    [
+                        "[[bench]]",
+                        f'name = "{target}"',
+                        "harness = false",
+                        "",
+                    ]
+                )
+            benchmark_manifest_text = "\n".join(manifest_lines)
+        (benchmarks / "Cargo.toml").write_text(benchmark_manifest_text)
     git("add", ".")
     git(
         "-c",
@@ -150,7 +174,10 @@ def environment_fixture(runner_label: str = "unit-test") -> dict:
 
 
 def populate_benchmark_evidence(
-    run: baseline.ArtifactRun, *, measurement_offset: float = 0.0
+    run: baseline.ArtifactRun,
+    *,
+    measurement_offset: float = 0.0,
+    criterion_targets: tuple[str, ...] = ("tcp_throughput",),
 ) -> None:
     repetitions = 5 if run.mode == "bench-full" else 1
     scenarios = baseline.stress_scenarios(run.mode, repetitions)
@@ -203,26 +230,30 @@ def populate_benchmark_evidence(
         run.command_records.append(command)
 
     run.stress_aggregates = baseline.aggregate_stress_samples(run.stress_samples, scenarios)
-    criterion_home = run.run_dir / "criterion" / "raw" / "01-tcp-throughput"
-    estimate = criterion_home / "tcp_pipelined" / "new" / "estimates.json"
-    estimate.parent.mkdir(parents=True)
-    baseline.write_json(
-        estimate,
-        {
-            "mean": {
-                "confidence_interval": {
-                    "confidence_level": 0.95,
-                    "lower_bound": 9.0 + measurement_offset,
-                    "upper_bound": 11.0 + measurement_offset,
-                },
-                "point_estimate": 10.0 + measurement_offset,
-                "standard_error": 0.1,
-            }
-        },
-    )
-    run.criterion_results = baseline.parse_criterion_estimates(
-        criterion_home, run.repo_root
-    )
+    run.criterion_results = []
+    for index, target in enumerate(sorted(criterion_targets), 1):
+        criterion_home = run.run_dir / "criterion" / "raw" / f"{index:02d}-{target}"
+        benchmark_id = "tcp_pipelined" if target == "tcp_throughput" else f"{target}/fixture"
+        estimate = criterion_home / benchmark_id / "new" / "estimates.json"
+        estimate.parent.mkdir(parents=True)
+        baseline.write_json(
+            estimate,
+            {
+                "mean": {
+                    "confidence_interval": {
+                        "confidence_level": 0.95,
+                        "lower_bound": 9.0 + measurement_offset,
+                        "upper_bound": 11.0 + measurement_offset,
+                    },
+                    "point_estimate": 10.0 + measurement_offset,
+                    "standard_error": 0.1,
+                }
+            },
+        )
+        run.criterion_results.extend(
+            baseline.parse_criterion_estimates(criterion_home, run.repo_root)
+        )
+    run.criterion_results.sort(key=lambda item: item["source"].encode("utf-8"))
     baseline.write_json(
         run.run_dir / "criterion" / "parsed-estimates.json", run.criterion_results
     )
@@ -313,11 +344,13 @@ class BaselineHarnessTests(unittest.TestCase):
         include_lock: bool = True,
         target_sha: str | None = None,
         mode: str = "bench-smoke",
+        benchmark_targets: tuple[str, ...] = ("tcp_throughput",),
     ) -> baseline.ArtifactRun:
         fixture_sha = initialize_git_lock_fixture(
             root,
             criterion_versions=criterion_versions,
             include_lock=include_lock,
+            benchmark_targets=benchmark_targets,
         )
         return self.make_run(
             root,
@@ -1330,6 +1363,187 @@ class BaselineHarnessTests(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parser.parse_args(["controlled-evaluate", "policy.json"])
             self.assertFalse(any(path.name == "latest" for path in root.rglob("*")))
+
+    def test_target_sha_benchmark_manifest_inventory_is_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            valid_root = parent / "valid"
+            valid_root.mkdir()
+            valid_sha = initialize_git_lock_fixture(
+                valid_root,
+                benchmark_targets=("tcp_throughput", "codec", "tcp_pool"),
+            )
+            self.assertEqual(
+                baseline.benchmark_targets_from_target_manifest(valid_root, valid_sha),
+                ["codec", "tcp_pool", "tcp_throughput"],
+            )
+            (valid_root / "benchmarks" / "Cargo.toml").write_text("not valid TOML = [")
+            self.assertEqual(
+                baseline.benchmark_targets_from_target_manifest(valid_root, valid_sha),
+                ["codec", "tcp_pool", "tcp_throughput"],
+            )
+
+            cases = (
+                (
+                    "unavailable",
+                    lambda root: initialize_git_lock_fixture(
+                        root, include_benchmark_manifest=False
+                    ),
+                    "unavailable",
+                ),
+                (
+                    "malformed",
+                    lambda root: initialize_git_lock_fixture(
+                        root,
+                        benchmark_manifest_text="[[bench]\nname = 'tcp_throughput'\n",
+                    ),
+                    "malformed",
+                ),
+                (
+                    "duplicate",
+                    lambda root: initialize_git_lock_fixture(
+                        root, benchmark_targets=("tcp_pool", "tcp_pool")
+                    ),
+                    "duplicate",
+                ),
+                (
+                    "empty",
+                    lambda root: initialize_git_lock_fixture(root, benchmark_targets=()),
+                    r"no \[\[bench\]\] inventory",
+                ),
+            )
+            for label, initialize, expected_error in cases:
+                with self.subTest(case=label):
+                    root = parent / label
+                    root.mkdir()
+                    target_sha = initialize(root)
+                    with self.assertRaisesRegex(baseline.BaselineError, expected_error):
+                        baseline.benchmark_targets_from_target_manifest(root, target_sha)
+
+    def test_controlled_evaluate_rejects_symmetric_missing_criterion_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            targets = ("tcp_pool", "tcp_throughput")
+            baseline_run = self.make_report_run(
+                root,
+                run_id="complete-target-baseline",
+                mode="bench-full",
+                benchmark_targets=targets,
+            )
+            candidate_run = self.make_run(
+                root,
+                run_id="complete-target-candidate",
+                target_sha=baseline_run.target_sha,
+                mode="bench-full",
+            )
+            for run in (baseline_run, candidate_run):
+                populate_benchmark_evidence(run, criterion_targets=targets)
+                run.finalize()
+            (root / "policy.json").write_text(
+                baseline.policy_json_text(disabled_policy_fixture())
+            )
+            baseline_relative = baseline_run.run_dir.relative_to(root.resolve()).as_posix()
+            candidate_relative = candidate_run.run_dir.relative_to(root.resolve()).as_posix()
+            self.assertEqual(
+                baseline.controlled_evaluate_artifacts(
+                    root, "policy.json", baseline_relative, candidate_relative
+                )["performance_enforcement"]["state"],
+                "not_eligible",
+            )
+
+            def remove_target(run: baseline.ArtifactRun, target_root: str) -> None:
+                shutil.rmtree(run.run_dir / "criterion" / "raw" / target_root)
+                summary_path = run.run_dir / "summary.json"
+                summary = json.loads(summary_path.read_text())
+                marker = f"/criterion/raw/{target_root}/"
+                retained = [
+                    result
+                    for result in summary["criterion_results"]
+                    if marker not in f"/{result['source']}"
+                ]
+                self.assertEqual(
+                    len(summary["criterion_results"]) - len(retained), 1
+                )
+                summary["criterion_results"] = retained
+                baseline.write_json(summary_path, summary)
+                baseline.write_json(
+                    run.run_dir / "criterion" / "parsed-estimates.json", retained
+                )
+                baseline.write_checksums(root, run.run_dir)
+
+            for run in (baseline_run, candidate_run):
+                remove_target(run, "01-tcp_pool")
+
+            with self.assertRaisesRegex(baseline.BaselineError, "target coverage"):
+                baseline.controlled_evaluate_artifacts(
+                    root, "policy.json", baseline_relative, candidate_relative
+                )
+
+            script = root / "scripts" / "baseline.py"
+            script.parent.mkdir()
+            shutil.copyfile(Path(baseline.__file__), script)
+            completed = subprocess.run(
+                (
+                    sys.executable,
+                    str(script),
+                    "controlled-evaluate",
+                    "policy.json",
+                    baseline_relative,
+                    candidate_relative,
+                ),
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")
+            self.assertIn("Criterion target coverage", completed.stderr)
+
+    def test_full_report_rejects_extra_criterion_target_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.make_report_run(
+                root,
+                run_id="extra-target",
+                mode="bench-full",
+                benchmark_targets=("tcp_throughput",),
+            )
+            populate_benchmark_evidence(run)
+            run.finalize()
+
+            extra_home = run.run_dir / "criterion" / "raw" / "02-tcp_extra"
+            extra_estimate = extra_home / "tcp_extra" / "fixture" / "new" / "estimates.json"
+            extra_estimate.parent.mkdir(parents=True)
+            baseline.write_json(
+                extra_estimate,
+                {
+                    "mean": {
+                        "confidence_interval": {
+                            "confidence_level": 0.95,
+                            "lower_bound": 9.0,
+                            "upper_bound": 11.0,
+                        },
+                        "point_estimate": 10.0,
+                        "standard_error": 0.1,
+                    }
+                },
+            )
+            extra_results = baseline.parse_criterion_estimates(extra_home, root)
+            summary_path = run.run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text())
+            summary["criterion_results"].extend(extra_results)
+            summary["criterion_results"].sort(
+                key=lambda item: item["source"].encode("utf-8")
+            )
+            baseline.write_json(summary_path, summary)
+            baseline.write_json(
+                run.run_dir / "criterion" / "parsed-estimates.json",
+                summary["criterion_results"],
+            )
+            baseline.write_checksums(root, run.run_dir)
+            with self.assertRaisesRegex(baseline.BaselineError, "canonical registered target root"):
+                baseline.build_benchmark_report(root, run.run_dir)
 
     def test_report_render_rejects_overwrite_traversal_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -44,6 +44,7 @@ FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 RUNNER_LABEL = re.compile(r"[^\x00-\x1f\x7f]{1,128}\Z")
 COMMAND_ID = re.compile(r"[0-9]{3}-[a-z0-9-]+\Z")
+BENCH_TARGET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 POLICY_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 SHA256_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 MODES = ("correctness", "bench-smoke", "bench-full")
@@ -1449,6 +1450,49 @@ def criterion_version_from_target_lock(repo_root: Path, target_sha: str) -> str:
     return version
 
 
+def benchmark_targets_from_target_manifest(repo_root: Path, target_sha: str) -> list[str]:
+    target_sha = validate_full_sha(target_sha)
+    try:
+        completed = subprocess.run(
+            ("git", "cat-file", "blob", f"{target_sha}:benchmarks/Cargo.toml"),
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+    except OSError as error:
+        raise BaselineError(
+            f"cannot read target-SHA benchmark manifest evidence: {error}"
+        ) from error
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise BaselineError(
+            f"target-SHA benchmark manifest evidence is unavailable for {target_sha}: {detail}"
+        )
+    try:
+        manifest = tomllib.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise BaselineError(f"target-SHA benchmark manifest evidence is malformed: {error}") from error
+    benches = manifest.get("bench")
+    if not isinstance(benches, list) or not benches:
+        raise BaselineError("target-SHA benchmark manifest has no [[bench]] inventory")
+    names = []
+    for position, bench in enumerate(benches):
+        if not isinstance(bench, dict):
+            raise BaselineError(
+                f"target-SHA benchmark manifest bench entry {position} must be a table"
+            )
+        name = bench.get("name")
+        if not isinstance(name, str) or not BENCH_TARGET_NAME.fullmatch(name):
+            raise BaselineError(
+                f"target-SHA benchmark manifest bench entry {position} has an unusable name"
+            )
+        names.append(name)
+    if len(names) != len(set(names)):
+        raise BaselineError("target-SHA benchmark manifest contains duplicate bench names")
+    return sorted(names)
+
+
 def verified_criterion_version(
     repo_root: Path, target_sha: str, *, declared_version: str | None = None
 ) -> str:
@@ -1705,7 +1749,11 @@ def _report_stress_scenarios(
 
 
 def _report_criterion_scenarios(
-    repo_root: Path, run_dir: Path, summary: dict[str, Any]
+    repo_root: Path,
+    run_dir: Path,
+    summary: dict[str, Any],
+    *,
+    expected_targets: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     results = summary.get("criterion_results")
     if not isinstance(results, list) or not results:
@@ -1722,7 +1770,16 @@ def _report_criterion_scenarios(
     if parsed_results != results:
         raise BaselineError("Criterion parsed estimates do not match summary.json")
 
+    expected_roots = (
+        {
+            f"{position:02d}-{target}": target
+            for position, target in enumerate(expected_targets, 1)
+        }
+        if expected_targets is not None
+        else None
+    )
     seen_sources: set[str] = set()
+    observed_targets: set[str] = set()
     scenarios = []
     for result in sorted(
         results, key=lambda item: (str(item.get("benchmark_id")), str(item.get("source")))
@@ -1747,6 +1804,14 @@ def _report_criterion_scenarios(
             raise BaselineError(
                 "Criterion source must match the exact new/estimates.json private layout"
             )
+        if expected_roots is not None:
+            target = expected_roots.get(source_parts[2])
+            if target is None:
+                raise BaselineError(
+                    "Criterion source must use its canonical registered target root: "
+                    f"{source_parts[2]}"
+                )
+            observed_targets.add(target)
         estimates = result.get("estimates")
         if not isinstance(estimates, dict) or _read_json_object(
             source_path, f"Criterion source {source}"
@@ -1793,6 +1858,13 @@ def _report_criterion_scenarios(
                 "producer_id": CRITERION_PRODUCER_ID,
                 "sources": [{"private_estimates_json": source}],
             }
+        )
+    if expected_roots is not None and observed_targets != set(expected_roots.values()):
+        expected = set(expected_roots.values())
+        raise BaselineError(
+            "Criterion target coverage does not match target-SHA benchmark manifest; "
+            f"missing={sorted(expected - observed_targets)}, "
+            f"extra={sorted(observed_targets - expected)}"
         )
     return scenarios
 
@@ -1866,10 +1938,26 @@ def build_benchmark_report(
     )
     recorded_environment = _validate_report_environment(environment)
     criterion_version = verified_criterion_version(repo_root, target_sha)
+    expected_criterion_targets = None
+    if mode == "bench-full":
+        expected_criterion_targets = [
+            target
+            for target in benchmark_targets_from_target_manifest(repo_root, target_sha)
+            if target.startswith("tcp_")
+        ]
+        if not expected_criterion_targets:
+            raise BaselineError(
+                "target-SHA benchmark manifest registers no tcp_* Criterion targets"
+            )
     stress_scenarios_report, correctness = _report_stress_scenarios(
         repo_root, run_dir, mode, summary
     )
-    criterion_scenarios = _report_criterion_scenarios(repo_root, run_dir, summary)
+    criterion_scenarios = _report_criterion_scenarios(
+        repo_root,
+        run_dir,
+        summary,
+        expected_targets=expected_criterion_targets,
+    )
     report = {
         "correctness": correctness,
         "evidence": dict(REPORT_EVIDENCE),
