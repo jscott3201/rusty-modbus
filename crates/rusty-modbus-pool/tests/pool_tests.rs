@@ -521,6 +521,76 @@ async fn exhaustion_when_full() {
 }
 
 #[tokio::test]
+async fn separate_priority_and_non_priority_capacity_budgets_are_publicly_bounded() {
+    let (priority_addr, mut priority_accepted) = tracked_echo_server().await;
+    let (ordinary_addr, mut ordinary_accepted) = tracked_echo_server().await;
+    let mut config = pool_config_for(ordinary_addr);
+    config.max_connections = 1;
+    config.pre_connect = false;
+    config.priority_devices = vec![PriorityDevice::new(priority_addr, 1)];
+    let pool = ConnectionPool::new(config);
+
+    let priority = pool.get(priority_addr).await.unwrap();
+    wait_for_accept(&mut priority_accepted).await;
+    let ordinary = pool.get(ordinary_addr).await.unwrap();
+    wait_for_accept(&mut ordinary_accepted).await;
+    let metrics = pool.metrics();
+    assert_eq!(
+        (
+            metrics.active_connections,
+            metrics.idle_connections,
+            metrics.connections_created,
+            metrics.connection_failures,
+            metrics.connections_retired,
+        ),
+        (2, 0, 2, 0, 0)
+    );
+
+    assert!(matches!(
+        pool.get(priority_addr).await,
+        Err(PoolError::Exhausted)
+    ));
+    assert!(
+        priority_accepted.try_recv().is_err(),
+        "full priority budget must not open another TCP connection"
+    );
+    assert!(matches!(
+        pool.get(ordinary_addr).await,
+        Err(PoolError::Exhausted)
+    ));
+    assert!(
+        ordinary_accepted.try_recv().is_err(),
+        "full non-priority budget must not open another TCP connection"
+    );
+    let metrics = pool.metrics();
+    assert_eq!(
+        (
+            metrics.active_connections,
+            metrics.idle_connections,
+            metrics.connections_created,
+            metrics.connection_failures,
+            metrics.connections_retired,
+        ),
+        (2, 0, 2, 0, 0)
+    );
+
+    drop(priority);
+    drop(ordinary);
+    let metrics = pool.metrics();
+    assert_eq!(
+        (
+            metrics.active_connections,
+            metrics.idle_connections,
+            metrics.connections_created,
+            metrics.connection_failures,
+            metrics.connections_retired,
+        ),
+        (0, 0, 2, 0, 2)
+    );
+    pool.shutdown_and_wait().await;
+}
+
+#[tokio::test]
 async fn zero_acquisition_timeout_checks_immediate_capacity_after_raw_retirement() {
     let (addr, mut accepted) = tracked_echo_server().await;
     let mut config = pool_config_for(addr);

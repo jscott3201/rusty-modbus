@@ -2273,6 +2273,19 @@ mod tests {
         );
     }
 
+    fn assert_budget_totals(
+        pool: &ConnectionPool,
+        priority_addr: SocketAddr,
+        priority_total: usize,
+        non_priority_total: usize,
+    ) {
+        let inner = pool.inner.lock();
+        assert_eq!(inner.priority_total(priority_addr), priority_total);
+        assert_eq!(inner.non_priority_total(), non_priority_total);
+        assert!(inner.priority_total(priority_addr) <= pool.priority_cap(priority_addr));
+        assert!(inner.non_priority_total() <= pool.config.max_connections);
+    }
+
     #[tokio::test]
     async fn priority_maintenance_sender_closure_is_a_sticky_stop() {
         let (stop, mut stopped) = watch::channel(false);
@@ -2866,8 +2879,14 @@ mod tests {
         let pending = next_priority_maintenance_attempt(&mut attempts).await;
 
         let (existing, _existing_peer) = idle_entry_with_peer(addr, Instant::now(), true).await;
-        pool.inner.lock().idle.push(existing);
+        {
+            let mut inner = pool.inner.lock();
+            inner.idle.push(existing);
+            inner.record_connection_created();
+            assert_eq!(inner.priority_total(addr), 2);
+        }
         pool.capacity_changed.notify_waiters();
+        assert_metrics(&pool, 1, 1, 1, 0, 0);
 
         let (redundant_halves, mut redundant_peer) = connected_halves_with_peer().await;
         let (redundant_dropped_tx, redundant_dropped_rx) = oneshot::channel();
@@ -2882,6 +2901,7 @@ mod tests {
         assert_eq!(pool.active_count(), 0);
         assert_eq!(pool.inner.lock().priority_idle_count(addr), 1);
         assert_eq!(pool.inner.lock().priority_total(addr), 1);
+        assert_metrics(&pool, 0, 1, 1, 0, 0);
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), redundant_dropped_rx)
                 .await
@@ -2897,6 +2917,118 @@ mod tests {
 
         pool.shutdown_and_wait().await;
         assert!(fallback.complete.send(()).is_err());
+        assert_metrics(&pool, 0, 0, 1, 0, 1);
+    }
+
+    #[tokio::test]
+    async fn mixed_budget_capacity_bound_survives_hostile_lifecycle_interleaving() {
+        let priority_addr = test_addr(15_311);
+        let ordinary_addr = test_addr(15_312);
+        let mut config = replenishment_config(vec![crate::PriorityDevice::new(priority_addr, 1)]);
+        config.max_connections = 1;
+        let (pool, mut attempts, mut retries, mut fallbacks) =
+            pool_with_gated_priority_maintenance(config);
+        let pool = Arc::new(pool);
+
+        let pending_priority = next_priority_maintenance_attempt(&mut attempts).await;
+        let (pending_ordinary, ordinary_entered) =
+            spawn_pending_get(Arc::clone(&pool), ordinary_addr);
+        ordinary_entered.await.unwrap();
+        assert_budget_totals(&pool, priority_addr, 1, 1);
+        assert_metrics(&pool, 2, 0, 0, 0, 0);
+
+        let blocked_priority_connector_calls = AtomicUsize::new(0);
+        let blocked_priority = pool
+            .get_with_connector(priority_addr, || {
+                blocked_priority_connector_calls.fetch_add(1, Ordering::SeqCst);
+                async { Err(TransportError::Disconnected) }
+            })
+            .await;
+        assert!(matches!(blocked_priority, Err(PoolError::Exhausted)));
+        let blocked_ordinary_connector_calls = AtomicUsize::new(0);
+        let blocked_ordinary = pool
+            .get_with_connector(ordinary_addr, || {
+                blocked_ordinary_connector_calls.fetch_add(1, Ordering::SeqCst);
+                async { Err(TransportError::Disconnected) }
+            })
+            .await;
+        assert!(matches!(blocked_ordinary, Err(PoolError::Exhausted)));
+        assert_eq!(blocked_priority_connector_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(blocked_ordinary_connector_calls.load(Ordering::SeqCst), 0);
+        assert_metrics(&pool, 2, 0, 0, 0, 0);
+
+        abort_pending(pending_ordinary).await;
+        assert_budget_totals(&pool, priority_addr, 1, 0);
+        assert_metrics(&pool, 1, 0, 0, 0, 0);
+
+        pending_priority.fail();
+        let retry = next_retry_wait(&mut retries).await;
+        assert_budget_totals(&pool, priority_addr, 0, 0);
+        assert_metrics(&pool, 0, 0, 0, 1, 0);
+
+        retry.resume();
+        let successful_priority = next_priority_maintenance_attempt(&mut attempts).await;
+        assert_metrics(&pool, 1, 0, 0, 1, 0);
+        successful_priority.succeed();
+        let idle_fallback = next_fallback_wait(&mut fallbacks).await;
+        assert_eq!(pool.inner.lock().priority_idle_count(priority_addr), 1);
+        assert_budget_totals(&pool, priority_addr, 1, 0);
+        assert_metrics(&pool, 0, 1, 1, 1, 0);
+
+        let reuse_connector_calls = AtomicUsize::new(0);
+        let priority_lease = pool
+            .get_with_connector(priority_addr, || {
+                reuse_connector_calls.fetch_add(1, Ordering::SeqCst);
+                async { Err(TransportError::Disconnected) }
+            })
+            .await
+            .expect("priority checkout should reuse its committed idle entry");
+        let active_fallback = next_fallback_wait(&mut fallbacks).await;
+        assert!(idle_fallback.complete.send(()).is_err());
+        assert_eq!(reuse_connector_calls.load(Ordering::SeqCst), 0);
+
+        let ordinary_connector_calls = AtomicUsize::new(0);
+        let ordinary_lease = pool
+            .get_with_connector(ordinary_addr, || {
+                ordinary_connector_calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok(connected_halves().await) }
+            })
+            .await
+            .expect("ordinary budget should commit independently");
+        assert_eq!(ordinary_connector_calls.load(Ordering::SeqCst), 1);
+        assert_budget_totals(&pool, priority_addr, 1, 1);
+        assert_metrics(&pool, 2, 0, 2, 1, 0);
+
+        drop(priority_lease);
+        let pending_replenishment = next_priority_maintenance_attempt(&mut attempts).await;
+        assert!(active_fallback.complete.send(()).is_err());
+        assert_budget_totals(&pool, priority_addr, 1, 1);
+        assert_metrics(&pool, 2, 0, 2, 1, 1);
+
+        pool.shutdown_and_wait().await;
+        assert!(
+            pending_replenishment
+                .complete
+                .send(GatedConnectCompletion::SyntheticSuccess)
+                .is_err()
+        );
+        assert_budget_totals(&pool, priority_addr, 0, 1);
+        assert_metrics(&pool, 1, 0, 2, 1, 1);
+
+        drop(ordinary_lease);
+        assert_metrics(&pool, 0, 0, 2, 1, 2);
+        assert!(matches!(
+            attempts.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            retries.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            fallbacks.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
     }
 
     #[tokio::test]
