@@ -2,7 +2,7 @@
   "schema_version": 1,
   "baseline": {
     "repository": "jscott3201/rusty-modbus",
-    "base_sha": "af6bed7959b4b9dabaf4f7c051134c660de71e04",
+    "base_sha": "f403e130e283b2b888e7858ab1e6815617f42027",
     "base_ref": "dev",
     "as_of": "2026-08-31",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
@@ -5337,10 +5337,11 @@
     },
     {
       "id": "ISSUE-92",
-      "title": "Python bindings do not expose all Rust capabilities",
-      "status": "open",
+      "title": "sim: provide a runnable simulator binary that loads a SimConfig YAML",
+      "status": "closed",
+      "status_reason": "PR #114 ships the packaged YAML simulator executable with readiness, independent request, and bounded shutdown process evidence.",
       "owner": "maintainers",
-      "follow_up": "Track issue #92",
+      "follow_up": "Closed by PR #114",
       "url": "https://github.com/jscott3201/rusty-modbus/issues/92",
       "requirement_ids": [
         "CONF-008"
@@ -5348,10 +5349,11 @@
     },
     {
       "id": "ISSUE-93",
-      "title": "CLI exposes a limited operation set",
-      "status": "open",
+      "title": "sim: SimConfig `faults:` and `random`/`increment` update modes are parsed but never enforced",
+      "status": "closed",
+      "status_reason": "PR #114 makes unsupported fault and dynamic update configuration fail shared pre-runtime validation rather than remain silently inert, with package and conformance tests.",
       "owner": "maintainers",
-      "follow_up": "Track issue #93",
+      "follow_up": "Closed by PR #114",
       "url": "https://github.com/jscott3201/rusty-modbus/issues/93",
       "requirement_ids": [
         "CONF-008"

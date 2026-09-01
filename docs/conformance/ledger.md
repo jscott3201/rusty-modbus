@@ -8,7 +8,7 @@ This ledger reports repository-scoped evidence for named profiles. It does not s
 ## Baseline
 
 - Repository: `jscott3201/rusty-modbus`
-- Base: `dev` at `af6bed7959b4b9dabaf4f7c051134c660de71e04`
+- Base: `dev` at `f403e130e283b2b888e7858ab1e6815617f42027`
 - Inventory date: `2026-08-31`
 - Review seed: Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency
 - Requirements: 70
@@ -726,8 +726,8 @@ Mappings identify intended coverage. They do not assert that a test executed.
 |---|---|---|---|---|---|
 | [ISSUE-90](https://github.com/jscott3201/rusty-modbus/issues/90) | `closed` | maintainers | Closed by PR-204 | Document the Drop/shutdown contract on ModbusClient | The Rust and Python APIs now document and test graceful shutdown, immediate abort, and final-handle Drop behavior. |
 | [ISSUE-91](https://github.com/jscott3201/rusty-modbus/issues/91) | `open` | maintainers | Track issue #91 | Physical RTU server transport is not implemented | — |
-| [ISSUE-92](https://github.com/jscott3201/rusty-modbus/issues/92) | `open` | maintainers | Track issue #92 | Python bindings do not expose all Rust capabilities | — |
-| [ISSUE-93](https://github.com/jscott3201/rusty-modbus/issues/93) | `open` | maintainers | Track issue #93 | CLI exposes a limited operation set | — |
+| [ISSUE-92](https://github.com/jscott3201/rusty-modbus/issues/92) | `closed` | maintainers | Closed by PR #114 | sim: provide a runnable simulator binary that loads a SimConfig YAML | PR #114 ships the packaged YAML simulator executable with readiness, independent request, and bounded shutdown process evidence. |
+| [ISSUE-93](https://github.com/jscott3201/rusty-modbus/issues/93) | `closed` | maintainers | Closed by PR #114 | sim: SimConfig `faults:` and `random`/`increment` update modes are parsed but never enforced | PR #114 makes unsupported fault and dynamic update configuration fail shared pre-runtime validation rather than remain silently inert, with package and conformance tests. |
 
 ## Updating this view
 
