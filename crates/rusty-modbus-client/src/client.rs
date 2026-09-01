@@ -286,6 +286,7 @@ impl<S: TransportSink + Send + 'static> ModbusClient<S> {
                 | ClientError::ShortResponse { .. }
                 | ClientError::UnexpectedResponseLength { .. }
                 | ClientError::UnexpectedResponsePadding { .. }
+                | ClientError::UnexpectedFileRecordSubResponseCount { .. }
                 | ClientError::InvalidDeviceIdentificationContinuation { .. }
                 | ClientError::DeviceIdentificationPaginationLimit { .. },
             ) => Some(SessionRetirementReason::TypedResponseDataInvalid),
