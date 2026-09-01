@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import json
@@ -34,6 +35,8 @@ POLICY_SCHEMA_NAME = "benchmark-budget-policy"
 POLICY_SCHEMA_VERSION = 1
 CONTROLLED_EVALUATION_SCHEMA_NAME = "benchmark-controlled-evaluation"
 CONTROLLED_EVALUATION_SCHEMA_VERSION = 1
+CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_NAME = "benchmark-controlled-evidence-contract"
+CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_VERSION = 1
 CONTROLLED_NOT_ELIGIBLE_EXIT = 3
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
@@ -47,6 +50,10 @@ COMMAND_ID = re.compile(r"[0-9]{3}-[a-z0-9-]+\Z")
 BENCH_TARGET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 POLICY_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 SHA256_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+UTC_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z\Z"
+)
+OPAQUE_EVIDENCE_LOCATOR = re.compile(r"[^\x00-\x20\x7f]{1,512}\Z")
 MODES = ("correctness", "bench-smoke", "bench-full")
 BENCHMARK_MODES = ("bench-smoke", "bench-full")
 POLICY_ACTIVATION_BLOCKERS = (
@@ -58,6 +65,44 @@ POLICY_ACTIVATION_BLOCKERS = (
 CONTROLLED_EVALUATION_REASON_CODES = (
     "policy_disabled",
     *POLICY_ACTIVATION_BLOCKERS,
+)
+CONTROLLED_EVIDENCE_KINDS = (
+    "analysis_plan",
+    "approval_authority",
+    "approval_record",
+    "baseline_promotion",
+    "baseline_promotion_rule",
+    "baseline_supersession",
+    "benchmark_artifact",
+    "budget_rule",
+    "control_profile",
+    "controlled_runner",
+    "runner_profile_binding",
+    "variance_analysis",
+)
+CONTROLLED_BUDGET_PAIRINGS = (
+    ("mean_estimate", "ns", "maximum"),
+    ("p99_latency", "ms", "maximum"),
+    ("throughput", "operations_per_second", "minimum"),
+)
+CONTROLLED_EVIDENCE_CONTRACT_SEMANTICS = {
+    "integrity": "sha256_is_integrity_only_not_signature_attestation_approval_or_authority",
+    "validation": (
+        "structure_only_not_authentication_owner_authorization_baseline_acceptance_"
+        "or_policy_activation"
+    ),
+}
+CONTROLLED_BINDING_PROOF_SEMANTICS = (
+    "retained_control_evidence_required_labels_and_environment_alone_are_not_proof"
+)
+CONTROLLED_APPROVAL_VALIDATION_SEMANTICS = (
+    "structural_validation_is_not_authentication_or_owner_authorization"
+)
+CONTROLLED_SAMPLE_UNIT = "complete_independent_bench-full_run"
+CONTROLLED_BASELINE_PROMOTION_PATH = (
+    ("candidate", "variance_collected"),
+    ("variance_collected", "promotion_pending"),
+    ("promotion_pending", "approved"),
 )
 REPORT_EVIDENCE = {
     "artifact_validity": "valid",
@@ -3764,6 +3809,839 @@ def controlled_evaluate_artifacts(
     baseline_report = build_benchmark_report(repo_root, baseline_dir)
     candidate_report = build_benchmark_report(repo_root, candidate_dir)
     return build_controlled_evaluation(policy, baseline_report, candidate_report)
+
+
+def _controlled_contract_exact_keys(
+    value: Any, expected: set[str], label: str
+) -> dict[str, Any]:
+    if isinstance(value, dict) and any(not isinstance(key, str) for key in value):
+        raise BaselineError(f"{label} object keys must be strings")
+    return _require_exact_keys(value, expected, label)
+
+
+def _controlled_contract_id(value: Any, label: str) -> str:
+    identifier = _require_nonempty_string(value, label)
+    if not POLICY_ID.fullmatch(identifier):
+        raise BaselineError(f"{label} must be a lowercase bounded identifier")
+    return identifier
+
+
+def _controlled_contract_digest(value: Any, label: str) -> str:
+    digest = _require_nonempty_string(value, label)
+    if not SHA256_DIGEST.fullmatch(digest):
+        raise BaselineError(f"{label} must be a lowercase SHA-256 digest")
+    return digest
+
+
+def _controlled_contract_utc(value: Any, label: str) -> datetime:
+    timestamp = _require_nonempty_string(value, label)
+    if not UTC_TIMESTAMP.fullmatch(timestamp):
+        raise BaselineError(f"{label} must be a bounded ISO-8601 UTC timestamp ending in Z")
+    try:
+        parsed = datetime.fromisoformat(timestamp[:-1] + "+00:00")
+    except ValueError as error:
+        raise BaselineError(f"{label} must be a valid UTC timestamp") from error
+    offset = parsed.utcoffset()
+    if offset is None or offset.total_seconds() != 0:
+        raise BaselineError(f"{label} must be UTC")
+    return parsed
+
+
+def _controlled_contract_reference_ids(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise BaselineError(f"{label} must be a non-empty list")
+    identifiers = [
+        _controlled_contract_id(item, f"{label}[{position}]")
+        for position, item in enumerate(value)
+    ]
+    if len(identifiers) != len(set(identifiers)):
+        raise BaselineError(f"{label} must not contain duplicate evidence IDs")
+    return identifiers
+
+
+def _controlled_contract_evidence_reference(
+    value: Any,
+    label: str,
+    evidence_by_id: dict[str, dict[str, Any]],
+    expected_kind: str,
+) -> str:
+    evidence_id = _controlled_contract_id(value, label)
+    evidence = evidence_by_id.get(evidence_id)
+    if evidence is None:
+        raise BaselineError(f"{label} does not resolve to retained evidence")
+    if evidence["kind"] != expected_kind:
+        raise BaselineError(f"{label} must reference {expected_kind} evidence")
+    return evidence_id
+
+
+def _controlled_evidence_contract_normalized(document: dict[str, Any]) -> dict[str, Any]:
+    canonical = copy.deepcopy(document)
+    for part in ("runner", "profile"):
+        canonical["control"][part]["evidence_ids"].sort()
+    canonical["control"]["binding"]["evidence_ids"].sort()
+    for study in canonical["variance_studies"]:
+        study["runs"].sort(key=lambda run: (run["target_sha"], run["run_id"]))
+    canonical["variance_studies"].sort(key=lambda study: study["study_id"])
+    canonical["baselines"].sort(key=lambda baseline: baseline["baseline_id"])
+    canonical["budget_rules"].sort(key=lambda rule: rule["budget_rule_id"])
+    canonical["evidence_retention"].sort(key=lambda evidence: evidence["evidence_id"])
+    return canonical
+
+
+def _controlled_evidence_contract_approval_scope_sha256(document: dict[str, Any]) -> str:
+    scoped = copy.deepcopy(document)
+    scoped["approval"] = None
+    canonical = _controlled_evidence_contract_normalized(scoped)
+    text = json.dumps(
+        canonical, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+    ) + "\n"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def validate_controlled_evidence_contract(document: Any) -> list[str]:
+    if not isinstance(document, dict):
+        return ["controlled evidence contract root must be an object"]
+    if any(not isinstance(key, str) for key in document):
+        return ["controlled evidence contract object keys must be strings"]
+    try:
+        document = _controlled_contract_exact_keys(
+            document,
+            {
+                "approval",
+                "approval_authority",
+                "baseline_lifecycle",
+                "baselines",
+                "budget_rules",
+                "contract_id",
+                "contract_schema",
+                "control",
+                "evidence_retention",
+                "semantics",
+                "statistical_method",
+                "variance_studies",
+            },
+            "controlled evidence contract",
+        )
+        schema = _controlled_contract_exact_keys(
+            document["contract_schema"], {"name", "version"}, "contract_schema"
+        )
+        if (
+            schema["name"] != CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_NAME
+            or _strict_int(schema["version"], "contract_schema.version", minimum=1)
+            != CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_VERSION
+        ):
+            raise BaselineError("controlled evidence contract schema is unsupported")
+        _controlled_contract_id(document["contract_id"], "contract_id")
+        semantics = _controlled_contract_exact_keys(
+            document["semantics"], {"integrity", "validation"}, "semantics"
+        )
+        if semantics != CONTROLLED_EVIDENCE_CONTRACT_SEMANTICS:
+            raise BaselineError("controlled evidence contract semantics are unsupported")
+
+        retention = document["evidence_retention"]
+        if not isinstance(retention, list) or not retention:
+            raise BaselineError("evidence_retention must be a non-empty list")
+        evidence_by_id: dict[str, dict[str, Any]] = {}
+        evidence_times: dict[str, tuple[datetime, datetime]] = {}
+        for position, value in enumerate(retention):
+            label = f"evidence_retention[{position}]"
+            evidence = _controlled_contract_exact_keys(
+                value,
+                {
+                    "evidence_id",
+                    "kind",
+                    "locator",
+                    "recorded_utc",
+                    "retained_until_utc",
+                    "sha256",
+                },
+                label,
+            )
+            evidence_id = _controlled_contract_id(
+                evidence["evidence_id"], f"{label}.evidence_id"
+            )
+            if evidence_id in evidence_by_id:
+                raise BaselineError("evidence_retention contains duplicate evidence IDs")
+            kind = _require_nonempty_string(evidence["kind"], f"{label}.kind")
+            if kind not in CONTROLLED_EVIDENCE_KINDS:
+                raise BaselineError(f"{label}.kind is unsupported")
+            locator = _require_nonempty_string(evidence["locator"], f"{label}.locator")
+            if not OPAQUE_EVIDENCE_LOCATOR.fullmatch(locator):
+                raise BaselineError(
+                    f"{label}.locator must be an opaque 1-512 character locator without whitespace or controls"
+                )
+            _controlled_contract_digest(evidence["sha256"], f"{label}.sha256")
+            recorded = _controlled_contract_utc(
+                evidence["recorded_utc"], f"{label}.recorded_utc"
+            )
+            retained_until = _controlled_contract_utc(
+                evidence["retained_until_utc"], f"{label}.retained_until_utc"
+            )
+            if retained_until < recorded:
+                raise BaselineError(
+                    f"{label}.retained_until_utc must not precede recorded_utc"
+                )
+            evidence_by_id[evidence_id] = evidence
+            evidence_times[evidence_id] = (recorded, retained_until)
+
+        control = _controlled_contract_exact_keys(
+            document["control"], {"binding", "profile", "runner"}, "control"
+        )
+        runner = _controlled_contract_exact_keys(
+            control["runner"], {"evidence_ids", "runner_id"}, "control.runner"
+        )
+        runner_id = _controlled_contract_id(
+            runner["runner_id"], "control.runner.runner_id"
+        )
+        runner_evidence = _controlled_contract_reference_ids(
+            runner["evidence_ids"], "control.runner.evidence_ids"
+        )
+        for position, evidence_id in enumerate(runner_evidence):
+            _controlled_contract_evidence_reference(
+                evidence_id,
+                f"control.runner.evidence_ids[{position}]",
+                evidence_by_id,
+                "controlled_runner",
+            )
+
+        profile = _controlled_contract_exact_keys(
+            control["profile"],
+            {"evidence_ids", "profile_id", "version"},
+            "control.profile",
+        )
+        profile_id = _controlled_contract_id(
+            profile["profile_id"], "control.profile.profile_id"
+        )
+        profile_version = _controlled_contract_id(
+            profile["version"], "control.profile.version"
+        )
+        profile_evidence = _controlled_contract_reference_ids(
+            profile["evidence_ids"], "control.profile.evidence_ids"
+        )
+        for position, evidence_id in enumerate(profile_evidence):
+            _controlled_contract_evidence_reference(
+                evidence_id,
+                f"control.profile.evidence_ids[{position}]",
+                evidence_by_id,
+                "control_profile",
+            )
+
+        binding = _controlled_contract_exact_keys(
+            control["binding"],
+            {
+                "evidence_ids",
+                "profile_id",
+                "profile_version",
+                "proof_semantics",
+                "runner_id",
+            },
+            "control.binding",
+        )
+        if (
+            binding["runner_id"] != runner_id
+            or binding["profile_id"] != profile_id
+            or binding["profile_version"] != profile_version
+        ):
+            raise BaselineError("control.binding identities must match runner and profile")
+        if binding["proof_semantics"] != CONTROLLED_BINDING_PROOF_SEMANTICS:
+            raise BaselineError("control.binding proof semantics are unsupported")
+        binding_evidence = _controlled_contract_reference_ids(
+            binding["evidence_ids"], "control.binding.evidence_ids"
+        )
+        for position, evidence_id in enumerate(binding_evidence):
+            _controlled_contract_evidence_reference(
+                evidence_id,
+                f"control.binding.evidence_ids[{position}]",
+                evidence_by_id,
+                "runner_profile_binding",
+            )
+
+        statistical_method = _controlled_contract_exact_keys(
+            document["statistical_method"],
+            {
+                "analysis_plan_evidence_id",
+                "method_id",
+                "minimum_independent_runs",
+                "outputs",
+                "sample_unit",
+                "scenario_alignment",
+                "version",
+            },
+            "statistical_method",
+        )
+        method_id = _controlled_contract_id(
+            statistical_method["method_id"], "statistical_method.method_id"
+        )
+        method_version = _controlled_contract_id(
+            statistical_method["version"], "statistical_method.version"
+        )
+        _controlled_contract_evidence_reference(
+            statistical_method["analysis_plan_evidence_id"],
+            "statistical_method.analysis_plan_evidence_id",
+            evidence_by_id,
+            "analysis_plan",
+        )
+        minimum_runs = _strict_int(
+            statistical_method["minimum_independent_runs"],
+            "statistical_method.minimum_independent_runs",
+            minimum=2,
+        )
+        if statistical_method["sample_unit"] != CONTROLLED_SAMPLE_UNIT:
+            raise BaselineError("statistical_method.sample_unit is unsupported")
+        if statistical_method["scenario_alignment"] != "exact_complete_set":
+            raise BaselineError("statistical_method.scenario_alignment is unsupported")
+        outputs = _controlled_contract_exact_keys(
+            statistical_method["outputs"], {"effect", "uncertainty"}, "statistical_method.outputs"
+        )
+        if outputs != {"effect": "required", "uncertainty": "required"}:
+            raise BaselineError("statistical_method outputs must be effect and uncertainty only")
+
+        studies = document["variance_studies"]
+        if not isinstance(studies, list) or not studies:
+            raise BaselineError("variance_studies must be a non-empty list")
+        study_by_id: dict[str, dict[str, Any]] = {}
+        study_run_by_identity: dict[
+            tuple[str, str], tuple[str, dict[str, Any]]
+        ] = {}
+        for position, value in enumerate(studies):
+            label = f"variance_studies[{position}]"
+            study = _controlled_contract_exact_keys(
+                value,
+                {
+                    "analysis_evidence_id",
+                    "control_profile",
+                    "producer_set_sha256",
+                    "runner_id",
+                    "runs",
+                    "scenario_set_sha256",
+                    "statistical_method",
+                    "study_id",
+                    "target_sha",
+                },
+                label,
+            )
+            study_id = _controlled_contract_id(study["study_id"], f"{label}.study_id")
+            if study_id in study_by_id:
+                raise BaselineError("variance_studies contains duplicate study IDs")
+            study_target = validate_full_sha(
+                _require_nonempty_string(study["target_sha"], f"{label}.target_sha")
+            )
+            if study["runner_id"] != runner_id:
+                raise BaselineError(f"{label}.runner_id does not match control runner")
+            study_profile = _controlled_contract_exact_keys(
+                study["control_profile"], {"profile_id", "version"}, f"{label}.control_profile"
+            )
+            if study_profile != {"profile_id": profile_id, "version": profile_version}:
+                raise BaselineError(f"{label}.control_profile does not match control profile")
+            study_method = _controlled_contract_exact_keys(
+                study["statistical_method"],
+                {"method_id", "version"},
+                f"{label}.statistical_method",
+            )
+            if study_method != {"method_id": method_id, "version": method_version}:
+                raise BaselineError(f"{label}.statistical_method does not match statistical method")
+            producer_digest = _controlled_contract_digest(
+                study["producer_set_sha256"], f"{label}.producer_set_sha256"
+            )
+            scenario_digest = _controlled_contract_digest(
+                study["scenario_set_sha256"], f"{label}.scenario_set_sha256"
+            )
+            _controlled_contract_evidence_reference(
+                study["analysis_evidence_id"],
+                f"{label}.analysis_evidence_id",
+                evidence_by_id,
+                "variance_analysis",
+            )
+            runs = study["runs"]
+            if not isinstance(runs, list) or len(runs) < minimum_runs:
+                raise BaselineError(
+                    f"{label}.runs must contain at least {minimum_runs} independent runs"
+                )
+            for run_position, value in enumerate(runs):
+                run_label = f"{label}.runs[{run_position}]"
+                run = _controlled_contract_exact_keys(
+                    value,
+                    {
+                        "artifact_evidence_id",
+                        "control_profile",
+                        "producer_set_sha256",
+                        "run_id",
+                        "runner_id",
+                        "sample_unit",
+                        "scenario_set_sha256",
+                        "statistical_method",
+                        "target_sha",
+                    },
+                    run_label,
+                )
+                run_target = validate_full_sha(
+                    _require_nonempty_string(run["target_sha"], f"{run_label}.target_sha")
+                )
+                run_id = validate_run_id(
+                    _require_nonempty_string(run["run_id"], f"{run_label}.run_id")
+                )
+                identity = (run_target, run_id)
+                if identity in study_run_by_identity:
+                    raise BaselineError("variance_studies contains duplicate run identities")
+                if run_target != study_target:
+                    raise BaselineError(f"{run_label}.target_sha does not match its study")
+                if run["runner_id"] != runner_id:
+                    raise BaselineError(f"{run_label}.runner_id does not match control runner")
+                run_profile = _controlled_contract_exact_keys(
+                    run["control_profile"],
+                    {"profile_id", "version"},
+                    f"{run_label}.control_profile",
+                )
+                if run_profile != study_profile:
+                    raise BaselineError(f"{run_label}.control_profile does not match its study")
+                run_method = _controlled_contract_exact_keys(
+                    run["statistical_method"],
+                    {"method_id", "version"},
+                    f"{run_label}.statistical_method",
+                )
+                if run_method != study_method:
+                    raise BaselineError(f"{run_label}.statistical_method does not match its study")
+                if run["sample_unit"] != CONTROLLED_SAMPLE_UNIT:
+                    raise BaselineError(f"{run_label}.sample_unit is unsupported")
+                if run["producer_set_sha256"] != producer_digest:
+                    raise BaselineError(f"{run_label}.producer_set_sha256 does not match its study")
+                if run["scenario_set_sha256"] != scenario_digest:
+                    raise BaselineError(f"{run_label}.scenario_set_sha256 does not match its study")
+                _controlled_contract_evidence_reference(
+                    run["artifact_evidence_id"],
+                    f"{run_label}.artifact_evidence_id",
+                    evidence_by_id,
+                    "benchmark_artifact",
+                )
+                study_run_by_identity[identity] = (study_id, run)
+            study_by_id[study_id] = study
+
+        lifecycle = _controlled_contract_exact_keys(
+            document["baseline_lifecycle"],
+            {
+                "initial_state",
+                "promotion_rule_evidence_id",
+                "promotion_rule_id",
+                "promotion_path",
+                "selection",
+                "supersession_transition",
+            },
+            "baseline_lifecycle",
+        )
+        promotion_rule_id = _controlled_contract_id(
+            lifecycle["promotion_rule_id"], "baseline_lifecycle.promotion_rule_id"
+        )
+        promotion_rule_evidence_id = _controlled_contract_evidence_reference(
+            lifecycle["promotion_rule_evidence_id"],
+            "baseline_lifecycle.promotion_rule_evidence_id",
+            evidence_by_id,
+            "baseline_promotion_rule",
+        )
+        promotion_path = lifecycle["promotion_path"]
+        if not isinstance(promotion_path, list) or len(promotion_path) != len(
+            CONTROLLED_BASELINE_PROMOTION_PATH
+        ):
+            raise BaselineError(
+                "baseline_lifecycle.promotion_path must contain the complete ordered path"
+            )
+        observed_promotion_path = []
+        for position, value in enumerate(promotion_path):
+            transition = _controlled_contract_exact_keys(
+                value,
+                {"from_state", "to_state"},
+                f"baseline_lifecycle.promotion_path[{position}]",
+            )
+            observed_promotion_path.append(
+                (transition["from_state"], transition["to_state"])
+            )
+        supersession_transition = _controlled_contract_exact_keys(
+            lifecycle["supersession_transition"],
+            {"from_state", "to_state"},
+            "baseline_lifecycle.supersession_transition",
+        )
+        if (
+            lifecycle["initial_state"] != "candidate"
+            or lifecycle["selection"] != "explicit_baseline_id_only"
+            or tuple(observed_promotion_path) != CONTROLLED_BASELINE_PROMOTION_PATH
+            or supersession_transition != {"from_state": "approved", "to_state": "superseded"}
+        ):
+            raise BaselineError("baseline_lifecycle transitions or selection are unsupported")
+
+        authority = _controlled_contract_exact_keys(
+            document["approval_authority"],
+            {"authority_id", "evidence_id", "validation_semantics", "version"},
+            "approval_authority",
+        )
+        authority_id = _controlled_contract_id(
+            authority["authority_id"], "approval_authority.authority_id"
+        )
+        _controlled_contract_id(authority["version"], "approval_authority.version")
+        authority_evidence_id = _controlled_contract_evidence_reference(
+            authority["evidence_id"],
+            "approval_authority.evidence_id",
+            evidence_by_id,
+            "approval_authority",
+        )
+        if authority["validation_semantics"] != CONTROLLED_APPROVAL_VALIDATION_SEMANTICS:
+            raise BaselineError("approval_authority validation semantics are unsupported")
+
+        approval = document["approval"]
+        approval_id: str | None = None
+        approval_evidence_id: str | None = None
+        if approval is not None:
+            approval = _controlled_contract_exact_keys(
+                approval,
+                {
+                    "approval_id",
+                    "approved_utc",
+                    "authority_id",
+                    "evidence_id",
+                    "scope_sha256",
+                },
+                "approval",
+            )
+            approval_id = _controlled_contract_id(approval["approval_id"], "approval.approval_id")
+            if approval["authority_id"] != authority_id:
+                raise BaselineError("approval.authority_id does not match approval_authority")
+            approval_evidence_id = _controlled_contract_evidence_reference(
+                approval["evidence_id"],
+                "approval.evidence_id",
+                evidence_by_id,
+                "approval_record",
+            )
+            approved_utc = _controlled_contract_utc(
+                approval["approved_utc"], "approval.approved_utc"
+            )
+            recorded, retained_until = evidence_times[approval_evidence_id]
+            if not recorded <= approved_utc <= retained_until:
+                raise BaselineError(
+                    "approval.approved_utc must fall within its retained evidence interval"
+                )
+            _controlled_contract_digest(approval["scope_sha256"], "approval.scope_sha256")
+            if authority_evidence_id == approval_evidence_id:
+                raise BaselineError("approval authority and approval record evidence must be distinct")
+
+        baselines = document["baselines"]
+        if not isinstance(baselines, list) or not baselines:
+            raise BaselineError("baselines must be a non-empty list")
+        baseline_by_id: dict[str, dict[str, Any]] = {}
+        baseline_run_identities: set[tuple[str, str]] = set()
+        approval_references = 0
+        for position, value in enumerate(baselines):
+            label = f"baselines[{position}]"
+            baseline_record = _controlled_contract_exact_keys(
+                value,
+                {
+                    "artifact_evidence_id",
+                    "baseline_id",
+                    "promotion_chain",
+                    "run_id",
+                    "state",
+                    "supersession",
+                    "target_sha",
+                },
+                label,
+            )
+            baseline_id = _controlled_contract_id(
+                baseline_record["baseline_id"], f"{label}.baseline_id"
+            )
+            if baseline_id in baseline_by_id:
+                raise BaselineError("baselines contains duplicate baseline IDs")
+            target_sha = validate_full_sha(
+                _require_nonempty_string(baseline_record["target_sha"], f"{label}.target_sha")
+            )
+            run_id = validate_run_id(
+                _require_nonempty_string(baseline_record["run_id"], f"{label}.run_id")
+            )
+            run_identity = (target_sha, run_id)
+            if run_identity in baseline_run_identities:
+                raise BaselineError("baselines contains duplicate run identities")
+            baseline_run_identities.add(run_identity)
+            artifact_evidence_id = _controlled_contract_evidence_reference(
+                baseline_record["artifact_evidence_id"],
+                f"{label}.artifact_evidence_id",
+                evidence_by_id,
+                "benchmark_artifact",
+            )
+            state = _require_nonempty_string(baseline_record["state"], f"{label}.state")
+            promotion_prefix_lengths = {
+                "candidate": 0,
+                "variance_collected": 1,
+                "promotion_pending": 2,
+                "approved": 3,
+                "superseded": 3,
+            }
+            if state not in promotion_prefix_lengths:
+                raise BaselineError(f"{label}.state is unsupported")
+            promotion_chain = baseline_record["promotion_chain"]
+            expected_prefix_length = promotion_prefix_lengths[state]
+            if (
+                not isinstance(promotion_chain, list)
+                or len(promotion_chain) != expected_prefix_length
+            ):
+                raise BaselineError(
+                    f"{label}.promotion_chain must contain the exact ordered prefix for state {state}"
+                )
+            for transition_position, value in enumerate(promotion_chain):
+                transition_label = (
+                    f"{label}.promotion_chain[{transition_position}]"
+                )
+                expected_from, expected_to = CONTROLLED_BASELINE_PROMOTION_PATH[
+                    transition_position
+                ]
+                if transition_position == 0:
+                    transition = _controlled_contract_exact_keys(
+                        value,
+                        {
+                            "evidence_id",
+                            "from_state",
+                            "to_state",
+                            "variance_study_id",
+                        },
+                        transition_label,
+                    )
+                    if (
+                        transition["from_state"] != expected_from
+                        or transition["to_state"] != expected_to
+                    ):
+                        raise BaselineError(
+                            f"{transition_label} does not match the ordered promotion path"
+                        )
+                    variance_study_id = _controlled_contract_id(
+                        transition["variance_study_id"],
+                        f"{transition_label}.variance_study_id",
+                    )
+                    study = study_by_id.get(variance_study_id)
+                    if study is None:
+                        raise BaselineError(
+                            f"{transition_label}.variance_study_id is unresolved"
+                        )
+                    variance_evidence_id = _controlled_contract_evidence_reference(
+                        transition["evidence_id"],
+                        f"{transition_label}.evidence_id",
+                        evidence_by_id,
+                        "variance_analysis",
+                    )
+                    if variance_evidence_id != study["analysis_evidence_id"]:
+                        raise BaselineError(
+                            f"{transition_label}.evidence_id does not match the variance study"
+                        )
+                    study_run = study_run_by_identity.get(run_identity)
+                    if study_run is None or study_run[0] != variance_study_id:
+                        raise BaselineError(
+                            f"{transition_label} study must contain the baseline run"
+                        )
+                    if study_run[1]["artifact_evidence_id"] != artifact_evidence_id:
+                        raise BaselineError(
+                            f"{label}.artifact_evidence_id does not match the variance run"
+                        )
+                elif transition_position == 1:
+                    transition = _controlled_contract_exact_keys(
+                        value,
+                        {
+                            "evidence_id",
+                            "from_state",
+                            "rule_evidence_id",
+                            "rule_id",
+                            "to_state",
+                        },
+                        transition_label,
+                    )
+                    if (
+                        transition["from_state"] != expected_from
+                        or transition["to_state"] != expected_to
+                        or transition["rule_id"] != promotion_rule_id
+                        or transition["rule_evidence_id"]
+                        != promotion_rule_evidence_id
+                    ):
+                        raise BaselineError(
+                            f"{transition_label} does not match the ordered promotion rule"
+                        )
+                    _controlled_contract_evidence_reference(
+                        transition["rule_evidence_id"],
+                        f"{transition_label}.rule_evidence_id",
+                        evidence_by_id,
+                        "baseline_promotion_rule",
+                    )
+                    _controlled_contract_evidence_reference(
+                        transition["evidence_id"],
+                        f"{transition_label}.evidence_id",
+                        evidence_by_id,
+                        "baseline_promotion",
+                    )
+                else:
+                    transition = _controlled_contract_exact_keys(
+                        value,
+                        {"approval_id", "evidence_id", "from_state", "to_state"},
+                        transition_label,
+                    )
+                    if (
+                        transition["from_state"] != expected_from
+                        or transition["to_state"] != expected_to
+                    ):
+                        raise BaselineError(
+                            f"{transition_label} does not match the ordered promotion path"
+                        )
+                    if approval_id is None or approval_evidence_id is None:
+                        raise BaselineError(
+                            f"{transition_label} requires an approval record"
+                        )
+                    if (
+                        transition["approval_id"] != approval_id
+                        or transition["evidence_id"] != approval_evidence_id
+                    ):
+                        raise BaselineError(
+                            f"{transition_label} does not match the approval record"
+                        )
+                    _controlled_contract_evidence_reference(
+                        transition["evidence_id"],
+                        f"{transition_label}.evidence_id",
+                        evidence_by_id,
+                        "approval_record",
+                    )
+                    approval_references += 1
+            supersession = baseline_record["supersession"]
+            if state == "superseded":
+                supersession = _controlled_contract_exact_keys(
+                    supersession,
+                    {
+                        "evidence_id",
+                        "from_state",
+                        "successor_baseline_id",
+                        "to_state",
+                    },
+                    f"{label}.supersession",
+                )
+                if (
+                    supersession["from_state"] != "approved"
+                    or supersession["to_state"] != "superseded"
+                ):
+                    raise BaselineError(
+                        f"{label}.supersession does not follow the explicit transition"
+                    )
+                _controlled_contract_id(
+                    supersession["successor_baseline_id"],
+                    f"{label}.supersession.successor_baseline_id",
+                )
+                _controlled_contract_evidence_reference(
+                    supersession["evidence_id"],
+                    f"{label}.supersession.evidence_id",
+                    evidence_by_id,
+                    "baseline_supersession",
+                )
+            else:
+                if supersession is not None:
+                    raise BaselineError(
+                        f"{label} {state} baseline must not contain supersession"
+                    )
+            baseline_by_id[baseline_id] = baseline_record
+
+        for baseline_id, baseline_record in baseline_by_id.items():
+            if baseline_record["state"] != "superseded":
+                continue
+            successor_id = baseline_record["supersession"]["successor_baseline_id"]
+            successor = baseline_by_id.get(successor_id)
+            if successor is None:
+                raise BaselineError(
+                    f"baseline {baseline_id} successor_baseline_id is unresolved"
+                )
+            if successor_id == baseline_id or successor["state"] != "approved":
+                raise BaselineError(
+                    f"baseline {baseline_id} successor must be a distinct approved baseline"
+                )
+        if approval_id is not None and approval_references == 0:
+            raise BaselineError("approval record is not referenced by an approved baseline")
+
+        budget_rules = document["budget_rules"]
+        if not isinstance(budget_rules, list) or not budget_rules:
+            raise BaselineError("budget_rules must be a non-empty list")
+        budget_ids: set[str] = set()
+        budget_keys: set[tuple[str, str]] = set()
+        for position, value in enumerate(budget_rules):
+            label = f"budget_rules[{position}]"
+            rule = _controlled_contract_exact_keys(
+                value,
+                {
+                    "budget_rule_id",
+                    "direction",
+                    "evidence_id",
+                    "limit",
+                    "metric",
+                    "scenario_identity",
+                    "unit",
+                },
+                label,
+            )
+            budget_id = _controlled_contract_id(
+                rule["budget_rule_id"], f"{label}.budget_rule_id"
+            )
+            if budget_id in budget_ids:
+                raise BaselineError("budget_rules contains duplicate budget rule IDs")
+            budget_ids.add(budget_id)
+            scenario = _controlled_contract_exact_keys(
+                rule["scenario_identity"],
+                {"identity_sha256", "match", "scenario_id"},
+                f"{label}.scenario_identity",
+            )
+            scenario_id = _controlled_contract_id(
+                scenario["scenario_id"], f"{label}.scenario_identity.scenario_id"
+            )
+            identity_digest = _controlled_contract_digest(
+                scenario["identity_sha256"],
+                f"{label}.scenario_identity.identity_sha256",
+            )
+            if scenario["match"] != "exact_complete_identity":
+                raise BaselineError(
+                    f"{label}.scenario_identity must use exact complete identity matching"
+                )
+            pairing = (rule["metric"], rule["unit"], rule["direction"])
+            if pairing not in CONTROLLED_BUDGET_PAIRINGS:
+                raise BaselineError(f"{label} metric, unit, and direction pairing is unsupported")
+            _strict_number(rule["limit"], f"{label}.limit", minimum=0.0)
+            _controlled_contract_evidence_reference(
+                rule["evidence_id"],
+                f"{label}.evidence_id",
+                evidence_by_id,
+                "budget_rule",
+            )
+            budget_key = (identity_digest, pairing[0])
+            if budget_key in budget_keys:
+                raise BaselineError(
+                    "budget_rules contains duplicate scenario and metric identities"
+                )
+            budget_keys.add(budget_key)
+            if not scenario_id:
+                raise BaselineError(f"{label}.scenario_identity.scenario_id is required")
+
+        if approval is not None:
+            expected_scope = _controlled_evidence_contract_approval_scope_sha256(document)
+            if approval["scope_sha256"] != expected_scope:
+                raise BaselineError(
+                    "approval.scope_sha256 does not match canonical contract inputs"
+                )
+        if not _all_numbers_finite(document):
+            raise BaselineError("controlled evidence contract contains an unsupported value")
+    except BaselineError as error:
+        return [str(error)]
+    return []
+
+
+def controlled_evidence_contract_json_text(document: Any) -> str:
+    errors = validate_controlled_evidence_contract(document)
+    if errors:
+        raise BaselineError(
+            "cannot serialize controlled evidence contract: " + "; ".join(errors)
+        )
+    canonical = _controlled_evidence_contract_normalized(document)
+    return json.dumps(
+        canonical, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+    ) + "\n"
+
+
+def controlled_evidence_contract_sha256(document: Any) -> str:
+    return hashlib.sha256(
+        controlled_evidence_contract_json_text(document).encode("utf-8")
+    ).hexdigest()
 
 
 def run_correctness(run: ArtifactRun) -> None:

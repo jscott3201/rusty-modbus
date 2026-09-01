@@ -328,6 +328,81 @@ plus an explicit approval path. This disabled preflight defines none of those
 items and emits no performance pass/fail, improvement, regression, or threshold
 verdict.
 
+### Internal controlled evidence contract (definition only)
+
+`scripts/baseline.py` also owns the separate, provider-neutral
+`benchmark-controlled-evidence-contract` schema version `1`. This is an internal,
+definition-only document contract. There is no checked-in production instance,
+loader, CLI command, evaluator, workflow call edge, benchmark run, baseline
+promotion, budget calculation, or policy activation for it. It is intentionally
+not part of `benchmark-budget-policy` state and is not consumed by
+`load_policy_file` or `controlled-evaluate`.
+
+The only module APIs validate a supplied in-memory document, render canonical
+sorted-key JSON with a trailing newline, and hash those canonical bytes:
+
+- `validate_controlled_evidence_contract(document)`
+- `controlled_evidence_contract_json_text(document)`
+- `controlled_evidence_contract_sha256(document)`
+
+Schema v1 requires exact keys and bounded identities. Set-like evidence
+references, variance studies and runs, baseline records, budget rules, and
+retention records are canonicalized by stable identity; duplicate identities
+are rejected rather than deduplicated. The contract records all of the following
+without choosing repository values:
+
+- a controlled-runner identity, a versioned control-profile identity, and
+  retained evidence binding them together; a runner label or environment record
+  alone is explicitly not proof of control;
+- a named and versioned statistical method plus retained analysis-plan evidence,
+  with a complete independent `bench-full` run as the sample unit, at least two
+  independent runs, exact complete scenario-set alignment, and only effect and
+  uncertainty outputs; v1 has no statistical test, alpha, significance, or
+  verdict field;
+- repeated-variance studies whose unique run identities share one full target
+  SHA, runner/profile/method identity, producer-set digest, and scenario-set
+  digest, with every run and analysis linked to retained evidence;
+- an exact ordered `baseline_lifecycle.promotion_path` of `candidate ->
+  variance_collected -> promotion_pending -> approved`, followed only by
+  `approved -> superseded`, plus an explicit-ID-only promotion rule. Each
+  `baselines[].promotion_chain` must contain exactly the prefix for its declared
+  state: no transitions for `candidate`, the variance transition for
+  `variance_collected`, the variance and rule transitions for
+  `promotion_pending`, and all three transitions for `approved` or `superseded`.
+  The first transition binds the baseline run and retained analysis evidence to
+  its variance study, the second binds the retained promotion and rule evidence,
+  and only the final transition may bind the approval record and retained
+  approval evidence. Superseded records additionally require a distinct approved
+  successor and retained supersession evidence. Omitted, reordered, skipped, or
+  direct candidate-to-approved stages are invalid; there is no implicit `latest`
+  selection;
+- uniquely identified budget definitions bound to the digest of one exact,
+  complete scenario identity, closed metric/unit/direction combinations, and a
+  finite non-boolean non-negative limit; no calculation or performance decision
+  is represented;
+- an explicit versioned approval-authority identity and optional approval
+  record. The approval scope digest covers canonical contract inputs with the
+  approval record replaced by `null`, avoiding self-reference. Structural
+  validation does not authenticate that record or establish owner
+  authorization; and
+- retained evidence records with unique IDs, closed evidence kinds, opaque
+  bounded locators, SHA-256 content identity, and ordered UTC recorded/retained
+  timestamps. Every evidence reference must resolve to the expected kind.
+
+SHA-256 values and locators establish content identity and reference structure
+only. They are not signatures, runner attestation, proof of environment equality,
+approval authority, or approval. Likewise, successful validation does not assert
+performance pass/fail, regression/improvement, statistical significance,
+baseline acceptance, or policy activation. The tests use obviously synthetic,
+non-authoritative values and perform no network, artifact, or benchmark work.
+
+The checked-in disabled policy and the read-only `controlled-evaluate` exit-`3`
+preflight remain unchanged and non-enforcing. Activating any runner/profile,
+method, repeated-variance process, baseline promotion, budget, approval
+authority, retention process, or performance gate requires a separate
+owner-approved PR. This definition-only schema does not advance controlled
+performance acceptance or any ledger evidence status.
+
 The measured report below remains the June 2026 baseline; the harness does not
 replace those numbers until a clean, committed-SHA run is recorded.
 
