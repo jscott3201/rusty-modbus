@@ -4103,6 +4103,8 @@ def validate_controlled_evidence_contract(document: Any) -> list[str]:
         study_run_by_identity: dict[
             tuple[str, str], tuple[str, dict[str, Any]]
         ] = {}
+        variance_artifact_evidence_ids: set[str] = set()
+        variance_artifact_content_digests: set[str] = set()
         for position, value in enumerate(studies):
             label = f"variance_studies[{position}]"
             study = _controlled_contract_exact_keys(
@@ -4207,12 +4209,23 @@ def validate_controlled_evidence_contract(document: Any) -> list[str]:
                     raise BaselineError(f"{run_label}.producer_set_sha256 does not match its study")
                 if run["scenario_set_sha256"] != scenario_digest:
                     raise BaselineError(f"{run_label}.scenario_set_sha256 does not match its study")
-                _controlled_contract_evidence_reference(
+                artifact_evidence_id = _controlled_contract_evidence_reference(
                     run["artifact_evidence_id"],
                     f"{run_label}.artifact_evidence_id",
                     evidence_by_id,
                     "benchmark_artifact",
                 )
+                if artifact_evidence_id in variance_artifact_evidence_ids:
+                    raise BaselineError(
+                        "variance_studies runs must reference distinct benchmark artifact evidence IDs"
+                    )
+                artifact_content_digest = evidence_by_id[artifact_evidence_id]["sha256"]
+                if artifact_content_digest in variance_artifact_content_digests:
+                    raise BaselineError(
+                        "variance_studies runs must reference distinct benchmark artifact content digests"
+                    )
+                variance_artifact_evidence_ids.add(artifact_evidence_id)
+                variance_artifact_content_digests.add(artifact_content_digest)
                 study_run_by_identity[identity] = (study_id, run)
             study_by_id[study_id] = study
 

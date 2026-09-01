@@ -1407,6 +1407,28 @@ class BaselineHarnessTests(unittest.TestCase):
             with self.subTest(case=position):
                 self.assert_controlled_contract_invalid(malformed)
 
+    def test_controlled_evidence_contract_requires_distinct_variance_artifacts(
+        self,
+    ) -> None:
+        reused_evidence = controlled_evidence_contract_fixture()
+        first_run, second_run = reused_evidence["variance_studies"][0]["runs"]
+        second_run["artifact_evidence_id"] = first_run["artifact_evidence_id"]
+        errors = baseline.validate_controlled_evidence_contract(reused_evidence)
+        self.assertIn("distinct benchmark artifact evidence IDs", errors[0])
+        self.assert_controlled_contract_invalid(reused_evidence)
+
+        reused_content = controlled_evidence_contract_fixture()
+        evidence_by_id = {
+            evidence["evidence_id"]: evidence
+            for evidence in reused_content["evidence_retention"]
+        }
+        evidence_by_id["evidence-run-old-b"]["sha256"] = evidence_by_id[
+            "evidence-run-old-a"
+        ]["sha256"]
+        errors = baseline.validate_controlled_evidence_contract(reused_content)
+        self.assertIn("distinct benchmark artifact content digests", errors[0])
+        self.assert_controlled_contract_invalid(reused_content)
+
     def test_controlled_evidence_contract_lifecycle_prefixes_and_approval_are_strict(
         self,
     ) -> None:

@@ -361,7 +361,11 @@ without choosing repository values:
   verdict field;
 - repeated-variance studies whose unique run identities share one full target
   SHA, runner/profile/method identity, producer-set digest, and scenario-set
-  digest, with every run and analysis linked to retained evidence;
+  digest, with every run and analysis linked to retained evidence. Across the
+  complete variance-run graph, every run must reference a distinct retained
+  `benchmark_artifact` evidence ID and a distinct SHA-256 artifact content
+  digest, so aliases or duplicate-content evidence cannot satisfy the minimum
+  independent-run count;
 - an exact ordered `baseline_lifecycle.promotion_path` of `candidate ->
   variance_collected -> promotion_pending -> approved`, followed only by
   `approved -> superseded`, plus an explicit-ID-only promotion rule. Each
