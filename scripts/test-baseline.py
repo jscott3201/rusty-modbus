@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import copy
 import contextlib
+import hashlib
 import io
 import json
 import math
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -3469,6 +3471,513 @@ class BaselineHarnessTests(unittest.TestCase):
         self.assertEqual((full.duration, full.warmup, full.repetitions), (5, 1, 5))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["bench-smoke", "--runner-label", "local", "--duration", "0"])
+
+
+class ArtifactFingerprintTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "repository"
+        self.root.mkdir()
+        self.targets = ("tcp_pool", "tcp_throughput")
+        self.sha = initialize_git_lock_fixture(self.root, benchmark_targets=self.targets)
+        scripts = self.root / "scripts"
+        scripts.mkdir()
+        self.script = scripts / "baseline.py"
+        shutil.copyfile(SCRIPTS / "baseline.py", self.script)
+        self.artifact = self.make_artifact()
+        self.relative = self.artifact.run_dir.relative_to(self.root).as_posix()
+
+    def make_artifact(
+        self, *, run_id: str = "fingerprint-smoke", mode: str = "bench-smoke",
+        dirty: bool = False, failed: bool = False,
+    ) -> baseline.ArtifactRun:
+        run = baseline.ArtifactRun(
+            repo_root=self.root, output_root=self.root / "retained espace-é",
+            target_sha=self.sha, run_id=run_id, mode=mode,
+            runner_label="synthetic-fingerprint-runner", dirty=dirty, allow_dirty=dirty,
+        )
+        run.create()
+        if mode in baseline.BENCHMARK_MODES:
+            populate_benchmark_evidence(
+                run, criterion_targets=self.targets if mode == "bench-full" else ("tcp_throughput",)
+            )
+        else:
+            run.environment = environment_fixture()
+        if failed:
+            run.add_error("synthetic failure")
+        run.finalize()
+        return run
+
+    def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(self.script), *args], cwd=self.root.parent,
+            capture_output=True, text=True, encoding="utf-8", timeout=15,
+        )
+
+    def inventory(self, root: Path | None = None) -> dict:
+        root = root or self.root
+        return {
+            path.relative_to(root).as_posix(): (
+                ("symlink", str(path.readlink())) if path.is_symlink()
+                else ("file", hashlib.sha256(path.read_bytes()).hexdigest()) if path.is_file()
+                else ("directory", None) if path.is_dir()
+                else ("special", None)
+            )
+            for path in root.rglob("*")
+        }
+
+    def test_content_preimage_has_an_independent_known_vector(self) -> None:
+        # SHA256("") and SHA256("abc"); preimage digest cross-checked with openssl.
+        empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        files = [{"sha256": abc, "path": "é.txt"}, {"sha256": empty, "path": "a.txt"}]
+        original = copy.deepcopy(files)
+        content, digest = baseline._artifact_content_fingerprint(files)
+        expected = (
+            '{"content_schema":{"name":"benchmark-artifact-content","version":1},'
+            '"files":[{"path":"a.txt","sha256":"' + empty
+            + '"},{"path":"é.txt","sha256":"' + abc + '"}]}\n'
+        )
+        self.assertEqual(baseline.artifact_fingerprint_json_text(content), expected)
+        self.assertEqual(digest, "d4e09959da94e5d1a8768ad6e8e7c6480c99b74803d8acd518a2a72193825562")
+        self.assertEqual(files, original)
+
+    def test_smoke_fingerprint_covers_actual_files_not_root_checksums(self) -> None:
+        before = self.inventory()
+        result = baseline.fingerprint_artifact(self.root, self.relative)
+        expected_files = [
+            {"path": path.relative_to(self.artifact.run_dir).as_posix(),
+             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in self.artifact.run_dir.rglob("*")
+            if path.is_file() and path != self.artifact.run_dir / "checksums.sha256"
+        ]
+        expected_files.sort(key=lambda item: item["path"].encode("utf-8"))
+        self.assertEqual(result["content"]["files"], expected_files)
+        self.assertEqual(result["source"], {
+            "target_sha": self.sha, "run_id": self.artifact.run_id, "mode": "bench-smoke",
+        })
+        self.assertEqual(self.inventory(), before)
+
+    def test_cli_is_canonical_json_only_repeated_and_cwd_independent(self) -> None:
+        before = self.inventory()
+        first = self.cli("fingerprint-artifact", self.relative)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stderr, "")
+        result = json.loads(first.stdout)
+        self.assertEqual(result["fingerprint_schema"], {
+            "name": "benchmark-artifact-fingerprint", "version": 1,
+        })
+        preimage = json.dumps(
+            result["content"], sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+            allow_nan=False,
+        ) + "\n"
+        self.assertEqual(result["sha256"], hashlib.sha256(preimage.encode("utf-8")).hexdigest())
+        self.assertEqual(first.stdout, json.dumps(
+            result, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+        ) + "\n")
+        self.assertEqual(self.cli("fingerprint-artifact", self.relative).stdout, first.stdout)
+        self.assertEqual(self.inventory(), before)
+
+    def assert_fingerprint_failure(self, relative: str | None = None) -> None:
+        relative = self.relative if relative is None else relative
+        before = self.inventory()
+        with self.assertRaises(baseline.BaselineError):
+            baseline.fingerprint_artifact(self.root, relative)
+        result = self.cli("fingerprint-artifact", relative)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(result.stderr.startswith("baseline: "), result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.inventory(), before)
+
+    def test_content_names_raw_evidence_and_stored_reports_change_identity(self) -> None:
+        run_dir = self.artifact.run_dir
+        original = baseline.fingerprint_artifact(self.root, self.relative)["sha256"]
+        for path in (
+            next(run_dir.glob("commands/*/command.stdout")),
+            run_dir / "benchmark-report-v1.json", run_dir / "benchmark-report-v1.md",
+        ):
+            with self.subTest(file=path.name):
+                raw = path.read_bytes()
+                path.write_bytes(raw + b"\n")
+                baseline.write_checksums(self.root, run_dir)
+                self.assertNotEqual(baseline.fingerprint_artifact(self.root, self.relative)["sha256"], original)
+                path.write_bytes(raw)
+        baseline.write_checksums(self.root, run_dir)
+        self.assertEqual(baseline.fingerprint_artifact(self.root, self.relative)["sha256"], original)
+
+        added = run_dir / "extra log-é.bin"
+        added.write_bytes(b"same raw bytes\x00\xff")
+        baseline.write_checksums(self.root, run_dir)
+        after_add = baseline.fingerprint_artifact(self.root, self.relative)["sha256"]
+        self.assertNotEqual(after_add, original)
+        renamed = added.rename(run_dir / "other log-é.bin")
+        baseline.write_checksums(self.root, run_dir)
+        after_rename = baseline.fingerprint_artifact(self.root, self.relative)["sha256"]
+        self.assertNotEqual(after_rename, after_add)
+        renamed.unlink()
+        baseline.write_checksums(self.root, run_dir)
+        self.assertEqual(baseline.fingerprint_artifact(self.root, self.relative)["sha256"], original)
+        (run_dir / "empty directory").mkdir()
+        self.assertEqual(baseline.fingerprint_artifact(self.root, self.relative)["sha256"], original)
+
+    def test_relocation_and_inventory_order_preserve_byte_identical_payload(self) -> None:
+        result = baseline.fingerprint_artifact(self.root, self.relative)
+        moved = self.root.parent / "different checkout-é"
+        shutil.copytree(self.root, moved)
+        before = self.inventory(moved)
+        self.assertEqual(baseline.fingerprint_artifact(moved, self.relative), result)
+        self.assertEqual(self.inventory(moved), before)
+        content, digest = baseline._artifact_content_fingerprint(list(reversed(result["content"]["files"])))
+        self.assertEqual(content, result["content"])
+        self.assertEqual(digest, result["sha256"])
+        # Unlike the inventory path, embedded absolute metadata bytes are not rewritten.
+        command = next((moved / self.relative).glob("commands/*/command.json"))
+        command.write_text(command.read_text().replace(str(self.root), str(moved)), encoding="utf-8")
+        baseline.write_checksums(moved, moved / self.relative)
+        self.assertNotEqual(baseline.fingerprint_artifact(moved, self.relative)["sha256"], digest)
+
+    def test_root_checksums_are_verified_but_not_hashed(self) -> None:
+        before = baseline.fingerprint_artifact(self.root, self.relative)
+        manifest = self.artifact.run_dir / "checksums.sha256"
+        raw = manifest.read_bytes()
+        manifest.write_bytes(raw.replace(b"\n", b"\r\n"))
+        self.assertEqual(baseline.fingerprint_artifact(self.root, self.relative), before)
+        manifest.write_bytes(raw.rstrip(b"\n"))
+        self.assertEqual(baseline.fingerprint_artifact(self.root, self.relative), before)
+        manifest.write_bytes(b"0" * 64 + raw[64:])
+        self.assert_fingerprint_failure()
+
+    def test_unsafe_checksum_paths_and_inventories_fail_before_legacy_reads(self) -> None:
+        manifest = self.artifact.run_dir / "checksums.sha256"
+        raw = manifest.read_bytes()
+        lines = raw.decode("utf-8").splitlines()
+        digest, path = lines[0].split("  ", 1)
+        aliases = (
+            str(self.root / path), "../" + path, "./" + path,
+            path.replace("/", "//", 1), path.replace("/", "/./", 1),
+            path.replace("/", "/../", 1), path.replace("/", "\\", 1),
+            "C:/outside.json", "outside.json", self.relative + "/checksums.sha256",
+            self.relative + "/absent.json",
+        )
+        cases = [b"\xff", b"not a checksum\n", b"\n", b"", raw + (lines[0] + "\n").encode()]
+        cases += [("\n".join(reversed(lines)) + "\n").encode(), ("\n".join(lines[1:]) + "\n").encode()]
+        cases += [(digest + "  " + alias + "\n" + "\n".join(lines[1:]) + "\n").encode() for alias in aliases]
+        for position, invalid in enumerate(cases):
+            with self.subTest(case=position):
+                manifest.write_bytes(invalid)
+                with mock.patch.object(
+                    baseline, "build_benchmark_report", side_effect=AssertionError("unsafe preflight")
+                ), mock.patch.object(baseline, "_sha256", side_effect=AssertionError("unsafe hash")):
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.fingerprint_artifact(self.root, self.relative)
+                self.assert_fingerprint_failure()
+
+    def test_missing_unlisted_and_nested_checksum_files_are_not_ignored(self) -> None:
+        run_dir = self.artifact.run_dir
+        extra = run_dir / "unlisted.bin"
+        extra.write_bytes(b"not listed")
+        self.assert_fingerprint_failure()
+        extra.unlink()
+        missing = run_dir / "summary.csv"
+        raw = missing.read_bytes()
+        missing.unlink()
+        self.assert_fingerprint_failure()
+        missing.write_bytes(raw)
+        nested = run_dir / "commands" / "checksums.sha256"
+        nested.write_bytes(b"otherwise silently omitted by the legacy writer")
+        baseline.write_checksums(self.root, run_dir)
+        with mock.patch.object(baseline, "build_benchmark_report", side_effect=AssertionError("nested")):
+            with self.assertRaisesRegex(baseline.BaselineError, "nested"):
+                baseline.fingerprint_artifact(self.root, self.relative)
+        self.assert_fingerprint_failure()
+
+    def test_strict_directory_input_and_symlinks_are_rejected(self) -> None:
+        for relative in ("", ".", "..", str(self.artifact.run_dir), "C:/artifact", "missing",
+                         "./" + self.relative, self.relative + "/", self.relative.replace("/", "//", 1),
+                         self.relative.replace("/", "\\", 1), self.relative + "/summary.json"):
+            with self.subTest(path=relative):
+                self.assert_fingerprint_failure(relative)
+        with self.assertRaises(baseline.BaselineError):
+            baseline.fingerprint_artifact(self.root, "bad\x00path")
+        links = [
+            (self.root / "artifact-link", self.artifact.run_dir, "artifact-link"),
+            (self.root / "ancestor-link", self.artifact.run_dir.parent,
+             "ancestor-link/" + self.artifact.run_id),
+            (self.artifact.run_dir / "linked-directory", self.root / "scripts", self.relative),
+            (self.artifact.run_dir / "dangling", self.root / "absent", self.relative),
+            (self.artifact.run_dir / "linked-file", self.script, self.relative),
+        ]
+        for link, target, relative in links:
+            with self.subTest(link=link.name):
+                try:
+                    link.symlink_to(target, target_is_directory=target.is_dir())
+                except (OSError, NotImplementedError) as error:
+                    self.skipTest(f"symlinks unavailable: {error}")
+                with mock.patch.object(Path, "open", side_effect=AssertionError("symlink read")):
+                    with self.assertRaises(baseline.BaselineError):
+                        baseline.fingerprint_artifact(self.root, relative)
+                self.assert_fingerprint_failure(relative)
+                link.unlink()
+        manifest = self.artifact.run_dir / "checksums.sha256"
+        manifest.unlink()
+        manifest.symlink_to(self.script)
+        self.assert_fingerprint_failure()
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO creation unavailable")
+    def test_fifo_payload_and_inventory_are_rejected_without_open(self) -> None:
+        for name in ("retained.fifo", "checksums.sha256"):
+            path = self.artifact.run_dir / name
+            if path.exists():
+                path.unlink()
+            os.mkfifo(path)
+            with mock.patch.object(Path, "open", side_effect=AssertionError("FIFO open")):
+                with self.assertRaises(baseline.BaselineError):
+                    baseline.fingerprint_artifact(self.root, self.relative)
+            self.assert_fingerprint_failure()
+            path.unlink()
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix sockets unavailable")
+    def test_socket_payload_is_rejected_without_open(self) -> None:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as retained:
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(self.artifact.run_dir)
+                retained.bind("retained.socket")  # Avoid platform sockaddr path-length limits.
+            finally:
+                os.chdir(previous_cwd)
+            with mock.patch.object(Path, "open", side_effect=AssertionError("socket open")):
+                with self.assertRaises(baseline.BaselineError):
+                    baseline.fingerprint_artifact(self.root, self.relative)
+            self.assert_fingerprint_failure()
+
+    def test_full_and_legacy_reportless_artifacts_succeed(self) -> None:
+        full = self.make_artifact(run_id="fingerprint-full", mode="bench-full")
+        relative = full.run_dir.relative_to(self.root).as_posix()
+        result = baseline.fingerprint_artifact(self.root, relative)
+        self.assertEqual(result["source"]["mode"], "bench-full")
+        for name in ("benchmark-report-v1.json", "benchmark-report-v1.md"):
+            (full.run_dir / name).unlink()
+        baseline.write_checksums(self.root, full.run_dir)
+        reportless = baseline.fingerprint_artifact(self.root, relative)
+        self.assertNotEqual(reportless["sha256"], result["sha256"])
+        self.assertEqual(reportless["source"], result["source"])
+
+    def test_failed_dirty_correctness_and_partial_artifacts_are_rejected(self) -> None:
+        for run_id, mode, dirty, failed in (
+            ("failed", "bench-smoke", False, True), ("dirty", "bench-smoke", True, False),
+            ("correctness", "correctness", False, False),
+        ):
+            with self.subTest(case=run_id):
+                run = self.make_artifact(run_id=run_id, mode=mode, dirty=dirty, failed=failed)
+                self.assert_fingerprint_failure(run.run_dir.relative_to(self.root).as_posix())
+        summary_path = self.artifact.run_dir / "summary.json"
+        summary = json.loads(summary_path.read_text())
+        summary["stress_samples"] = []
+        summary["stress_aggregates"] = []
+        baseline.write_json(summary_path, summary)
+        baseline.write_checksums(self.root, self.artifact.run_dir)
+        self.assertEqual(baseline.validate_artifact(self.root, self.artifact.run_dir), [])
+        self.assert_fingerprint_failure()  # The copied complete report must not mask this.
+
+    def test_symmetric_missing_full_target_and_missing_scenario_fail_closed(self) -> None:
+        full = self.make_artifact(run_id="incomplete-full", mode="bench-full")
+        relative = full.run_dir.relative_to(self.root).as_posix()
+        summary_path = full.run_dir / "summary.json"
+        original = json.loads(summary_path.read_text())
+        summary = copy.deepcopy(original)
+        summary["criterion_results"] = summary["criterion_results"][:1]
+        baseline.write_json(summary_path, summary)
+        baseline.write_json(full.run_dir / "criterion/parsed-estimates.json", summary["criterion_results"])
+        baseline.write_checksums(self.root, full.run_dir)
+        self.assertEqual(baseline.validate_artifact(self.root, full.run_dir), [])
+        self.assert_fingerprint_failure(relative)
+        summary = copy.deepcopy(original)
+        first = summary["stress_samples"][0]
+        summary["stress_samples"] = [item for item in summary["stress_samples"] if (
+            item["operation"], item["in_flight"]
+        ) != (first["operation"], first["in_flight"])]
+        summary["stress_aggregates"] = [item for item in summary["stress_aggregates"] if (
+            item["operation"], item["in_flight"]
+        ) != (first["operation"], first["in_flight"])]
+        baseline.write_json(summary_path, summary)
+        baseline.write_json(full.run_dir / "criterion/parsed-estimates.json", original["criterion_results"])
+        baseline.write_checksums(self.root, full.run_dir)
+        self.assert_fingerprint_failure(relative)
+
+    def test_missing_local_target_objects_fail_without_fetch(self) -> None:
+        (self.root / ".git/objects" / self.sha[:2] / self.sha[2:]).unlink()
+        self.assert_fingerprint_failure()
+
+    def test_report_references_cannot_open_files_outside_the_named_artifact(self) -> None:
+        run_dir = self.artifact.run_dir
+        command = next(run_dir.glob("commands/*/command.json"))
+        original_command = json.loads(command.read_text())
+        summary_path = run_dir / "summary.json"
+        original_summary = json.loads(summary_path.read_text())
+        actual_open = Path.open
+
+        def artifact_only_open(path, mode="r", *args, **kwargs):
+            self.assertTrue(path.is_relative_to(run_dir), f"escaped read: {path}")
+            return actual_open(path, mode, *args, **kwargs)
+
+        for reference in (str(self.script), "scripts/baseline.py", self.relative + "/../../outside"):
+            for field in ("stdout", "criterion"):
+                with self.subTest(field=field, reference=reference):
+                    changed_command = copy.deepcopy(original_command)
+                    summary = copy.deepcopy(original_summary)
+                    if field == "stdout":
+                        changed_command["stdout_path"] = reference
+                    else:
+                        summary["criterion_results"][0]["source"] = reference
+                    baseline.write_json(command, changed_command)
+                    baseline.write_json(summary_path, summary)
+                    baseline.write_json(run_dir / "criterion/parsed-estimates.json", summary["criterion_results"])
+                    baseline.write_checksums(self.root, run_dir)
+                    with mock.patch.object(Path, "open", artifact_only_open):
+                        with self.assertRaises(baseline.BaselineError):
+                            baseline.fingerprint_artifact(self.root, self.relative)
+                    self.assert_fingerprint_failure()
+
+    def test_malformed_source_input_and_io_errors_have_no_traceback(self) -> None:
+        path = self.artifact.run_dir / "summary.json"
+        for raw in (b"\xff", b"null", b'{"x":' * 1500 + b"0" + b"}" * 1500,
+                    b'{"schema_version":' + b"9" * 5000 + b"}"):
+            with self.subTest(raw=raw[:20]):
+                path.write_bytes(raw)
+                baseline.write_checksums(self.root, self.artifact.run_dir)
+                self.assert_fingerprint_failure()
+        for error in (PermissionError("denied"), FileNotFoundError("removed")):
+            with mock.patch.object(Path, "open", side_effect=error):
+                with self.assertRaises(baseline.BaselineError):
+                    baseline.fingerprint_artifact(self.root, self.relative)
+
+    def test_manifest_and_entry_limits_are_bounded_without_limiting_raw_logs(self) -> None:
+        manifest = self.artifact.run_dir / "checksums.sha256"
+        original = manifest.read_bytes()
+        self.assertEqual(baseline.ARTIFACT_FINGERPRINT_MAX_CHECKSUM_BYTES, 4 * 1024 * 1024)
+        self.assertEqual(baseline.ARTIFACT_FINGERPRINT_MAX_ENTRIES, 10_000)
+        source = mock.MagicMock()
+        source.__enter__.return_value.read.return_value = original
+        with mock.patch.object(Path, "open", return_value=source):
+            baseline._fingerprint_artifact_preflight(self.root, self.artifact.run_dir)
+        source.__enter__.return_value.read.assert_called_once_with(4 * 1024 * 1024 + 1)
+        with mock.patch.object(baseline, "ARTIFACT_FINGERPRINT_MAX_CHECKSUM_BYTES", len(original)):
+            baseline.fingerprint_artifact(self.root, self.relative)
+        with mock.patch.object(baseline, "ARTIFACT_FINGERPRINT_MAX_CHECKSUM_BYTES", len(original) - 1):
+            with self.assertRaisesRegex(baseline.BaselineError, "4 MiB"):
+                baseline.fingerprint_artifact(self.root, self.relative)
+        manifest.write_bytes(b" " * (4 * 1024 * 1024 + 1))
+        with mock.patch.object(baseline, "build_benchmark_report", side_effect=AssertionError("oversize")):
+            with self.assertRaises(baseline.BaselineError):
+                baseline.fingerprint_artifact(self.root, self.relative)
+        self.assert_fingerprint_failure()
+        manifest.write_bytes(original)
+        count = len(list(self.artifact.run_dir.rglob("*")))
+        with mock.patch.object(baseline, "ARTIFACT_FINGERPRINT_MAX_ENTRIES", count):
+            baseline.fingerprint_artifact(self.root, self.relative)
+        with mock.patch.object(baseline, "ARTIFACT_FINGERPRINT_MAX_ENTRIES", count - 1):
+            with self.assertRaisesRegex(baseline.BaselineError, "entry limit"):
+                baseline.fingerprint_artifact(self.root, self.relative)
+        log = self.artifact.run_dir / "large.raw.log"
+        with log.open("wb") as target:
+            for _ in range(5):
+                target.write(b"x" * (1024 * 1024))
+        baseline.write_checksums(self.root, self.artifact.run_dir)
+        actual_open = Path.open
+
+        def streaming_open(path, mode="r", *args, **kwargs):
+            source = actual_open(path, mode, *args, **kwargs)
+            if path == log:
+                proxy = mock.MagicMock(wraps=source)
+                proxy.__enter__.return_value = proxy
+                proxy.__exit__.side_effect = lambda *unused: source.close()
+
+                def bounded_read(size=-1):
+                    self.assertGreater(size, 0)
+                    self.assertLessEqual(size, 1024 * 1024)
+                    return source.read(size)
+
+                proxy.read.side_effect = bounded_read
+                return proxy
+            return source
+
+        with mock.patch.object(Path, "open", streaming_open):
+            result = baseline.fingerprint_artifact(self.root, self.relative)
+        self.assertIn("large.raw.log", [item["path"] for item in result["content"]["files"]])
+
+    def test_only_read_only_local_git_and_artifact_reads_are_used(self) -> None:
+        full = self.make_artifact(run_id="local-only-full", mode="bench-full")
+        relative = full.run_dir.relative_to(self.root).as_posix()
+        actual_run = subprocess.run
+        calls = []
+
+        def local_git(argv, **kwargs):
+            self.assertEqual(tuple(argv[:5]), ("git", "--no-lazy-fetch", "--no-replace-objects", "cat-file", "blob"))
+            self.assertIn(argv[5], (f"{self.sha}:Cargo.lock", f"{self.sha}:benchmarks/Cargo.toml"))
+            calls.append(argv[5])
+            return actual_run(argv, **kwargs)
+
+        actual_open = Path.open
+
+        def read_only_open(path, mode="r", *args, **kwargs):
+            self.assertIn(mode, ("r", "rb"))
+            self.assertTrue(path.is_relative_to(full.run_dir), f"escaped read: {path}")
+            return actual_open(path, mode, *args, **kwargs)
+
+        before = self.inventory()
+        output = io.BytesIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        stderr = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for name in ("bootstrap_repository", "run_mode", "run_benchmarks", "collect_environment",
+                         "write_json", "write_checksums", "load_policy_file", "load_controlled_evidence_contract_file"):
+                stack.enter_context(mock.patch.object(baseline, name, side_effect=AssertionError(name)))
+            for name in ("socket.create_connection", "urllib.request.urlopen"):
+                stack.enter_context(mock.patch(name, side_effect=AssertionError(name)))
+            stack.enter_context(mock.patch.object(baseline.subprocess, "run", local_git))
+            stack.enter_context(mock.patch.object(Path, "open", read_only_open))
+            stack.enter_context(mock.patch.object(baseline, "__file__", str(self.script)))
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            stack.enter_context(contextlib.redirect_stderr(stderr))
+            result = baseline.fingerprint_artifact(self.root, relative)
+            self.assertEqual(baseline.main(["fingerprint-artifact", relative]), 0)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(json.loads(output.getvalue()), result)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(result["qualification"], baseline.ARTIFACT_FINGERPRINT_QUALIFICATION)
+        self.assertEqual(self.inventory(), before)
+
+    def test_cli_help_and_usage_exit_contract(self) -> None:
+        before = self.inventory()
+        for args in (("--help",), ("fingerprint-artifact", "--help")):
+            result = self.cli(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("fingerprint-artifact", result.stdout)
+            self.assertEqual(result.stderr, "")
+        for args in (("fingerprint-artifact",), ("fingerprint-artifact", self.relative, "--latest"),
+                     ("fingerprint-artifact", self.relative, "extra")):
+            result = self.cli(*args)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("usage:", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.inventory(), before)
+
+    def test_cli_emits_utf8_bytes_even_with_an_ascii_stdout_locale(self) -> None:
+        (self.artifact.run_dir / "évidence.txt").write_bytes(b"retained")
+        baseline.write_checksums(self.root, self.artifact.run_dir)
+        result = subprocess.run(
+            [sys.executable, str(self.script), "fingerprint-artifact", self.relative],
+            cwd=self.root.parent, capture_output=True, timeout=15,
+            env={**os.environ, "PYTHONIOENCODING": "ascii"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b"")
+        self.assertIn('évidence.txt'.encode("utf-8"), result.stdout)
+        self.assertNotIn(b"\r\n", result.stdout)
+        self.assertEqual(json.loads(result.stdout)["source"]["run_id"], self.artifact.run_id)
 
 
 if __name__ == "__main__":

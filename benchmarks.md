@@ -198,6 +198,119 @@ accepted baseline, host-isolation policy, or cross-run comparison. The report
 renderer does not compute deltas. Checksums remain an integrity inventory, not a
 signature or attestation.
 
+### Whole-artifact content fingerprint
+
+The read-only fingerprint command validates one complete retained `bench-smoke`
+or `bench-full` artifact, rebuilds its report from source evidence, and emits a
+single versioned JSON document. Replace the quoted placeholder path with an
+existing retained run; this command does not collect benchmarks:
+
+```bash
+python3 scripts/baseline.py fingerprint-artifact --help
+python3 scripts/baseline.py fingerprint-artifact 'bench-output/baseline-v1/<SHA>/<run-id>'
+```
+
+The directory must be an explicit repository-relative path, anchored to the
+repository containing the script rather than the caller's current directory.
+Spaces and Unicode are supported. Absolute paths, empty/dot/traversal components,
+backslashes, and symlinks in the path or anywhere in the artifact are rejected.
+Every descendant must be a regular file or directory: FIFOs, sockets, devices,
+and other special entries are rejected **before** checksum/report readers open
+payloads. The root `checksums.sha256` must be a regular file. Manifest paths must
+be strict repository-relative paths naming exactly the retained files inside
+that artifact, without aliases, duplicates, missing files, or unlisted files.
+Digests must be lowercase SHA-256 and paths must be UTF-8 bytewise sorted. LF or
+CRLF checksum lines and an optional final line ending are accepted; blank or
+malformed lines are not. Nested files named `checksums.sha256` are rejected,
+not silently omitted by the legacy checksum walker.
+
+The new preflight bounds the checksum inventory to **4 MiB (4,194,304 bytes)**,
+reading at most that limit plus one byte, and the artifact to **10,000 descendant
+entries**, including files and directories. There is no small total-payload-byte
+limit: fingerprint file hashing streams in 1 MiB chunks, including large raw
+logs. Existing report parsing retains its established behavior and resource
+characteristics; these guards do not replace its parsers.
+
+Semantic validation uses `build_benchmark_report`, not a copied
+`benchmark-report-v1.json`. Failed, dirty, correctness-only, partial, unsupported,
+or scenario/producer-incomplete artifacts fail closed. Supported older v1
+artifacts without stored reports remain supported. Rebuilding requires local
+target-SHA `Cargo.lock` Git objects and, for `bench-full`, the target-SHA
+`benchmarks/Cargo.toml`. The command permits only read-only local object queries,
+using `git --no-lazy-fetch --no-replace-objects cat-file blob ...`: unavailable
+objects or unsupported Git flags cause failure, never a fetch. It does not
+bootstrap a run, invoke Cargo, run benchmarks, or contact a network.
+
+#### Fingerprint v1 bytes and output
+
+The output has exactly these fields:
+
+- `fingerprint_schema`: `{"name":"benchmark-artifact-fingerprint","version":1}`.
+- `content`: the exact digest preimage object, with
+  `content_schema = {"name":"benchmark-artifact-content","version":1}` and
+  `files = [{"path": <run-relative POSIX path>, "sha256": <raw-file SHA-256>}, ...]`.
+- `sha256`: lowercase SHA-256 of the canonical UTF-8 encoding of `content`.
+- `source`: exactly `mode`, `run_id`, and `target_sha`, taken from the rebuilt
+  validated report, not the current checkout's HEAD.
+- `qualification`: the fixed string
+  `integrity_only_not_authentication_attestation_approval_baseline_acceptance_independent_run_proof_performance_verdict_or_policy_activation`.
+
+The inventory includes **all retained regular files except the root
+`checksums.sha256` itself**, including raw evidence, metadata, summaries, and any
+stored derived reports. Each file's bytes are hashed verbatim. Inventory paths
+are relative to the named run directory, with `/` separators, no absolute root,
+and no Unicode normalization. Entries are sorted by the UTF-8 bytes of `path`.
+Empty directories, permissions, and filesystem timestamps are not content.
+The validated checksum file is excluded to avoid self-reference; rewriting its
+accepted line endings alone does not change identity.
+
+Both the preimage and CLI output use sorted object keys, compact JSON separators
+`,` and `:`, no insignificant whitespace or BOM, unescaped non-ASCII Unicode,
+standard JSON string escaping (including quotes and control characters), no
+NaN/Infinity, and exactly one final LF byte. This is precisely Python's
+`json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+allow_nan=False) + "\n"`, encoded as UTF-8. Output encoding is independent of the
+terminal's locale. Only the `content` object is hashed, not the result containing
+the digest. Its schema name/version domain-separate this identity from a raw
+file hash or a report-only hash.
+
+For an encoding test vector only (not a complete benchmark artifact), `a.txt`
+containing zero bytes and `é.txt` containing the three bytes `abc` give this exact
+preimage line, followed by LF:
+
+```json
+{"content_schema":{"name":"benchmark-artifact-content","version":1},"files":[{"path":"a.txt","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},{"path":"é.txt","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}
+```
+
+Its SHA-256 is `d4e09959da94e5d1a8768ad6e8e7c6480c99b74803d8acd518a2a72193825562`.
+An independent consumer can verify each file digest, construct the sorted
+preimage, and reproduce the outer digest without the baseline script.
+
+Exit **0** emits one canonical JSON document on stdout and nothing on stderr.
+Input/validation failure exits **1** with a stderr diagnostic only, no partial
+JSON, and no traceback for handled input errors. Argparse usage errors exit
+**2**; help exits **0**. Module callers can use
+`fingerprint_artifact(repo_root, run_dir)` and serialize its returned document
+with `artifact_fingerprint_json_text`; input failures raise `BaselineError`.
+
+The artifact must remain unchanged throughout validation and hashing. These are
+static checks, not an atomic snapshot or a race-proof hostile-filesystem
+sandbox. Copying the same files with the same run-relative names and bytes to a
+different checkout preserves content identity, provided local target objects
+are available. Rewriting embedded checkout locations, timestamps, or other
+metadata changes those bytes and therefore the digest; relocation with such
+rewrites is **not** promised to preserve identity.
+
+This is integrity-only content identity, not authentication, runner attestation,
+approval, baseline acceptance, independent-run proof, statistical significance,
+or a performance verdict. It reads no controlled contract, resolves no opaque
+locator, writes no files, chooses no `latest`, and activates no policy. In
+particular, it does **not** retroactively define or verify
+`evidence_retention[].sha256` in controlled-evidence schema v1. The owner's
+whole-artifact decision and rejected report-only alternative are recorded in
+[ADR 0005](docs/adr/0005-whole-artifact-fingerprint.md). This slice does not
+complete the broader controlled-performance acceptance work.
+
 ### Observed benchmark report deltas
 
 The independent `benchmark-comparison` schema version `1` consumes two complete,
