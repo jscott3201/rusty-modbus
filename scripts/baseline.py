@@ -76,6 +76,21 @@ CONTROLLED_SET_DIGEST_FIELDS = ("producer_set_sha256", "scenario_set_sha256")
 CONTROLLED_IDENTITY_NOT_VERIFIED = tuple(
     field for field in CONTROLLED_ARTIFACT_NOT_VERIFIED if field not in CONTROLLED_SET_DIGEST_FIELDS
 )
+SCENARIO_IDENTITY_SCHEMA_NAME = "benchmark-scenario-identity"
+ARTIFACT_SCENARIOS_SCHEMA_NAME = "benchmark-artifact-scenarios"
+CONTROLLED_BUDGET_BINDINGS_MAX_RULES = 128
+CONTROLLED_BUDGET_BINDINGS_MAX_STUDIES = 128
+CONTROLLED_SCOPED_BUDGET_NOT_VERIFIED = tuple(
+    field for field in CONTROLLED_IDENTITY_NOT_VERIFIED if field != "budget_scenario_identity_sha256"
+)
+# Explicit budget/report unit spelling correspondence; no numerical conversion.
+SCENARIO_METRIC_CORRESPONDENCE = {
+    "tcp_stress": (
+        ("p99_latency", "ms", "maximum", "milliseconds"),
+        ("throughput", "operations_per_second", "minimum", "operations_per_second"),
+    ),
+    "criterion_estimate": (("mean_estimate", "ns", "maximum", "nanoseconds"),),
+}
 CONTROLLED_NOT_ELIGIBLE_EXIT = 3
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
@@ -4001,6 +4016,15 @@ def producer_set_identity(producers: Any) -> dict[str, Any]:
         raise BaselineError("cannot encode producer-set identity") from error
 
 
+def _canonical_scenario_projection(projection: Any) -> tuple[dict[str, Any], tuple[str | int, ...]]:
+    projection = _controlled_contract_exact_keys(projection, {"kind", "producer_id", "identity"}, "scenario projection")
+    identity = projection["identity"]
+    if isinstance(identity, dict) and any(not isinstance(field, str) for field in identity):
+        raise BaselineError("scenario identity keys must be strings")
+    key = _comparison_identity_key(projection["kind"], projection["producer_id"], identity, "scenario projection")
+    return {"kind": projection["kind"], "producer_id": projection["producer_id"], "identity": dict(identity)}, key
+
+
 def scenario_set_identity(projections: Any) -> dict[str, Any]:
     """Encode exact identity projections using the comparison key's type/duplicate rules."""
     if not isinstance(projections, list) or not projections:
@@ -4009,16 +4033,11 @@ def scenario_set_identity(projections: Any) -> dict[str, Any]:
     seen: set[tuple[str | int, ...]] = set()
     try:
         for projection in projections:
-            projection = _controlled_contract_exact_keys(projection, {"kind", "producer_id", "identity"}, "scenario projection")
-            identity = projection["identity"]
-            if isinstance(identity, dict) and any(not isinstance(field, str) for field in identity):
-                raise BaselineError("scenario identity keys must be strings")
-            key = _comparison_identity_key(projection["kind"], projection["producer_id"], projection["identity"], "scenario projection")
+            canonical, key = _canonical_scenario_projection(projection)
             if key in seen:
                 raise BaselineError("duplicate complete scenario identity")
             seen.add(key)
-            normalized.append({"kind": projection["kind"], "producer_id": projection["producer_id"],
-                               "identity": dict(projection["identity"])})
+            normalized.append(canonical)
         return _set_identity({
             "set_schema": {"name": SCENARIO_SET_SCHEMA_NAME, "version": 1},
             "scenarios": sorted(normalized, key=lambda item: artifact_fingerprint_json_text(item).encode("utf-8")),
@@ -4054,6 +4073,74 @@ def artifact_identities(repo_root: Path, value: str) -> dict[str, Any]:
         "qualification": SET_IDENTITY_QUALIFICATION,
         "performance_enforcement": {"state": "not_eligible", "reason": "artifact_identity_derivation_only"},
         "not_verified": list(CONTROLLED_IDENTITY_NOT_VERIFIED),
+    }
+
+
+def scenario_identity(projection: Any) -> dict[str, Any]:
+    """Encode one complete workload identity, not a label, metric or singleton set."""
+    try:
+        canonical, _ = _canonical_scenario_projection(projection)
+        return _set_identity({
+            "identity_schema": {"name": SCENARIO_IDENTITY_SCHEMA_NAME, "version": 1},
+            "scenario": canonical,
+        })
+    except (ValueError, OverflowError, RecursionError) as error:
+        raise BaselineError("cannot encode individual scenario identity") from error
+
+
+def _individual_scenario_index(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index a validated report once; retain identity and metric spellings, not values."""
+    index = {}
+    for scenario in report["scenarios"]:
+        entry = scenario_identity({field: scenario[field] for field in ("kind", "producer_id", "identity")})
+        digest = entry["sha256"]
+        if digest in index:
+            raise BaselineError("duplicate or ambiguous individual scenario identity")
+        correspondence = SCENARIO_METRIC_CORRESPONDENCE[scenario["kind"]]
+        metrics = _controlled_contract_exact_keys(
+            scenario.get("metrics"), {metric[0] for metric in correspondence}, "scenario metrics"
+        )
+        descriptors = []
+        for metric, unit, direction, report_unit in correspondence:
+            record = metrics[metric]
+            if not isinstance(record, dict) or record.get("unit") != report_unit:
+                raise BaselineError("scenario metric is missing or has an unsupported report unit")
+            descriptors.append({"metric": metric, "unit": unit, "direction": direction, "report_unit": report_unit})
+        entry["metrics"] = descriptors
+        index[digest] = entry
+    return index
+
+
+def _match_budget_scenario(
+    index: dict[str, dict[str, Any]], rule: dict[str, Any], identity_schema: dict[str, Any]
+) -> None:
+    entry = index.get(rule["scenario_identity"]["identity_sha256"])
+    if entry is None:
+        raise BaselineError("budget scenario identity is absent from a selected study run")
+    if entry["preimage"]["identity_schema"] != identity_schema:
+        raise BaselineError("budget scenario identity scheme mismatch")
+    if not any(all(descriptor[field] == rule[field] for field in ("metric", "unit", "direction"))
+               for descriptor in entry["metrics"]):
+        raise BaselineError("budget metric/unit/direction does not match the exact scenario")
+
+
+def artifact_scenarios(repo_root: Path, value: str) -> dict[str, Any]:
+    """Derive scenario targets and metric descriptors from retained source evidence."""
+    try:
+        fingerprint, report = _load_benchmark_artifact_evidence(repo_root, value)
+        index = _individual_scenario_index(report)
+    except BaselineError as error:
+        raise BaselineError("artifact scenario derivation failed") from error
+    return {
+        "artifact_scenarios_schema": {"name": ARTIFACT_SCENARIOS_SCHEMA_NAME, "version": 1},
+        "scenario_identity_schema": {"name": SCENARIO_IDENTITY_SCHEMA_NAME, "version": 1},
+        "source": fingerprint["source"],
+        "scenarios": [index[digest] for digest in sorted(index)],
+        "verification_scope": "individual_scenario_identity_and_supported_metric_descriptors_only",
+        "qualification": SET_IDENTITY_QUALIFICATION,
+        "budget_evaluation": {"state": "not_evaluated", "reason": "scenario_metric_matching_only"},
+        "performance_enforcement": {"state": "not_eligible", "reason": "artifact_scenario_derivation_only"},
+        "not_verified": [field for field in CONTROLLED_ARTIFACT_NOT_VERIFIED if field != "budget_scenario_identity_sha256"],
     }
 
 
@@ -4972,6 +5059,25 @@ def load_controlled_evidence_contract_file(repo_root: Path, value: str) -> dict[
         raise BaselineError("controlled evidence contract validation failed") from error
 
 
+def _canonical_budget_bindings(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= CONTROLLED_BUDGET_BINDINGS_MAX_RULES:
+        raise BaselineError("budget bindings require 1-128 explicit scopes")
+    normalized = []
+    seen: set[str] = set()
+    for binding in value:
+        binding = _controlled_contract_exact_keys(binding, {"budget_rule_id", "study_ids"}, "budget binding")
+        budget_id = _controlled_contract_id(binding["budget_rule_id"], "budget binding ID")
+        studies = binding["study_ids"]
+        if not isinstance(studies, list) or not 1 <= len(studies) <= CONTROLLED_BUDGET_BINDINGS_MAX_STUDIES:
+            raise BaselineError("budget binding requires 1-128 explicit study IDs")
+        study_ids = [_controlled_contract_id(study, "budget binding study ID") for study in studies]
+        if budget_id in seen or len(set(study_ids)) != len(study_ids):
+            raise BaselineError("duplicate budget binding or study ID")
+        seen.add(budget_id)
+        normalized.append({"budget_rule_id": budget_id, "study_ids": sorted(study_ids)})
+    return sorted(normalized, key=lambda binding: binding["budget_rule_id"])
+
+
 def canonical_controlled_artifact_bindings(document: Any) -> dict[str, Any]:
     """Validate manifest syntax only; pin, coverage and local files need the verifier."""
     try:
@@ -4979,13 +5085,16 @@ def canonical_controlled_artifact_bindings(document: Any) -> dict[str, Any]:
             raise BaselineError("binding manifest must be an object")
         schema = _controlled_contract_exact_keys(document.get("binding_schema"), {"name", "version"}, "binding_schema")
         version = _strict_int(schema["version"], "binding_schema.version", minimum=1)
-        if schema["name"] != CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME or version not in (1, 2):
+        if schema["name"] != CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME or version not in (1, 2, 3):
             raise BaselineError("unsupported binding schema")
         keys = {"binding_schema", "contract_sha256", "artifact_content_schema", "artifacts"}
         schemes = [("artifact_content_schema", ARTIFACT_CONTENT_SCHEMA_NAME)]
-        if version == 2:
+        if version >= 2:
             keys.update(("producer_set_schema", "scenario_set_schema"))
             schemes.extend((("producer_set_schema", PRODUCER_SET_SCHEMA_NAME), ("scenario_set_schema", SCENARIO_SET_SCHEMA_NAME)))
+        if version == 3:
+            keys.update(("scenario_identity_schema", "budget_bindings"))
+            schemes.append(("scenario_identity_schema", SCENARIO_IDENTITY_SCHEMA_NAME))
         document = _controlled_contract_exact_keys(
             document, keys, "controlled artifact bindings",
         )
@@ -5017,8 +5126,10 @@ def canonical_controlled_artifact_bindings(document: Any) -> dict[str, Any]:
             "contract_sha256": digest,
             "artifacts": sorted(normalized, key=lambda item: item["evidence_id"]),
         }
-        if version == 2:
+        if version >= 2:
             canonical.update({field: {"name": name, "version": 1} for field, name in schemes[1:]})
+        if version == 3:
+            canonical["budget_bindings"] = _canonical_budget_bindings(document["budget_bindings"])
         return canonical
     except (BaselineError, ValueError) as error:
         # Exact-key/path helpers can include supplied values in their diagnostics.
@@ -5076,6 +5187,27 @@ def verify_controlled_artifacts(
     if any(evidence[evidence_id]["kind"] != "benchmark_artifact" for evidence_id in runs):
         raise BaselineError("artifact bindings require benchmark_artifact evidence")
 
+    budget_rules = {rule["budget_rule_id"]: rule for rule in contract["budget_rules"]}
+    budgets_by_study: dict[str, list[str]] = {}
+    budget_matches: dict[str, dict[str, Any]] = {}
+    if version == 3:
+        if {binding["budget_rule_id"] for binding in bindings["budget_bindings"]} != set(budget_rules):
+            raise BaselineError("budget bindings must cover exactly all contract budget rule IDs")
+        for binding in bindings["budget_bindings"]:
+            if not set(binding["study_ids"]) <= set(studies):
+                raise BaselineError("budget binding references an unknown variance study")
+            budget_id = binding["budget_rule_id"]
+            rule = budget_rules[budget_id]
+            budget_matches[budget_id] = {
+                "budget_rule_id": budget_id,
+                "declared_scenario_id": rule["scenario_identity"]["scenario_id"],
+                "identity_sha256": rule["scenario_identity"]["identity_sha256"],
+                "metric": rule["metric"], "unit": rule["unit"], "direction": rule["direction"],
+                "study_ids": list(binding["study_ids"]), "matched_run_count": 0,
+            }
+            for study_id in binding["study_ids"]:
+                budgets_by_study.setdefault(study_id, []).append(budget_id)
+
     # Complete all mapping/path preflight before any fingerprint or local Git query.
     directories: set[tuple[int, int]] = set()
     try:
@@ -5120,8 +5252,8 @@ def verify_controlled_artifacts(
             "target_sha": source["target_sha"], "run_id": source["run_id"],
             "mode": source["mode"], "content_sha256": digest,
         }
-        if version == 2:
-            assert report is not None  # The v2 evidence-loader branch supplies it.
+        if version >= 2:
+            assert report is not None  # The v2/v3 evidence-loader branch supplies it.
             try:
                 sets = _report_identity_sets(report)
             except BaselineError as error:
@@ -5134,6 +5266,12 @@ def verify_controlled_artifacts(
                 if actual != run[field] or actual != studies[study_id][field]:
                     raise BaselineError(f"controlled artifact declared {name}-set digest mismatch")
                 row[field] = actual
+            if version == 3:
+                scenario_index = _individual_scenario_index(report)
+                for budget_id in budgets_by_study.get(study_id, []):
+                    _match_budget_scenario(scenario_index, budget_rules[budget_id], bindings["scenario_identity_schema"])
+                    budget_matches[budget_id]["matched_run_count"] += 1
+                del scenario_index
             del report, sets
         verified.append(row)
         del fingerprint  # Do not retain full inventories while processing later artifacts.
@@ -5150,13 +5288,25 @@ def verify_controlled_artifacts(
         "performance_enforcement": {"state": "not_eligible", "reason": "artifact_binding_verification_only"},
         "not_verified": list(CONTROLLED_ARTIFACT_NOT_VERIFIED),
     }
-    if version == 2:
+    if version >= 2:
         result.update({
             "producer_set_schema": bindings["producer_set_schema"],
             "scenario_set_schema": bindings["scenario_set_schema"],
             "verification_scope": "variance_run_artifact_content_run_identity_and_producer_scenario_sets_only",
             "qualification": SET_IDENTITY_QUALIFICATION,
             "not_verified": list(CONTROLLED_IDENTITY_NOT_VERIFIED),
+        })
+    if version == 3:
+        for match in budget_matches.values():
+            expected_count = sum(len(studies[study_id]["runs"]) for study_id in match["study_ids"])
+            if match["matched_run_count"] != expected_count:
+                raise BaselineError("budget binding selected-run coverage is incomplete")
+        result.update({
+            "scenario_identity_schema": bindings["scenario_identity_schema"],
+            "matched_budget_rules": [budget_matches[budget_id] for budget_id in sorted(budget_matches)],
+            "verification_scope": "all_variance_run_artifacts_and_explicit_study_budget_scenario_metrics_only",
+            "budget_evaluation": {"state": "not_evaluated", "reason": "scenario_metric_matching_only"},
+            "not_verified": list(CONTROLLED_SCOPED_BUDGET_NOT_VERIFIED),
         })
     return result
 
@@ -5336,6 +5486,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Read-only identity derivation, not producer execution attestation, runner control or performance approval.",
     )
     identities.add_argument("run_dir", help="explicit repository-relative bench-smoke/bench-full directory; local Git objects required")
+    scenarios = subparsers.add_parser(
+        "artifact-scenarios", help="derive individual scenario identities and supported metric descriptors",
+        description="Read-only scenario/metric identity derivation; no budget limits are evaluated or approved.",
+    )
+    scenarios.add_argument("run_dir", help="explicit repository-relative bench-smoke/bench-full directory; local Git objects required")
     report = subparsers.add_parser(
         "report",
         help="validate a benchmark artifact and render observational JSON and Markdown",
@@ -5377,12 +5532,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="read-only verification of explicitly bound variance-run artifact content and identity",
         description=(
             "Match every variance-run artifact using an explicit pinned binding manifest. "
-            "V2 also checks producer/scenario set identities; neither version proves approval, "
-            "control or performance enforcement."
+            "V2 checks producer/scenario sets; V3 also matches budget scenarios in explicitly selected studies. "
+            "No version evaluates limits or proves approval, control or performance enforcement."
         ),
     )
     verify_artifacts.add_argument("contract_json", help="repository-relative controlled-evidence v1 JSON file")
-    verify_artifacts.add_argument("bindings_json", help="repository-relative binding-manifest v1/v2 JSON file (1 MiB, 128 mappings)")
+    verify_artifacts.add_argument("bindings_json", help="repository-relative binding-manifest v1/v2/v3 JSON file (1 MiB, bounded mappings)")
     controlled_evaluate = subparsers.add_parser(
         "controlled-evaluate",
         help="rebuild complete artifacts and emit a fail-closed controlled preflight",
@@ -5467,6 +5622,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "artifact-identities":
             identities = artifact_identities(repo_root, args.run_dir)
             sys.stdout.buffer.write(artifact_fingerprint_json_text(identities).encode("utf-8"))
+            return 0
+        if args.command == "artifact-scenarios":
+            scenarios = artifact_scenarios(repo_root, args.run_dir)
+            sys.stdout.buffer.write(artifact_fingerprint_json_text(scenarios).encode("utf-8"))
             return 0
         if args.command == "report":
             run_dir = Path(args.run_dir)

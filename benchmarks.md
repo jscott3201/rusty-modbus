@@ -743,6 +743,9 @@ evidence promotion or implicit migration.
 
 ### Producer and scenario identities with opt-in binding v2
 
+This section describes the preserved v1/v2 interfaces. Individual scenario
+identities and explicitly scoped budget target matching require v3 below.
+
 Derive complete producer-record and scenario-workload identities from a retained
 artifact, without collecting benchmarks or trusting a saved report/identity file:
 
@@ -919,9 +922,196 @@ Existing report-parser resource characteristics remain unchanged. Documents and
 artifacts must remain unchanged; no atomic snapshot or race-proof filesystem
 guarantee is claimed. No command rewrites contracts, approvals, policies or
 artifacts, collects measurements, fetches locators, invokes Cargo/network,
-selects a latest run, or makes a clock-based decision. Broader PR-601 acceptance
-and budget-identity verification remain unfinished with no ledger promotion.
+selects a latest run, or makes a clock-based decision. Budget identity remains
+unverified by these v1/v2 interfaces. Broader PR-601 acceptance remains unfinished
+with no ledger promotion.
 See [ADR 0007](docs/adr/0007-producer-scenario-identities.md).
+
+### Individual scenarios and explicit study budget scopes (v3)
+
+The read-only `artifact-scenarios` command derives exact individual workload
+identities and supported metric descriptors from a validated retained smoke/full
+artifact. It does not derive proposed budgets or compare measurements to limits:
+
+```bash
+python3 scripts/baseline.py artifact-scenarios --help
+python3 scripts/baseline.py artifact-scenarios 'bench-output/baseline-v1/<SHA>/<run-id>'
+```
+
+Replace the quoted placeholder with an explicit existing repository-relative
+directory. Paths are anchored to the repository containing the script, not the
+caller's working directory. All fingerprint admission guards and local-only Git
+requirements apply, including strict nonsymlink/regular-file trees and actual
+checksum/report rebuilding. Copied report or identity files cannot substitute
+for raw evidence. The command supports spaces/Unicode and emits UTF-8 even under
+an ASCII stdout locale. Keep any caller-saved output outside the input artifact
+so that saving it does not alter the retained inventory.
+
+#### Individual identity bytes and metric correspondence
+
+`benchmark-scenario-identity` v1 hashes this exact preimage shape:
+
+```json
+{"identity_schema":{"name":"benchmark-scenario-identity","version":1},"scenario":{"identity":{"clients":1,"duration_seconds":5,"in_flight":8,"operation":"read","registers":10,"repetitions":5,"transport":"tcp","warmup_seconds":1},"kind":"tcp_stress","producer_id":"rusty-modbus-stress-json-v1"}}
+```
+
+For this independent encoding vector, the displayed line followed by one LF has
+SHA-256 `11afb838486f33e976986f89db1142ee175222807923b9d03e0613a264dfb895`.
+The complete projection uses the same comparison-key validation as the prior
+scenario-set scheme: exactly `kind`, `producer_id`, and `identity`; all eight TCP
+workload fields or the Criterion `benchmark_id`; exact strings, no Unicode
+normalization, and strict integer types. It is a detached copy. No partial,
+wildcard, regular-expression or descriptive-label selection is supported.
+
+Canonical bytes are compact sorted-key JSON with comma/colon separators,
+`ensure_ascii=False`, `allow_nan=False`, standard string escaping, UTF-8 without
+BOM, and exactly one final LF. The envelope domain-separates this hash from
+projection sorting bytes and from a singleton scenario-set hash. Previous set
+identities are unchanged. Metrics, measurements, retained-evidence locations,
+run/environment metadata, and the contract's `scenario_id` label are not in this
+preimage. Workload fields and Criterion benchmark IDs remain identity data.
+
+Every derived scenario also has compatible descriptors with exactly `metric`,
+`unit`, `direction`, and `report_unit`. The fixed correspondence is:
+
+| Scenario kind | Budget metric | Budget unit | Direction | Required rebuilt report unit |
+|---|---|---|---|---|
+| `tcp_stress` | `throughput` | `operations_per_second` | `minimum` | `operations_per_second` |
+| `tcp_stress` | `p99_latency` | `ms` | `maximum` | `milliseconds` |
+| `criterion_estimate` | `mean_estimate` | `ns` | `maximum` | `nanoseconds` |
+
+Kind and producer ID must match the supported comparison identity, and the
+actual rebuilt report must contain the metric with that exact report-unit
+spelling. A globally valid budget tuple is not valid for every scenario kind.
+This is spelling correspondence only: there is **no numerical conversion or
+measurement/limit comparison**. Missing, unknown or mismatched metrics/units fail.
+
+The module APIs are `scenario_identity(projection)` returning `{preimage, sha256}`
+and `artifact_scenarios(repo_root, run_dir)` for guarded retained-artifact
+derivation. The pure identity helper alone proves neither artifact validity nor
+execution. `artifact-scenarios` emits `artifact_scenarios_schema` named
+`benchmark-artifact-scenarios` version 1, `scenario_identity_schema`, source
+`mode/run_id/target_sha`, and a `scenarios` list sorted by lowercase individual
+identity digest. Each entry has `preimage`, `sha256`, and descriptors in `metrics`
+(ordered by metric name). It includes no measured values or budget limits.
+
+#### Explicit v3 scope manifest
+
+The owner selected **Explicit studies**, not every study/run automatically.
+Every contract budget rule must appear exactly once in `budget_bindings`, with
+a nonempty explicit set of known variance-study IDs. Matching must succeed in
+**every run of every selected study**, not merely somewhere in their union.
+Different historical workload sets may coexist. There is no `latest`, approved-
+baseline selection, automatic scope expansion, or requirement to budget every
+artifact scenario. All variance-run artifacts still undergo all v2 content,
+identity and set checks, even in studies with no selected budget scopes.
+
+V3 has exactly the six v2 fields plus `scenario_identity_schema` and
+`budget_bindings`. This complete **synthetic syntax example is not production
+evidence**; it assumes two budget rules and two two-run studies. Replace the zero
+pin, target SHA, all IDs and paths with explicitly chosen data:
+
+```json
+{
+  "binding_schema": {"name": "benchmark-controlled-artifact-bindings", "version": 3},
+  "contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "artifact_content_schema": {"name": "benchmark-artifact-content", "version": 1},
+  "producer_set_schema": {"name": "benchmark-producer-set", "version": 1},
+  "scenario_set_schema": {"name": "benchmark-scenario-set", "version": 1},
+  "scenario_identity_schema": {"name": "benchmark-scenario-identity", "version": 1},
+  "artifacts": [
+    {"evidence_id": "synthetic-current-a", "run_dir": "bench-output/baseline-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/current-a"},
+    {"evidence_id": "synthetic-current-b", "run_dir": "bench-output/baseline-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/current-b"},
+    {"evidence_id": "synthetic-history-a", "run_dir": "bench-output/baseline-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/history-a"},
+    {"evidence_id": "synthetic-history-b", "run_dir": "bench-output/baseline-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/history-b"}
+  ],
+  "budget_bindings": [
+    {"budget_rule_id": "synthetic-tcp-rule", "study_ids": ["synthetic-current-study"]},
+    {"budget_rule_id": "synthetic-criterion-rule", "study_ids": ["synthetic-current-study", "synthetic-history-study"]}
+  ]
+}
+```
+
+The budget ID set must equal **all** contract budget IDs. Unknown/missing IDs,
+empty scopes, duplicate budget assignments or study IDs, extra selectors, and
+mixed/boolean/unsupported schema versions fail before artifact work. Each scope
+object has exactly `budget_rule_id` and `study_ids`. Canonicalization sorts budget
+bindings by budget ID and study IDs lexically, without deduplicating. The whole
+canonical manifest digest includes the version, identity scheme and effective
+scopes. V1 still requires four fields and v2 six; neither implicitly becomes v3.
+
+The new caps are **128 budget bindings** and **128 study IDs per binding**.
+Existing manifest 1 MiB/depth-64/128-artifact limits and all strict path rules
+remain. These are verifier/manifest bounds, not changes to accepted contract v1
+documents. Scopes do not relax the contract's global uniqueness of budget IDs or
+`(identity_sha256, metric)` pairs. One rule can explicitly select multiple studies;
+duplicate contract rules are not a workaround for different scopes.
+
+An owner derives candidate identities, chooses the contract budget's
+`scenario_identity.identity_sha256` and supported metric tuple, and explicitly
+selects study IDs. `scenario_identity.scenario_id` is only a **declared descriptive
+label**, not an artifact-derived selector; the digest is authoritative. Relabeling
+does not change the target, although contract/pin and any approval-scope structural
+updates must be handled explicitly by the owner. The commands do not rewrite or
+approve any contract, manifest or approval record.
+
+```bash
+python3 scripts/baseline.py verify-controlled-artifacts \
+  inputs/controlled-evidence.json inputs/artifact-bindings-v3.json
+```
+
+V3 completes contract/pin/scheme/reference/scope/path preflight before any artifact
+hashing or Git query. Every mapped artifact then uses the shared evidence loader
+once, retaining all v2 full-mode/source/content/producer-set/scenario-set gates.
+One individual scenario index is built per run, not per budget. Duplicate or
+colliding identities are rejected as ambiguous. Each scoped rule must name one
+exact entry with a compatible metric descriptor in that run. Full reports,
+inventories and indexes are released before the next run; no full budget/run
+matrix or measurements are returned. Failure on a later selected run emits no
+partial result.
+
+#### V3 result and non-evaluation contract
+
+Verification result version **3** preserves the v2 per-artifact set digests and
+adds `scenario_identity_schema` and `matched_budget_rules`, sorted by budget ID.
+Each budget summary contains `budget_rule_id`, `declared_scenario_id`,
+`identity_sha256`, `metric`, `unit`, `direction`, normalized `study_ids`, and
+`matched_run_count` covering exactly those selected studies' runs.
+Its scope is `all_variance_run_artifacts_and_explicit_study_budget_scenario_metrics_only`.
+Only `budget_scenario_identity_sha256` leaves the v2 `not_verified` list.
+
+Both new derivation output and v3 verification explicitly emit:
+
+```json
+{"budget_evaluation":{"reason":"scenario_metric_matching_only","state":"not_evaluated"}}
+```
+
+`performance_enforcement.state` remains `not_eligible`. Its reason remains
+`artifact_binding_verification_only` for verification and is
+`artifact_scenario_derivation_only` for the new derivation command. The common
+qualification is integrity-only, not authentication, producer execution
+attestation or owner authorization. Runner control, statistics, independence,
+retention, approval, baseline acceptance and performance enforcement remain
+unverified. The derivation command additionally leaves producer/scenario-set
+digest declarations unverified; use `artifact-identities` for those derivations.
+It derives scenarios/descriptors only, not declared budget matches.
+
+Limits of zero or any other valid finite magnitude do not change target matching.
+No thresholds are evaluated; output contains no observed values, limit outcomes,
+budget pass/fail, improvement/regression or eligibility verdict. Matching content
+or targets is not authority, and the whole controlled contract is not thereby
+verified.
+
+Machine stdout is one canonical UTF-8 JSON document with one LF, independent of
+locale. Exit 0 means complete derivation/matching only, input failure is exit 1
+with stderr only and no partial JSON or handled-input traceback, usage errors are
+exit 2, and help is exit 0. Module input failures raise `BaselineError`.
+Documents/artifacts must remain unchanged; this is not an atomic snapshot or
+race-proof sandbox. There are no writes, network/fetch, Cargo/benchmark execution,
+implicit selection, policy calls/activation or clock decisions. Existing v1/v2
+manifest/result bytes and `artifact-identities` v1 output remain unchanged.
+Broader PR-601 acceptance remains unfinished with no ledger promotion. See
+[ADR 0008](docs/adr/0008-scoped-budget-scenario-bindings.md).
 
 The measured report below remains the June 2026 baseline; the harness does not
 replace those numbers until a clean, committed-SHA run is recorded.

@@ -5132,5 +5132,633 @@ class ArtifactIdentityTests(unittest.TestCase):
             self.assertEqual(result.stdout, b"")
 
 
+class ScenarioIdentityTests(unittest.TestCase):
+    def projection(self) -> dict:
+        return {
+            "kind": "tcp_stress", "producer_id": "rusty-modbus-stress-json-v1",
+            "identity": {"clients": 1, "duration_seconds": 5, "in_flight": 8, "operation": "read",
+                         "registers": 10, "repetitions": 5, "transport": "tcp", "warmup_seconds": 1},
+        }
+
+    def test_individual_preimage_and_independent_openssl_vector(self) -> None:
+        expected = (
+            '{"identity_schema":{"name":"benchmark-scenario-identity","version":1},'
+            '"scenario":{"identity":{"clients":1,"duration_seconds":5,"in_flight":8,"operation":"read",'
+            '"registers":10,"repetitions":5,"transport":"tcp","warmup_seconds":1},'
+            '"kind":"tcp_stress","producer_id":"rusty-modbus-stress-json-v1"}}\n'
+        )
+        identity = baseline.scenario_identity(self.projection())
+        self.assertEqual(baseline.artifact_fingerprint_json_text(identity["preimage"]), expected)
+        self.assertEqual(identity["sha256"], "11afb838486f33e976986f89db1142ee175222807923b9d03e0613a264dfb895")
+        projection_bytes = baseline.artifact_fingerprint_json_text(self.projection()).encode("utf-8")
+        self.assertNotEqual(identity["sha256"], hashlib.sha256(projection_bytes).hexdigest())
+        self.assertNotEqual(identity["sha256"], baseline.scenario_set_identity([self.projection()])["sha256"])
+
+
+    def test_complete_typed_projection_is_order_independent_and_detached(self) -> None:
+        projection = self.projection()
+        original = copy.deepcopy(projection)
+        result = baseline.scenario_identity(projection)
+        reordered = dict(reversed(list(projection.items())))
+        reordered["identity"] = dict(reversed(list(projection["identity"].items())))
+        self.assertEqual(baseline.scenario_identity(reordered), result)
+        self.assertEqual(projection, original)
+        for field in projection["identity"]:
+            changed = copy.deepcopy(projection)
+            if field == "transport":
+                changed["identity"][field] = "rtu"
+                with self.assertRaises(baseline.BaselineError):
+                    baseline.scenario_identity(changed)
+            else:
+                changed["identity"][field] = "mixed" if field == "operation" else changed["identity"][field] + 1
+                self.assertNotEqual(baseline.scenario_identity(changed)["sha256"], result["sha256"])
+            for invalid in (True, None, "1", 1.0):
+                changed["identity"][field] = invalid
+                with self.subTest(field=field, invalid=invalid), self.assertRaises(baseline.BaselineError):
+                    baseline.scenario_identity(changed)
+        for invalid in (None, {}, dict(projection, scenario_id="not-a-selector"),
+                        dict(projection, identity={**projection["identity"], 1: "bad-key"})):
+            with self.assertRaises(baseline.BaselineError):
+                baseline.scenario_identity(invalid)
+        projection["identity"]["clients"] = 999
+        self.assertEqual(result["preimage"]["scenario"], original)
+        other_schema = copy.deepcopy(result["preimage"])
+        other_schema["identity_schema"]["version"] = 2
+        self.assertNotEqual(result["sha256"], hashlib.sha256(baseline.artifact_fingerprint_json_text(other_schema).encode()).hexdigest())
+
+    def test_index_rejects_duplicates_and_bad_report_metric_units(self) -> None:
+        scenario = {**self.projection(), "metrics": {
+            "p99_latency": {"unit": "milliseconds", "recorded_statistics": {"mean": 1}},
+            "throughput": {"unit": "operations_per_second", "recorded_statistics": {"mean": 100}},
+        }, "sources": [{"raw_stdout": "first"}]}
+        first = baseline._individual_scenario_index({"scenarios": [scenario]})
+        changed = copy.deepcopy(scenario)
+        changed["metrics"]["p99_latency"]["recorded_statistics"]["mean"] = 500
+        changed["sources"] = [{"raw_stdout": "other"}]
+        self.assertEqual(first, baseline._individual_scenario_index({"scenarios": [changed]}))
+        with self.assertRaisesRegex(baseline.BaselineError, "ambiguous"):
+            baseline._individual_scenario_index({"scenarios": [scenario, changed]})
+        for metric in ("p99_latency", "throughput"):
+            invalid = copy.deepcopy(scenario)
+            del invalid["metrics"][metric]
+            with self.assertRaises(baseline.BaselineError):
+                baseline._individual_scenario_index({"scenarios": [invalid]})
+            invalid = copy.deepcopy(scenario)
+            invalid["metrics"][metric]["unit"] = "ms"  # Budget spelling is not the report spelling.
+            with self.assertRaises(baseline.BaselineError):
+                baseline._individual_scenario_index({"scenarios": [invalid]})
+        digest = next(iter(first))
+        rule = {"scenario_identity": {"identity_sha256": digest}, "metric": "p99_latency", "unit": "ms", "direction": "maximum"}
+        schema = {"name": "benchmark-scenario-identity", "version": 1}
+
+        class NoLimitRead(dict):
+            def __getitem__(self, key):
+                if key == "limit":
+                    raise AssertionError("matcher must not read budget limits")
+                return super().__getitem__(key)
+
+        baseline._match_budget_scenario(first, NoLimitRead(rule, limit=0), schema)
+        for field, value in (("unit", "milliseconds"), ("direction", "minimum"), ("metric", "mean_estimate")):
+            with self.assertRaises(baseline.BaselineError):
+                baseline._match_budget_scenario(first, {**rule, field: value}, schema)
+        first[digest]["preimage"]["identity_schema"]["version"] = 2
+        with self.assertRaisesRegex(baseline.BaselineError, "scheme"):
+            baseline._match_budget_scenario(first, rule, schema)
+
+
+class ScopedBudgetScenarioTests(unittest.TestCase):
+    V2_NOT_VERIFIED = [
+        "budget_scenario_identity_sha256", "runner_profile_control_and_environment_equality",
+        "statistical_method_and_variance_analysis", "independent_executions",
+        "non_artifact_and_unmapped_retained_evidence", "expiration_and_continued_retention",
+        "approval_authentication_and_owner_authorization", "baseline_acceptance", "performance_enforcement",
+    ]
+
+    def setUp(self) -> None:
+        # Compose fixture helpers without inheriting any prior test suite.
+        self.t = ArtifactIdentityTests("test_manifest_v2_matches_independently_derived_sets")
+        self.addCleanup(self.t.doCleanups)
+        self.t.setUp()
+        self.f = self.t.f
+
+    def individual(self, scenario: dict) -> dict:
+        projection = {field: copy.deepcopy(scenario[field]) for field in ("kind", "producer_id", "identity")}
+        preimage = {"identity_schema": {"name": "benchmark-scenario-identity", "version": 1}, "scenario": projection}
+        return {"preimage": preimage, "sha256": hashlib.sha256(self.t.encoded(preimage)).hexdigest()}
+
+    def report(self, artifact: baseline.ArtifactRun) -> dict:
+        return json.loads((artifact.run_dir / "benchmark-report-v1.json").read_text())
+
+    def enable_v3(self) -> None:
+        self.t.enable_v2()
+        self.current = self.f.study
+        self.historical = controlled_evidence_contract_fixture()["variance_studies"][0]
+        self.historical["target_sha"] = self.f.sha
+        for run in self.historical["runs"]:
+            artifact = self.f.make_artifact(run["run_id"])
+            self.t.rewrite_stress(artifact, duration_delta=1)
+            run["target_sha"] = self.f.sha
+            sets = self.t.independent_sets(self.report(artifact))
+            for name in ("producer", "scenario"):
+                field = f"{name}_set_sha256"
+                run[field] = sets[f"{name}_set"]["sha256"]
+                self.historical[field] = run[field]
+            evidence_id = run["artifact_evidence_id"]
+            self.f.artifacts[evidence_id] = artifact
+            next(item for item in self.f.contract["evidence_retention"] if item["evidence_id"] == evidence_id)["sha256"] = self.f.independent_content_sha256(artifact.run_dir)
+            self.f.bindings["artifacts"].append({"evidence_id": evidence_id, "run_dir": artifact.run_dir.relative_to(self.f.root).as_posix()})
+        self.f.contract["variance_studies"].append(self.historical)
+        current_report = self.report(self.f.artifacts["evidence-run-current-a"])
+        old_report = self.report(self.f.artifacts["evidence-run-old-a"])
+        current_tcp = next(item for item in current_report["scenarios"] if item["kind"] == "tcp_stress")
+        old_tcp = next(item for item in old_report["scenarios"] if item["kind"] == "tcp_stress")
+        criterion = next(item for item in current_report["scenarios"] if item["kind"] == "criterion_estimate")
+        self.assertNotEqual(self.current["scenario_set_sha256"], self.historical["scenario_set_sha256"])
+        self.throughput, self.p99 = self.f.contract["budget_rules"]
+        self.throughput["scenario_identity"]["identity_sha256"] = self.individual(current_tcp)["sha256"]
+        self.p99["scenario_identity"]["identity_sha256"] = self.individual(old_tcp)["sha256"]
+        self.mean = copy.deepcopy(self.p99)
+        self.mean.update(budget_rule_id="synthetic-mean-maximum", metric="mean_estimate", unit="ns")
+        self.mean["scenario_identity"] = {"identity_sha256": self.individual(criterion)["sha256"],
+                                          "match": "exact_complete_identity", "scenario_id": "synthetic-criterion-label"}
+        self.f.contract["budget_rules"].append(self.mean)
+        self.f.bindings.update({
+            "binding_schema": {"name": "benchmark-controlled-artifact-bindings", "version": 3},
+            "scenario_identity_schema": {"name": "benchmark-scenario-identity", "version": 1},
+            "budget_bindings": [
+                {"budget_rule_id": self.throughput["budget_rule_id"], "study_ids": [self.current["study_id"]]},
+                {"budget_rule_id": self.p99["budget_rule_id"], "study_ids": [self.historical["study_id"]]},
+                {"budget_rule_id": self.mean["budget_rule_id"], "study_ids": [self.historical["study_id"], self.current["study_id"]]},
+            ],
+        })
+        self.f.refresh_contract_pin()
+
+    def test_derivation_cli_returns_identities_and_descriptors_without_values(self) -> None:
+        artifact = self.f.artifacts["evidence-run-current-a"]
+        relative = artifact.run_dir.relative_to(self.f.root).as_posix()
+        before = self.f.inventory()
+        result = self.f.cli("artifact-scenarios", relative, ascii_stdout=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b"")
+        document = json.loads(result.stdout)
+        self.assertEqual(document["artifact_scenarios_schema"], {"name": "benchmark-artifact-scenarios", "version": 1})
+        expected = sorted([self.individual(item) for item in self.report(artifact)["scenarios"]], key=lambda item: item["sha256"])
+        self.assertEqual([{key: row[key] for key in ("preimage", "sha256")} for row in document["scenarios"]], expected)
+        self.assertEqual({(metric["metric"], metric["unit"], metric["direction"], metric["report_unit"])
+                          for row in document["scenarios"] for metric in row["metrics"]}, {
+            ("mean_estimate", "ns", "maximum", "nanoseconds"),
+            ("p99_latency", "ms", "maximum", "milliseconds"),
+            ("throughput", "operations_per_second", "minimum", "operations_per_second"),
+        })
+        self.assertEqual(result.stdout, self.t.encoded(document))
+        self.assertNotIn(b'"limit"', result.stdout)
+        self.assertNotIn(b'"point"', result.stdout)
+        self.assertEqual(document["budget_evaluation"], {"state": "not_evaluated", "reason": "scenario_metric_matching_only"})
+        self.assertEqual(self.f.inventory(), before)
+
+    def test_v3_scopes_budgets_to_explicit_different_studies(self) -> None:
+        self.enable_v3()
+        before = self.f.inventory()
+        result = self.f.verify()
+        self.assertEqual(result["verification_schema"]["version"], 3)
+        self.assertEqual(len(result["verified_artifacts"]), 4)
+        budgets = result["matched_budget_rules"]
+        self.assertEqual([row["budget_rule_id"] for row in budgets], sorted(rule["budget_rule_id"] for rule in self.f.contract["budget_rules"]))
+        expected_counts = {self.throughput["budget_rule_id"]: 2, self.p99["budget_rule_id"]: 2, self.mean["budget_rule_id"]: 4}
+        for row in budgets:
+            binding = next(item for item in self.f.bindings["budget_bindings"] if item["budget_rule_id"] == row["budget_rule_id"])
+            self.assertEqual(row["study_ids"], sorted(binding["study_ids"]))
+            self.assertEqual(row["matched_run_count"], expected_counts[row["budget_rule_id"]])
+        self.assertEqual(result["not_verified"], self.V2_NOT_VERIFIED[1:])
+        self.assertEqual(result["budget_evaluation"], {"state": "not_evaluated", "reason": "scenario_metric_matching_only"})
+        self.assertEqual(result["performance_enforcement"]["state"], "not_eligible")
+        self.assertEqual(self.f.inventory(), before)
+
+    def test_v1_v2_manifest_results_and_artifact_identities_are_frozen(self) -> None:
+        sets = self.t.enable_v2()
+        v2_manifest = copy.deepcopy(self.f.bindings)
+        for version in (1, 2):
+            self.f.bindings = copy.deepcopy(v2_manifest)
+            self.f.bindings["binding_schema"]["version"] = version
+            if version == 1:
+                del self.f.bindings["producer_set_schema"], self.f.bindings["scenario_set_schema"]
+            self.f.write_documents()
+            manifest_bytes = self.t.encoded(self.f.bindings)
+            rows = copy.deepcopy(self.f.expected_bindings)
+            expected = {
+                "verification_schema": {"name": "benchmark-controlled-artifact-verification", "version": version},
+                "contract": {"contract_id": self.f.contract["contract_id"], "canonical_sha256": self.f.bindings["contract_sha256"]},
+                "binding_manifest": {"schema": self.f.bindings["binding_schema"], "canonical_sha256": hashlib.sha256(manifest_bytes).hexdigest()},
+                "artifact_content_schema": {"name": "benchmark-artifact-content", "version": 1},
+                "verified_artifacts": rows,
+                "verification_scope": "variance_run_artifact_content_and_declared_run_identity_only",
+                "qualification": "integrity_only_not_authentication_or_owner_authorization",
+                "performance_enforcement": {"state": "not_eligible", "reason": "artifact_binding_verification_only"},
+                "not_verified": ["producer_set_sha256", "scenario_set_sha256", *self.V2_NOT_VERIFIED],
+            }
+            if version == 2:
+                for name in ("producer", "scenario"):
+                    expected[f"{name}_set_schema"] = {"name": f"benchmark-{name}-set", "version": 1}
+                    for row in rows:
+                        row[f"{name}_set_sha256"] = sets[f"{name}_set"]["sha256"]
+                expected.update(verification_scope="variance_run_artifact_content_run_identity_and_producer_scenario_sets_only",
+                                qualification="integrity_only_not_authentication_producer_execution_attestation_or_owner_authorization",
+                                not_verified=self.V2_NOT_VERIFIED)
+            self.assertEqual(baseline.controlled_artifact_bindings_json_text(self.f.bindings).encode("utf-8"), manifest_bytes)
+            result = self.f.cli("verify-controlled-artifacts", self.f.contract_relative, self.f.bindings_relative)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, self.t.encoded(expected))
+        artifact = self.f.artifacts["evidence-run-current-a"]
+        expected_identities = {
+            "identity_schema": {"name": "benchmark-artifact-identities", "version": 1}, **sets,
+            "source": {"mode": "bench-full", "run_id": artifact.run_id, "target_sha": self.f.sha},
+            "verification_scope": "producer_records_and_complete_scenario_workload_identity_only",
+            "qualification": "integrity_only_not_authentication_producer_execution_attestation_or_owner_authorization",
+            "performance_enforcement": {"state": "not_eligible", "reason": "artifact_identity_derivation_only"},
+            "not_verified": self.V2_NOT_VERIFIED,
+        }
+        result = self.f.cli("artifact-identities", artifact.run_dir.relative_to(self.f.root).as_posix())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.t.encoded(expected_identities))
+
+    def assert_failure(self, *, before_artifacts: bool = False, relative: str | None = None) -> None:
+        if relative is None:
+            self.t.assert_failure(before_artifacts=before_artifacts)
+        else:
+            self._scenario_failure(relative)
+
+    def _scenario_failure(self, relative: str) -> None:
+        before = self.f.inventory()
+        with self.assertRaises(baseline.BaselineError):
+            baseline.artifact_scenarios(self.f.root, relative)
+        result = self.f.cli("artifact-scenarios", relative)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, b"")
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertEqual(self.f.inventory(), before)
+
+    def binding(self, rule: dict) -> dict:
+        return next(item for item in self.f.bindings["budget_bindings"] if item["budget_rule_id"] == rule["budget_rule_id"])
+
+    def test_scope_is_every_selected_run_not_union_or_implicit_all_studies(self) -> None:
+        self.enable_v3()
+        self.binding(self.throughput)["study_ids"].append(self.historical["study_id"])
+        self.f.write_documents()
+        with self.assertRaisesRegex(baseline.BaselineError, "absent from a selected study run"):
+            self.f.verify()
+        self.assert_failure()
+        self.binding(self.throughput)["study_ids"] = [self.current["study_id"]]
+        self.f.write_documents()
+        self.assertEqual(self.f.verify()["verification_schema"]["version"], 3)
+
+    def test_unscoped_study_artifacts_still_receive_all_strong_checks(self) -> None:
+        self.enable_v3()
+        self.p99["scenario_identity"]["identity_sha256"] = self.throughput["scenario_identity"]["identity_sha256"]
+        for binding in self.f.bindings["budget_bindings"]:
+            binding["study_ids"] = [self.current["study_id"]]
+        self.f.refresh_contract_pin()
+        result = self.f.verify()
+        self.assertEqual(len(result["verified_artifacts"]), 4)
+        for row in result["verified_artifacts"]:
+            self.assertIn("producer_set_sha256", row)
+            self.assertIn("scenario_set_sha256", row)
+        artifact = self.f.artifacts["evidence-run-old-b"]
+        next(artifact.run_dir.glob("commands/*/command.stderr")).write_bytes(b"unscoped but still verified")
+        self.assert_failure()
+        baseline.write_checksums(self.f.root, artifact.run_dir)
+        with self.assertRaisesRegex(baseline.BaselineError, "content digest"):
+            self.f.verify()
+        self.assert_failure()
+
+    def test_real_study_workload_change_with_fresh_v2_pins_fails_budget_target(self) -> None:
+        self.enable_v3()
+        for run in self.historical["runs"]:
+            artifact = self.f.artifacts[run["artifact_evidence_id"]]
+            self.t.rewrite_stress(artifact, duration_delta=1)
+            sets = self.t.independent_sets(self.report(artifact))
+            run["scenario_set_sha256"] = sets["scenario_set"]["sha256"]
+            self.historical["scenario_set_sha256"] = run["scenario_set_sha256"]
+            next(item for item in self.f.contract["evidence_retention"] if item["evidence_id"] == run["artifact_evidence_id"])["sha256"] = self.f.independent_content_sha256(artifact.run_dir)
+        self.f.refresh_contract_pin()
+        v3 = copy.deepcopy(self.f.bindings)
+        self.f.bindings["binding_schema"]["version"] = 2
+        del self.f.bindings["scenario_identity_schema"], self.f.bindings["budget_bindings"]
+        self.f.write_documents()
+        self.assertEqual(self.f.verify()["verification_schema"]["version"], 2)
+        self.f.bindings = v3
+        self.f.write_documents()
+        with self.assertRaisesRegex(baseline.BaselineError, "budget scenario identity is absent"):
+            self.f.verify()
+        self.assert_failure()
+
+    def test_last_selected_run_index_fault_has_no_partial_stdout(self) -> None:
+        self.enable_v3()
+        original = baseline._individual_scenario_index
+        count = 0
+
+        def faulty_index(report):
+            nonlocal count
+            count += 1
+            index = original(report)
+            if count == 4:
+                # Focused matcher fault injection AFTER genuine artifact/set checks.
+                # Honest equal set digests otherwise imply the same scenario membership.
+                del index[self.p99["scenario_identity"]["identity_sha256"]]
+            return index
+
+        output, stderr = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        before = self.f.inventory()
+        with mock.patch.object(baseline, "_individual_scenario_index", faulty_index), \
+                mock.patch.object(baseline, "__file__", str(self.f.script)), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = baseline.main(["verify-controlled-artifacts", self.f.contract_relative, self.f.bindings_relative])
+        self.assertEqual(count, 4)
+        self.assertEqual(status, 1)
+        self.assertEqual(output.getvalue(), b"")
+        self.assertIn("absent from a selected study run", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertEqual(self.f.inventory(), before)
+
+    def test_closed_global_pairings_do_not_make_metrics_valid_for_every_kind(self) -> None:
+        self.enable_v3()
+        original = copy.deepcopy(self.f.contract["budget_rules"])
+        self.throughput.update(metric="mean_estimate", unit="ns", direction="maximum")
+        self.f.refresh_contract_pin()  # Valid global tuple, but the selected scenario is TCP.
+        with self.assertRaisesRegex(baseline.BaselineError, "metric/unit/direction"):
+            self.f.verify()
+        self.assert_failure()
+        self.f.contract["budget_rules"] = copy.deepcopy(original)
+        p99 = next(rule for rule in self.f.contract["budget_rules"] if rule["metric"] == "p99_latency")
+        p99["scenario_identity"]["identity_sha256"] = self.mean["scenario_identity"]["identity_sha256"]
+        self.f.refresh_contract_pin()  # Valid p99 tuple, but this digest names Criterion.
+        with self.assertRaisesRegex(baseline.BaselineError, "metric/unit/direction"):
+            self.f.verify()
+        self.assert_failure()
+        for field, invalid in (("unit", "milliseconds"), ("direction", "minimum")):
+            self.f.contract["budget_rules"] = copy.deepcopy(original)
+            self.f.contract["budget_rules"][1][field] = invalid
+            self.f.write_documents()
+            self.assert_failure(before_artifacts=True)
+
+    def test_limits_are_not_evaluated_and_labels_are_not_selectors(self) -> None:
+        self.enable_v3()
+        original = self.f.verify()
+
+        def without_pins(value):
+            return {key: item for key, item in value.items() if key not in ("contract", "binding_manifest")}
+
+        for limit in (0, 1e300):
+            for rule in self.f.contract["budget_rules"]:
+                rule["limit"] = limit
+            self.f.refresh_contract_pin()
+            result = self.f.verify()
+            self.assertEqual(without_pins(result), without_pins(original))
+            self.assertNotIn(b'"limit"', self.t.encoded(result))
+        self.mean["scenario_identity"]["scenario_id"] = "different-descriptive-label"
+        self.f.refresh_contract_pin()
+        result = self.f.verify()
+        expected = copy.deepcopy(original)
+        next(row for row in expected["matched_budget_rules"] if row["budget_rule_id"] == self.mean["budget_rule_id"])["declared_scenario_id"] = "different-descriptive-label"
+        self.assertEqual(without_pins(result), without_pins(expected))
+
+    def test_wrong_digest_schemes_do_not_fall_back_to_a_matching_label(self) -> None:
+        self.enable_v3()
+        scenario = next(item for item in self.report(self.f.artifacts["evidence-run-current-a"])["scenarios"] if item["kind"] == "criterion_estimate")
+        projection = self.individual(scenario)["preimage"]["scenario"]
+        changed_schema = self.individual(scenario)["preimage"]
+        changed_schema["identity_schema"]["version"] = 2
+        for wrong_digest in (
+            hashlib.sha256(self.t.encoded(projection)).hexdigest(),
+            baseline.scenario_set_identity([projection])["sha256"],
+            hashlib.sha256(self.t.encoded(changed_schema)).hexdigest(),
+        ):
+            self.mean["scenario_identity"].update(identity_sha256=wrong_digest, scenario_id=scenario["identity"]["benchmark_id"])
+            self.f.refresh_contract_pin()
+            self.assert_failure()
+
+    def test_v3_schema_scope_and_coverage_errors_precede_artifact_work(self) -> None:
+        self.enable_v3()
+        original = copy.deepcopy(self.f.bindings)
+        cases = []
+        for missing in ("scenario_identity_schema", "budget_bindings"):
+            changed = copy.deepcopy(original)
+            del changed[missing]
+            cases.append(changed)
+        for path, value in (
+            (("binding_schema", "version"), True), (("binding_schema", "version"), 4),
+            (("binding_schema", "version"), 2), (("binding_schema", "version"), 1),
+            (("scenario_identity_schema", "version"), True), (("scenario_identity_schema", "version"), 2),
+            (("scenario_identity_schema", "name"), "benchmark-scenario-set"),
+            (("budget_bindings",), []), (("budget_bindings",), {}),
+            (("budget_bindings", 0, "budget_rule_id"), "unknown-budget"),
+            (("budget_bindings", 0, "study_ids"), []), (("budget_bindings", 0, "study_ids"), "all"),
+            (("budget_bindings", 0, "study_ids"), ["unknown-study"]),
+            (("budget_bindings", 0, "study_ids"), [self.current["study_id"], self.current["study_id"]]),
+            (("budget_bindings", 0, "all_studies"), True), (("budget_bindings", 0, "baseline_id"), "approved"),
+            (("budget_bindings", 0, "kind"), "tcp_stress"),
+        ):
+            changed: dict = copy.deepcopy(original)
+            target = changed
+            for part in path[:-1]:
+                target = target[part]
+            target[path[-1]] = value
+            cases.append(changed)
+        missing = copy.deepcopy(original)
+        missing["budget_bindings"].pop()
+        duplicate = copy.deepcopy(original)
+        duplicate["budget_bindings"].append(copy.deepcopy(duplicate["budget_bindings"][0]))
+        cases.extend((missing, duplicate))
+        for position, document in enumerate(cases):
+            with self.subTest(case=position):
+                self.f.bindings = document
+                self.f.write_documents()
+                self.assert_failure(before_artifacts=True)
+
+    def test_new_scope_caps_and_permutation_normalization(self) -> None:
+        self.enable_v3()
+        original = self.f.verify()
+        self.f.bindings["budget_bindings"].reverse()
+        for item in self.f.bindings["budget_bindings"]:
+            item["study_ids"].reverse()
+        self.f.write_documents()
+        self.assertEqual(self.f.verify(), original)
+        self.assertEqual(baseline.CONTROLLED_BUDGET_BINDINGS_MAX_RULES, 128)
+        self.assertEqual(baseline.CONTROLLED_BUDGET_BINDINGS_MAX_STUDIES, 128)
+        self.f.bindings["budget_bindings"] = [{"budget_rule_id": f"budget-{i:03}", "study_ids": [self.current["study_id"]]} for i in range(128)]
+        self.assertEqual(len(baseline.canonical_controlled_artifact_bindings(self.f.bindings)["budget_bindings"]), 128)
+        self.f.bindings["budget_bindings"].append({"budget_rule_id": "budget-128", "study_ids": [self.current["study_id"]]})
+        self.f.write_documents()
+        self.assert_failure(before_artifacts=True)
+        self.f.bindings["budget_bindings"] = [{"budget_rule_id": "budget", "study_ids": [f"study-{i:03}" for i in range(128)]}]
+        self.assertEqual(len(baseline.canonical_controlled_artifact_bindings(self.f.bindings)["budget_bindings"][0]["study_ids"]), 128)
+        self.f.bindings["budget_bindings"][0]["study_ids"].append("study-128")
+        self.f.write_documents()
+        self.assert_failure(before_artifacts=True)
+
+    def test_v3_keeps_set_source_and_full_mode_checks(self) -> None:
+        self.enable_v3()
+        original = copy.deepcopy(self.f.bindings)
+        a, b = self.f.bindings["artifacts"][:2]
+        a["run_dir"], b["run_dir"] = b["run_dir"], a["run_dir"]
+        self.f.write_documents()
+        with self.assertRaisesRegex(baseline.BaselineError, "run identity"):
+            self.f.verify()
+        self.assert_failure()
+        self.f.bindings = original
+        self.current["producer_set_sha256"] = "f" * 64
+        for run in self.current["runs"]:
+            run["producer_set_sha256"] = "f" * 64
+        self.f.refresh_contract_pin()
+        with self.assertRaisesRegex(baseline.BaselineError, "producer-set"):
+            self.f.verify()
+        self.assert_failure()
+        actual = self.t.independent_sets(self.report(self.f.artifacts["evidence-run-current-a"]))["producer_set"]["sha256"]
+        self.current["producer_set_sha256"] = actual
+        for run in self.current["runs"]:
+            run["producer_set_sha256"] = actual
+        smoke = self.f.make_artifact("budget-smoke", mode="bench-smoke")
+        self.current["runs"][1]["run_id"] = smoke.run_id
+        self.f.bindings["artifacts"][1]["run_dir"] = smoke.run_dir.relative_to(self.f.root).as_posix()
+        next(item for item in self.f.contract["evidence_retention"] if item["evidence_id"] == "evidence-run-current-b")["sha256"] = self.f.independent_content_sha256(smoke.run_dir)
+        self.f.refresh_contract_pin()
+        with self.assertRaisesRegex(baseline.BaselineError, "bench-full"):
+            self.f.verify()
+        self.assert_failure()
+
+    def test_smoke_unicode_derivation_and_source_failures_use_existing_admission(self) -> None:
+        smoke = self.f.make_artifact("scenario-smoke", mode="bench-smoke")
+        summary_path = smoke.run_dir / "summary.json"
+        summary = json.loads(summary_path.read_text())
+        criterion = summary["criterion_results"][0]
+        source = smoke.run_dir / "criterion/raw/01-tcp_throughput/épreuve/new/estimates.json"
+        source.parent.mkdir(parents=True)
+        shutil.copyfile(self.f.root / criterion["source"], source)
+        criterion.update(benchmark_id="épreuve", source=source.relative_to(self.f.root).as_posix())
+        baseline.write_json(summary_path, summary)
+        baseline.write_json(smoke.run_dir / "criterion/parsed-estimates.json", summary["criterion_results"])
+        baseline.write_checksums(self.f.root, smoke.run_dir)
+        relative = smoke.run_dir.relative_to(self.f.root).as_posix()
+        result = self.f.cli("artifact-scenarios", relative, ascii_stdout=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"benchmark_id":"épreuve"'.encode(), result.stdout)
+        self.assertEqual(json.loads(result.stdout)["source"]["mode"], "bench-smoke")
+        self.assertEqual(self.f.cli("artifact-scenarios", relative).stdout, result.stdout)
+        summary.update(stress_samples=[], stress_aggregates=[])
+        baseline.write_json(summary_path, summary)
+        baseline.write_checksums(self.f.root, smoke.run_dir)
+        self.assert_failure(relative=relative)  # Copied report remains complete but is not trusted.
+        self.assert_failure(relative=relative + "/benchmark-report-v1.json")
+        self.assert_failure(relative="../outside")
+
+    def test_unsafe_tree_and_missing_git_fail_without_fallback(self) -> None:
+        self.enable_v3()
+        artifact = self.f.artifacts["evidence-run-current-a"]
+        relative = artifact.run_dir.relative_to(self.f.root).as_posix()
+        link = artifact.run_dir / "unsafe-link"
+        try:
+            link.symlink_to(self.f.script)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        with mock.patch.object(Path, "open", side_effect=AssertionError("unsafe payload open")):
+            with self.assertRaises(baseline.BaselineError):
+                baseline.artifact_scenarios(self.f.root, relative)
+        self.assert_failure(relative=relative)
+        link.unlink()
+        (self.f.root / ".git/objects" / self.f.sha[:2] / self.f.sha[2:]).unlink()
+        self.assert_failure(relative=relative)
+        self.assert_failure()
+
+    def test_v3_loads_and_indexes_once_per_run_then_releases_full_data(self) -> None:
+        self.enable_v3()
+        actual_load, actual_index = baseline._load_benchmark_artifact_evidence, baseline._individual_scenario_index
+        references = []
+        index_references = []
+        visited = []
+
+        class Tracked(dict):
+            pass
+
+        def load(root, path):
+            self.assertTrue(all(reference() is None for reference in references + index_references))
+            fingerprint, report = actual_load(root, path)
+            fingerprint, report = Tracked(fingerprint), Tracked(report)
+            references[:] = [weakref.ref(fingerprint), weakref.ref(report)]
+            visited.append(path)
+            return fingerprint, report
+
+        def index(report):
+            result = Tracked(actual_index(report))
+            index_references.append(weakref.ref(result))
+            return result
+
+        with mock.patch.object(baseline, "_load_benchmark_artifact_evidence", load), \
+                mock.patch.object(baseline, "_individual_scenario_index", index), \
+                mock.patch.object(baseline, "build_benchmark_report", wraps=baseline.build_benchmark_report) as rebuild:
+            self.f.verify()
+        self.assertEqual(len(visited), 4)
+        self.assertEqual(rebuild.call_count, 4)
+        self.assertEqual(len(index_references), 4)
+        self.assertTrue(all(reference() is None for reference in references + index_references))
+
+    def test_new_commands_only_read_named_inputs_artifacts_and_local_git(self) -> None:
+        self.enable_v3()
+        actual_run, actual_open = subprocess.run, Path.open
+        git_calls = []
+
+        def local_git(argv, **kwargs):
+            self.assertEqual(tuple(argv[:5]), ("git", "--no-lazy-fetch", "--no-replace-objects", "cat-file", "blob"))
+            self.assertIn(argv[5], (f"{self.f.sha}:Cargo.lock", f"{self.f.sha}:benchmarks/Cargo.toml"))
+            git_calls.append(argv[5])
+            return actual_run(argv, **kwargs)
+
+        def read_only_open(path, mode="r", *args, **kwargs):
+            self.assertIn(mode, ("r", "rb"))
+            self.assertTrue(path in (self.f.contract_path, self.f.bindings_path) or any(
+                path.is_relative_to(artifact.run_dir) for artifact in self.f.artifacts.values()
+            ))
+            return actual_open(path, mode, *args, **kwargs)
+
+        before = self.f.inventory()
+        output, stderr = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with contextlib.ExitStack() as stack:
+            for name in ("run_mode", "run_benchmarks", "bootstrap_repository", "collect_environment", "utc_now",
+                         "load_policy_file", "controlled_evaluate_artifacts", "write_json", "write_checksums"):
+                stack.enter_context(mock.patch.object(baseline, name, side_effect=AssertionError(name)))
+            for name in ("socket.create_connection", "urllib.request.urlopen"):
+                stack.enter_context(mock.patch(name, side_effect=AssertionError(name)))
+            stack.enter_context(mock.patch.object(baseline.subprocess, "run", local_git))
+            stack.enter_context(mock.patch.object(Path, "open", read_only_open))
+            stack.enter_context(mock.patch.object(baseline, "__file__", str(self.f.script)))
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            stack.enter_context(contextlib.redirect_stderr(stderr))
+            baseline.artifact_scenarios(self.f.root, self.f.bindings["artifacts"][0]["run_dir"])
+            self.assertEqual(baseline.main(["verify-controlled-artifacts", self.f.contract_relative, self.f.bindings_relative]), 0)
+        self.assertEqual(len(git_calls), 10)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["verification_scope"], "all_variance_run_artifacts_and_explicit_study_budget_scenario_metrics_only")
+        self.assertEqual(result["not_verified"], self.V2_NOT_VERIFIED[1:])
+        self.assertEqual(result["budget_evaluation"], {"state": "not_evaluated", "reason": "scenario_metric_matching_only"})
+        self.assertEqual(result["performance_enforcement"]["state"], "not_eligible")
+        for forbidden in (b'"limit"', b'"preimage"', b'"approved"', b'"point"'):
+            self.assertNotIn(forbidden, output.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(self.f.inventory(), before)
+        result = self.f.cli("verify-controlled-artifacts", self.f.contract_relative, self.f.bindings_relative, ascii_stdout=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, output.getvalue())
+
+    def test_new_help_and_usage_exit_contract(self) -> None:
+        for args in (("--help",), ("artifact-scenarios", "--help"), ("verify-controlled-artifacts", "--help")):
+            result = self.f.cli(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, b"")
+        for args in (("artifact-scenarios",), ("artifact-scenarios", "anything", "--latest")):
+            result = self.f.cli(*args)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stdout, b"")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
