@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 from unittest import mock
 
@@ -3978,6 +3979,596 @@ class ArtifactFingerprintTests(unittest.TestCase):
         self.assertIn('évidence.txt'.encode("utf-8"), result.stdout)
         self.assertNotIn(b"\r\n", result.stdout)
         self.assertEqual(json.loads(result.stdout)["source"]["run_id"], self.artifact.run_id)
+
+
+class ControlledArtifactBindingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "repository"
+        self.root.mkdir()
+        self.sha = initialize_git_lock_fixture(self.root)
+        (self.root / "scripts").mkdir()
+        self.script = self.root / "scripts/baseline.py"
+        shutil.copyfile(SCRIPTS / "baseline.py", self.script)
+        self.contract_relative = "inputs/contrôle evidence.json"
+        self.bindings_relative = "inputs/artifact bindings-é.json"
+        (self.root / "inputs").mkdir()
+        self.contract_path = self.root / self.contract_relative
+        self.bindings_path = self.root / self.bindings_relative
+        self.policy = self.root / "policy.json"
+        shutil.copyfile(ROOT / "benchmarks/policy/benchmark-budget-policy-v1.json", self.policy)
+        self.contract = controlled_evidence_contract_fixture()
+        # Keep one two-run study and its synthetic approved baseline. Other retained
+        # evidence is deliberately still opaque, unreferenced or non-artifact data.
+        self.contract["variance_studies"] = self.contract["variance_studies"][1:]
+        self.contract["baselines"] = self.contract["baselines"][1:]
+        self.contract["baselines"][0]["target_sha"] = self.sha
+        self.study = self.contract["variance_studies"][0]
+        self.study["target_sha"] = self.sha
+        self.artifacts = {}
+        self.expected_bindings = []
+        self.bindings: dict = {
+            "binding_schema": {"name": "benchmark-controlled-artifact-bindings", "version": 1},
+            "contract_sha256": "0" * 64,
+            "artifact_content_schema": {"name": "benchmark-artifact-content", "version": 1},
+            "artifacts": [],
+        }
+        for run in self.study["runs"]:
+            run["target_sha"] = self.sha
+            artifact = self.make_artifact(run["run_id"])
+            evidence_id = run["artifact_evidence_id"]
+            digest = self.independent_content_sha256(artifact.run_dir)
+            self.artifacts[evidence_id] = artifact
+            next(item for item in self.contract["evidence_retention"] if item["evidence_id"] == evidence_id)["sha256"] = digest
+            self.bindings["artifacts"].append({
+                "evidence_id": evidence_id, "run_dir": artifact.run_dir.relative_to(self.root).as_posix(),
+            })
+            self.expected_bindings.append({
+                "evidence_id": evidence_id, "study_id": self.study["study_id"],
+                "target_sha": self.sha, "run_id": run["run_id"], "mode": "bench-full",
+                "content_sha256": digest,
+            })
+        self.refresh_contract_pin()
+
+    def make_artifact(self, run_id: str, mode: str = "bench-full") -> baseline.ArtifactRun:
+        artifact = baseline.ArtifactRun(
+            repo_root=self.root, output_root=self.root / "retained espace-é",
+            target_sha=self.sha, run_id=run_id, mode=mode,
+            runner_label="synthetic-not-proof-of-control", dirty=False, allow_dirty=False,
+        )
+        artifact.create()
+        populate_benchmark_evidence(artifact)
+        artifact.finalize()
+        return artifact
+
+    def independent_content_sha256(self, run_dir: Path) -> str:
+        files = [
+            {"path": path.relative_to(run_dir).as_posix(),
+             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in run_dir.rglob("*")
+            if path.is_file() and path != run_dir / "checksums.sha256"
+        ]
+        content = {"content_schema": {"name": "benchmark-artifact-content", "version": 1},
+                   "files": sorted(files, key=lambda item: item["path"].encode("utf-8"))}
+        return hashlib.sha256((json.dumps(
+            content, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ) + "\n").encode("utf-8")).hexdigest()
+
+    def write_documents(self) -> None:
+        self.contract_path.write_text(json.dumps(self.contract), encoding="utf-8")
+        self.bindings_path.write_text(json.dumps(self.bindings), encoding="utf-8")
+
+    def refresh_contract_pin(self) -> None:
+        self.contract["approval"]["scope_sha256"] = (
+            baseline._controlled_evidence_contract_approval_scope_sha256(self.contract)
+        )
+        self.assertEqual(baseline.validate_controlled_evidence_contract(self.contract), [])
+        self.bindings["contract_sha256"] = baseline.controlled_evidence_contract_sha256(self.contract)
+        self.write_documents()
+
+    def inventory(self) -> dict:
+        return {
+            path.relative_to(self.root).as_posix(): (
+                ("symlink", str(path.readlink())) if path.is_symlink()
+                else ("file", path.read_bytes()) if path.is_file()
+                else ("directory", None) if path.is_dir()
+                else ("special", None)
+            )
+            for path in self.root.rglob("*")
+        }
+
+    def cli(self, *args: str, ascii_stdout: bool = False) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [sys.executable, str(self.script), *args], cwd=self.root.parent,
+            capture_output=True, timeout=20,
+            env={**os.environ, **({"PYTHONIOENCODING": "ascii"} if ascii_stdout else {})},
+        )
+
+    def verify(self) -> dict:
+        return baseline.verify_controlled_artifacts(self.root, self.contract_relative, self.bindings_relative)
+
+    def assert_verification_scope(self, result: dict) -> None:
+        self.assertEqual(result["verification_schema"], {
+            "name": "benchmark-controlled-artifact-verification", "version": 1,
+        })
+        self.assertEqual(result["verification_scope"], "variance_run_artifact_content_and_declared_run_identity_only")
+        self.assertEqual(result["qualification"], "integrity_only_not_authentication_or_owner_authorization")
+        self.assertEqual(result["performance_enforcement"], {
+            "state": "not_eligible", "reason": "artifact_binding_verification_only",
+        })
+        self.assertEqual(result["not_verified"], [
+            "producer_set_sha256", "scenario_set_sha256", "budget_scenario_identity_sha256",
+            "runner_profile_control_and_environment_equality", "statistical_method_and_variance_analysis",
+            "independent_executions", "non_artifact_and_unmapped_retained_evidence",
+            "expiration_and_continued_retention", "approval_authentication_and_owner_authorization",
+            "baseline_acceptance", "performance_enforcement",
+        ])
+        self.assertNotIn('"approved"', json.dumps(result))
+        self.assertNotIn('"files"', json.dumps(result))
+
+    def test_complete_bindings_match_independent_hashes_and_identity_read_only(self) -> None:
+        before = self.inventory()
+        result = self.verify()
+        self.assertEqual(result["verified_artifacts"], self.expected_bindings)
+        self.assertEqual(result["contract"], {
+            "contract_id": self.contract["contract_id"], "canonical_sha256": self.bindings["contract_sha256"],
+        })
+        canonical = copy.deepcopy(self.bindings)
+        canonical["artifacts"].sort(key=lambda item: item["evidence_id"])
+        digest = hashlib.sha256((json.dumps(
+            canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ) + "\n").encode("utf-8")).hexdigest()
+        self.assertEqual(result["binding_manifest"], {
+            "schema": self.bindings["binding_schema"], "canonical_sha256": digest,
+        })
+        self.assert_verification_scope(result)
+        self.assertEqual(self.inventory(), before)
+
+    def test_cli_is_one_canonical_utf8_result_from_alternate_cwd(self) -> None:
+        before = self.inventory()
+        result = self.cli("verify-controlled-artifacts", self.contract_relative, self.bindings_relative, ascii_stdout=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b"")
+        document = json.loads(result.stdout)
+        self.assertEqual(document["verified_artifacts"], self.expected_bindings)
+        self.assert_verification_scope(document)
+        self.assertEqual(result.stdout, (json.dumps(
+            document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ) + "\n").encode("utf-8"))
+        self.assertEqual(self.inventory(), before)
+
+    def assert_failure(
+        self, *, before_artifacts: bool = False,
+        contract_relative: str | None = None, bindings_relative: str | None = None,
+    ) -> None:
+        contract_relative = self.contract_relative if contract_relative is None else contract_relative
+        bindings_relative = self.bindings_relative if bindings_relative is None else bindings_relative
+        before = self.inventory()
+        with contextlib.ExitStack() as stack:
+            if before_artifacts:
+                stack.enter_context(mock.patch.object(
+                    baseline, "fingerprint_artifact", side_effect=AssertionError("premature fingerprint")
+                ))
+                stack.enter_context(mock.patch.object(
+                    baseline, "_sha256", side_effect=AssertionError("premature payload hash")
+                ))
+                stack.enter_context(mock.patch.object(
+                    baseline.subprocess, "run", side_effect=AssertionError("premature Git")
+                ))
+            with self.assertRaises(baseline.BaselineError):
+                baseline.verify_controlled_artifacts(self.root, contract_relative, bindings_relative)
+        result = self.cli("verify-controlled-artifacts", contract_relative, bindings_relative)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, b"")
+        self.assertTrue(result.stderr.startswith(b"baseline: "), result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertNotIn(b"sensitive-document-value", result.stderr)
+        self.assertEqual(self.inventory(), before)
+
+    def test_contract_and_mapping_permutations_preserve_pins_and_result(self) -> None:
+        first = self.verify()
+        original_manifest = baseline.controlled_artifact_bindings_json_text(self.bindings)
+        self.bindings["artifacts"].reverse()
+        self.contract["evidence_retention"].reverse()
+        self.contract["budget_rules"].reverse()
+        self.contract["control"]["runner"]["evidence_ids"].reverse()
+        self.study["runs"].reverse()
+        self.write_documents()  # Deliberately do not recompute either pin.
+        self.assertEqual(baseline.controlled_artifact_bindings_json_text(self.bindings), original_manifest)
+        self.assertEqual(self.verify(), first)
+        result = self.cli("verify-controlled-artifacts", self.contract_relative, self.bindings_relative)
+        self.assertEqual(json.loads(result.stdout), first)
+
+    def test_stale_raw_and_approval_scope_pins_fail_before_artifact_work(self) -> None:
+        original_pin = self.bindings["contract_sha256"]
+        for wrong_pin in (
+            hashlib.sha256(self.contract_path.read_bytes()).hexdigest(),
+            self.contract["approval"]["scope_sha256"], "f" * 64,
+        ):
+            with self.subTest(pin=wrong_pin):
+                self.assertNotEqual(wrong_pin, original_pin)
+                self.bindings["contract_sha256"] = wrong_pin
+                self.write_documents()
+                self.assert_failure(before_artifacts=True)
+        self.bindings["contract_sha256"] = original_pin
+        self.contract["approval"]["approved_utc"] = "2026-03-01T00:00:00Z"
+        self.assertEqual(baseline.validate_controlled_evidence_contract(self.contract), [])
+        self.write_documents()
+        self.assert_failure(before_artifacts=True)
+
+    def test_manifest_schema_is_exact_and_rejects_duplicates_and_unsupported_schemes(self) -> None:
+        original = copy.deepcopy(self.bindings)
+        cases = [None, [], {}, {key: value for key, value in original.items() if key != "contract_sha256"}]
+        for path, value in (
+            (("binding_schema", "name"), "sensitive-document-value"),
+            (("binding_schema", "version"), True), (("binding_schema", "version"), 2),
+            (("artifact_content_schema", "name"), "report-only"),
+            (("artifact_content_schema", "version"), True), (("artifact_content_schema", "version"), 2),
+            (("artifact_content_schema", "extra"), "sensitive-document-value"),
+            (("contract_sha256",), "A" * 64), (("contract_sha256",), "short"),
+            (("contract_sha256",), False), (("artifacts",), []), (("artifacts",), {}),
+            (("artifacts", 0, "evidence_id"), "bad ID"),
+            (("artifacts", 0, "actual_sha256"), "0" * 64),
+            (("sensitive-document-value",), "sensitive-document-value"),
+        ):
+            changed = copy.deepcopy(original)
+            target = changed
+            for part in path[:-1]:
+                target = target[part]
+            target[path[-1]] = value
+            cases.append(changed)
+        duplicate_id = copy.deepcopy(original)
+        duplicate_id["artifacts"][1]["evidence_id"] = duplicate_id["artifacts"][0]["evidence_id"]
+        duplicate_path = copy.deepcopy(original)
+        duplicate_path["artifacts"][1]["run_dir"] = duplicate_path["artifacts"][0]["run_dir"]
+        cases.extend((duplicate_id, duplicate_path))
+        for position, document in enumerate(cases):
+            with self.subTest(case=position):
+                self.bindings_path.write_text(json.dumps(document), encoding="utf-8")
+                self.assert_failure(before_artifacts=True)
+
+    def test_mapping_coverage_is_exact_not_a_partial_or_retention_selection(self) -> None:
+        original = copy.deepcopy(self.bindings)
+        for replacement in (None, "unknown-evidence", "evidence-approval-record", "evidence-run-old-a"):
+            with self.subTest(replacement=replacement):
+                self.bindings = copy.deepcopy(original)
+                if replacement is None:
+                    self.bindings["artifacts"].pop()
+                else:
+                    self.bindings["artifacts"][1]["evidence_id"] = replacement
+                self.write_documents()
+                self.assert_failure(before_artifacts=True)
+        self.bindings = copy.deepcopy(original)
+        self.bindings["artifacts"].append({"evidence_id": "evidence-run-old-a", "run_dir": "unmapped"})
+        self.write_documents()
+        self.assert_failure(before_artifacts=True)
+
+    def test_invalid_contract_schema_lifecycle_approval_and_kind_are_delegated(self) -> None:
+        original = copy.deepcopy(self.contract)
+        for path, value in (
+            (("contract_schema", "version"), 2),
+            (("baseline_lifecycle", "promotion_path"), []),
+            (("baselines", 0, "promotion_chain"), []),
+            (("approval", "scope_sha256"), "0" * 64),
+            (("variance_studies", 0, "runs", 1, "artifact_evidence_id"), "evidence-approval-record"),
+        ):
+            with self.subTest(path=path):
+                self.contract = copy.deepcopy(original)
+                target = self.contract
+                for part in path[:-1]:
+                    target = target[part]
+                target[path[-1]] = value
+                self.write_documents()
+                with mock.patch.object(
+                    baseline, "validate_controlled_evidence_contract", wraps=baseline.validate_controlled_evidence_contract
+                ) as validate:
+                    self.assert_failure(before_artifacts=True)
+                    validate.assert_called()
+
+    def test_manifest_json_encoding_duplicates_nonfinite_and_deep_values_are_rejected(self) -> None:
+        raw = self.bindings_path.read_bytes()
+        cases = [
+            b"\xff", b"", b'{"sensitive-document-value":', raw + b"null",
+            raw.replace(b'"contract_sha256":', b'"contract_sha256":"duplicate","contract_sha256":'),
+            raw.replace(b'"version": 1', b'"version":1,"version":1', 1),
+            b'{"x":' * 65 + b"0" + b"}" * 65,
+            raw.replace(b"retained espace-", b"retained \\ud800-", 1),
+        ]
+        cases.extend(raw.replace(b'"version": 1', b'"version": ' + token, 1) for token in (
+            b"NaN", b"Infinity", b"-Infinity", b"1e9999", b"9" * 5000,
+        ))
+        for position, invalid in enumerate(cases):
+            with self.subTest(case=position):
+                self.bindings_path.write_bytes(invalid)
+                self.assert_failure(before_artifacts=True)
+
+    def test_manifest_byte_depth_and_mapping_limits_are_local_and_bounded(self) -> None:
+        raw = self.bindings_path.read_bytes()
+        self.assertEqual(baseline.CONTROLLED_ARTIFACT_BINDINGS_MAX_BYTES, 1024 * 1024)
+        source = mock.MagicMock()
+        source.__enter__.return_value.read.return_value = raw
+        with mock.patch.object(Path, "open", return_value=source):
+            baseline.load_controlled_artifact_bindings_file(self.root, self.bindings_relative)
+        source.__enter__.return_value.read.assert_called_once_with(1024 * 1024 + 1)
+        self.bindings_path.write_bytes(raw + b" " * (1024 * 1024 - len(raw)))
+        self.assertEqual(self.verify()["verified_artifacts"], self.expected_bindings)
+        with self.bindings_path.open("ab") as output:
+            output.write(b" ")
+        with mock.patch.object(baseline.json, "loads", side_effect=AssertionError("oversize parse")):
+            with self.assertRaises(baseline.BaselineError):
+                baseline.load_controlled_artifact_bindings_file(self.root, self.bindings_relative)
+        self.assert_failure(before_artifacts=True)
+        self.bindings_path.write_bytes(b"[" * 65 + b"0" + b"]" * 65)
+        with mock.patch.object(baseline.json, "loads", side_effect=AssertionError("deep parse")):
+            with self.assertRaises(baseline.BaselineError):
+                baseline.load_controlled_artifact_bindings_file(self.root, self.bindings_relative)
+        self.assertEqual(baseline.CONTROLLED_ARTIFACT_BINDINGS_MAX_ARTIFACTS, 128)
+        self.bindings["artifacts"] = [
+            {"evidence_id": f"evidence-{number:03}", "run_dir": f"not-opened/{number}"} for number in range(128)
+        ]
+        self.write_documents()
+        loaded = baseline.load_controlled_artifact_bindings_file(self.root, self.bindings_relative)
+        self.assertEqual(len(loaded["artifacts"]), 128)
+        self.bindings["artifacts"].append({"evidence_id": "evidence-128", "run_dir": "not-opened/128"})
+        self.write_documents()
+        self.assert_failure(before_artifacts=True)
+
+    def test_all_directory_paths_are_preflighted_including_later_invalid_mapping(self) -> None:
+        original = self.bindings["artifacts"][1]["run_dir"]
+        for path in ("", ".", "../outside", "./" + original, str(self.root / original), "C:/artifact",
+                     original + "/", original.replace("/", "//", 1), original.replace("/", "\\", 1),
+                     "missing-directory", "policy.json", "bad\x00path"):
+            with self.subTest(path=path):
+                self.bindings["artifacts"][1]["run_dir"] = path
+                self.write_documents()
+                self.assert_failure(before_artifacts=True)
+        link = self.root / "artifact-link"
+        try:
+            link.symlink_to(self.root / original, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        self.bindings["artifacts"][1]["run_dir"] = "artifact-link"
+        self.write_documents()
+        self.assert_failure(before_artifacts=True)
+        link.unlink()
+        link.symlink_to((self.root / original).parent, target_is_directory=True)
+        self.bindings["artifacts"][1]["run_dir"] = "artifact-link/" + (self.root / original).name
+        self.write_documents()
+        self.assert_failure(before_artifacts=True)
+
+    def test_same_local_directory_aliases_fail_before_fingerprinting(self) -> None:
+        first = self.bindings["artifacts"][0]["run_dir"]
+        alias = first.replace("retained", "RETAINED", 1)
+        if not (self.root / alias).exists() or not (self.root / alias).samefile(self.root / first):
+            self.skipTest("case-insensitive directory alias unavailable on this filesystem")
+        self.bindings["artifacts"][1]["run_dir"] = alias
+        self.write_documents()
+        self.assert_failure(before_artifacts=True)
+
+    def test_both_document_inputs_require_explicit_regular_nonsymlink_files(self) -> None:
+        for field, path in (("contract_relative", self.contract_path), ("bindings_relative", self.bindings_path)):
+            for invalid in (str(path), "../outside.json", "./" + path.relative_to(self.root).as_posix(),
+                            "", "inputs", "missing.json"):
+                with self.subTest(field=field, path=invalid):
+                    self.assert_failure(before_artifacts=True, **{field: invalid})
+        link = self.root / "document-link"
+        try:
+            link.symlink_to(self.bindings_path)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        self.assert_failure(before_artifacts=True, bindings_relative="document-link")
+        link.unlink()
+        link.symlink_to(self.contract_path)
+        self.assert_failure(before_artifacts=True, contract_relative="document-link")
+        link.unlink()
+        link.symlink_to(self.root / "inputs", target_is_directory=True)
+        self.assert_failure(before_artifacts=True, bindings_relative="document-link/" + self.bindings_path.name)
+        self.assert_failure(before_artifacts=True, contract_relative="document-link/" + self.contract_path.name)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO creation unavailable")
+    def test_document_and_directory_fifos_are_rejected_without_opening(self) -> None:
+        fifo = self.root / "fifo"
+        os.mkfifo(fifo)
+        actual_open = Path.open
+
+        def no_fifo_open(path, *args, **kwargs):
+            self.assertNotEqual(path, fifo)
+            return actual_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", no_fifo_open):
+            self.assert_failure(before_artifacts=True, contract_relative="fifo")
+            self.assert_failure(before_artifacts=True, bindings_relative="fifo")
+            self.bindings["artifacts"][1]["run_dir"] = "fifo"
+            self.write_documents()
+            self.assert_failure(before_artifacts=True)
+
+    def test_later_tampering_and_fresh_checksums_never_emit_partial_success(self) -> None:
+        artifact = self.artifacts["evidence-run-current-b"]
+        raw = next(artifact.run_dir.glob("commands/*/command.stderr"))
+        raw.write_bytes(b"new retained raw evidence")
+        self.assert_failure()
+        baseline.write_checksums(self.root, artifact.run_dir)
+        fingerprint = baseline.fingerprint_artifact(self.root, artifact.run_dir.relative_to(self.root).as_posix())
+        self.assertNotEqual(fingerprint["sha256"], self.expected_bindings[1]["content_sha256"])
+        self.assert_failure()
+
+    def test_swapped_directories_and_wrong_declared_target_sha_are_rejected(self) -> None:
+        a, b = self.bindings["artifacts"]
+        a["run_dir"], b["run_dir"] = b["run_dir"], a["run_dir"]
+        self.write_documents()
+        self.assert_failure()
+        a["run_dir"], b["run_dir"] = b["run_dir"], a["run_dir"]
+        self.study["target_sha"] = "b" * 40
+        for run in self.study["runs"]:
+            run["target_sha"] = "b" * 40
+        self.contract["baselines"][0]["target_sha"] = "b" * 40
+        self.refresh_contract_pin()
+        self.assert_failure()
+
+    def test_valid_smoke_fingerprint_is_not_a_full_variance_run(self) -> None:
+        smoke = self.make_artifact("synthetic-smoke", mode="bench-smoke")
+        self.study["runs"][1]["run_id"] = smoke.run_id
+        self.bindings["artifacts"][1]["run_dir"] = smoke.run_dir.relative_to(self.root).as_posix()
+        next(item for item in self.contract["evidence_retention"] if item["evidence_id"] == "evidence-run-current-b")["sha256"] = self.independent_content_sha256(smoke.run_dir)
+        self.refresh_contract_pin()
+        self.assertEqual(baseline.fingerprint_artifact(self.root, self.bindings["artifacts"][1]["run_dir"])["source"]["mode"], "bench-smoke")
+        self.assert_failure()
+
+    def test_incomplete_dirty_and_unsupported_artifacts_inherit_fingerprint_rejection(self) -> None:
+        artifact = self.artifacts["evidence-run-current-b"]
+        summary_path = artifact.run_dir / "summary.json"
+        provenance_path = artifact.run_dir / "provenance.json"
+        original_summary = json.loads(summary_path.read_text())
+        original_provenance = json.loads(provenance_path.read_text())
+        for kind in ("incomplete", "dirty", "unsupported"):
+            with self.subTest(kind=kind):
+                summary, provenance = copy.deepcopy(original_summary), copy.deepcopy(original_provenance)
+                if kind == "incomplete":
+                    summary["stress_samples"], summary["stress_aggregates"] = [], []
+                elif kind == "dirty":
+                    summary.update(status="invalid", baseline_valid=False, invalid_reasons=["synthetic dirty"])
+                    provenance.update(dirty=True, dirty_override=True, baseline_eligible=False)
+                else:
+                    provenance["harness_version"] = "unsupported"
+                baseline.write_json(summary_path, summary)
+                baseline.write_json(provenance_path, provenance)
+                baseline.write_checksums(self.root, artifact.run_dir)
+                self.assert_failure()  # An untouched copied complete report cannot substitute.
+
+    def test_missing_local_git_objects_fail_without_a_weaker_fallback(self) -> None:
+        (self.root / ".git/objects" / self.sha[:2] / self.sha[2:]).unlink()
+        self.assert_failure()
+
+    def test_duplicate_actual_content_and_scheme_drift_are_rejected_defensively(self) -> None:
+        responses = [
+            {"content": {"content_schema": self.bindings["artifact_content_schema"]},
+             "sha256": row["content_sha256"], "source": {key: row[key] for key in ("mode", "run_id", "target_sha")}}
+            for row in self.expected_bindings
+        ]
+        responses[1]["sha256"] = responses[0]["sha256"]
+        with mock.patch.object(baseline, "fingerprint_artifact", side_effect=responses):
+            with self.assertRaisesRegex(baseline.BaselineError, "distinct"):
+                self.verify()
+        responses[0]["content"] = {"content_schema": {"name": "benchmark-artifact-content", "version": 2}}
+        with mock.patch.object(baseline, "fingerprint_artifact", return_value=responses[0]):
+            with self.assertRaisesRegex(baseline.BaselineError, "scheme"):
+                self.verify()
+
+    def test_fingerprints_are_sequential_sorted_and_full_inventories_are_released(self) -> None:
+        class Fingerprint(dict):
+            pass
+
+        original = baseline.fingerprint_artifact
+        previous = None
+        visited = []
+
+        def fingerprint(root, path):
+            nonlocal previous
+            if previous is not None:
+                self.assertIsNone(previous(), "previous full inventory retained")
+            result = Fingerprint(original(root, path))
+            previous = weakref.ref(result)
+            visited.append(path)
+            return result
+
+        self.bindings["artifacts"].reverse()
+        self.write_documents()
+        with mock.patch.object(baseline, "fingerprint_artifact", fingerprint):
+            self.verify()
+        self.assertEqual(visited, [item["run_dir"] for item in sorted(self.bindings["artifacts"], key=lambda item: item["evidence_id"])])
+        self.assertIsNotNone(previous)
+        if previous is not None:
+            self.assertIsNone(previous())
+
+    def test_non_artifact_evidence_expiration_and_opaque_digests_remain_unverified(self) -> None:
+        for item in self.contract["evidence_retention"]:
+            item["locator"] = "opaque:unresolvable/" + item["evidence_id"]
+            item["recorded_utc"] = "2020-01-01T00:00:00Z"
+            item["retained_until_utc"] = "2021-01-01T00:00:00Z"
+        self.contract["approval"]["approved_utc"] = "2020-06-01T00:00:00Z"
+        self.study["producer_set_sha256"] = "c" * 64
+        self.study["scenario_set_sha256"] = "d" * 64
+        for run in self.study["runs"]:
+            run["producer_set_sha256"], run["scenario_set_sha256"] = "c" * 64, "d" * 64
+        self.contract["budget_rules"][0]["scenario_identity"]["identity_sha256"] = "e" * 64
+        self.refresh_contract_pin()
+        self.assert_verification_scope(self.verify())
+
+    def test_verifier_and_cli_only_read_named_inputs_artifacts_and_local_git_objects(self) -> None:
+        actual_run, actual_open = subprocess.run, Path.open
+        calls = []
+
+        def local_git(argv, **kwargs):
+            self.assertEqual(tuple(argv[:5]), ("git", "--no-lazy-fetch", "--no-replace-objects", "cat-file", "blob"))
+            self.assertIn(argv[5], (f"{self.sha}:Cargo.lock", f"{self.sha}:benchmarks/Cargo.toml"))
+            calls.append(argv[5])
+            return actual_run(argv, **kwargs)
+
+        def read_only_open(path, mode="r", *args, **kwargs):
+            self.assertIn(mode, ("r", "rb"))
+            self.assertTrue(
+                path in (self.contract_path, self.bindings_path)
+                or any(path.is_relative_to(artifact.run_dir) for artifact in self.artifacts.values()),
+                f"unexpected evidence/locator/policy read: {path}",
+            )
+            return actual_open(path, mode, *args, **kwargs)
+
+        before = self.inventory()
+        output, stderr = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with contextlib.ExitStack() as stack:
+            for name in ("bootstrap_repository", "run_mode", "run_benchmarks", "collect_environment",
+                         "write_json", "write_checksums", "load_policy_file", "controlled_evaluate_artifacts",
+                         "utc_now"):
+                stack.enter_context(mock.patch.object(baseline, name, side_effect=AssertionError(name)))
+            for name in ("socket.create_connection", "urllib.request.urlopen"):
+                stack.enter_context(mock.patch(name, side_effect=AssertionError(name)))
+            stack.enter_context(mock.patch.object(baseline.subprocess, "run", local_git))
+            stack.enter_context(mock.patch.object(Path, "open", read_only_open))
+            stack.enter_context(mock.patch.object(baseline, "__file__", str(self.script)))
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            stack.enter_context(contextlib.redirect_stderr(stderr))
+            result = self.verify()
+            self.assertEqual(baseline.main(["verify-controlled-artifacts", self.contract_relative, self.bindings_relative]), 0)
+        self.assertEqual(len(calls), 8)
+        self.assertEqual(json.loads(output.getvalue()), result)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(self.inventory(), before)
+
+    def test_binding_read_errors_are_baseline_errors_without_cli_traceback(self) -> None:
+        actual_open = Path.open
+
+        def denied(path, *args, **kwargs):
+            if path == self.bindings_path:
+                raise PermissionError("sensitive-document-value")
+            return actual_open(path, *args, **kwargs)
+
+        before = self.inventory()
+        output, stderr = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with mock.patch.object(Path, "open", denied), mock.patch.object(baseline, "__file__", str(self.script)), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(baseline.BaselineError):
+                self.verify()
+            self.assertEqual(baseline.main(["verify-controlled-artifacts", self.contract_relative, self.bindings_relative]), 1)
+        self.assertEqual(output.getvalue(), b"")
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertNotIn("sensitive-document-value", stderr.getvalue())
+        self.assertEqual(self.inventory(), before)
+
+    def test_cli_help_missing_arguments_and_unknown_flags(self) -> None:
+        for args in (("--help",), ("verify-controlled-artifacts", "--help")):
+            result = self.cli(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(b"verify-controlled-artifacts", result.stdout)
+            self.assertEqual(result.stderr, b"")
+        for args in (("verify-controlled-artifacts",), ("verify-controlled-artifacts", self.contract_relative),
+                     ("verify-controlled-artifacts", self.contract_relative, self.bindings_relative, "--latest")):
+            result = self.cli(*args)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stdout, b"")
+            self.assertIn(b"usage:", result.stderr)
 
 
 if __name__ == "__main__":

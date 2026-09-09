@@ -554,7 +554,7 @@ SHA-256 values and locators establish content identity and reference structure
 only. They are not signatures, runner attestation, proof of environment equality,
 approval authority, or approval. Likewise, successful validation does not assert
 performance pass/fail, regression/improvement, statistical significance,
-baseline acceptance, or policy activation. The tests use obviously synthetic,
+baseline acceptance, or policy activation. The schema-only tests use obviously synthetic,
 non-authoritative values and perform no network, artifact, or benchmark work.
 
 The checked-in disabled policy and the read-only `controlled-evaluate` exit-`3`
@@ -563,6 +563,179 @@ method, repeated-variance process, baseline promotion, budget, approval
 authority, retention process, or performance gate requires a separate
 owner-approved PR. This schema and its validator do not advance controlled
 performance acceptance or any ledger evidence status.
+
+### Explicit controlled artifact bindings
+
+`verify-controlled-artifacts` adds an **opt-in binding manifest**, not a new
+controlled-evidence contract version. It matches local artifact content and
+declared run identity for every variance-study run in one canonically pinned
+contract. The existing structural-only validator, contract/approval-scope hashes,
+fingerprint command, producers, and policy commands are unchanged.
+
+Supply both files explicitly; the example paths below are not shipped production
+instances:
+
+```bash
+python3 scripts/baseline.py verify-controlled-artifacts --help
+python3 scripts/baseline.py verify-controlled-artifacts \
+  inputs/controlled-evidence.json inputs/artifact-bindings.json
+```
+
+Both arguments must be repository-relative regular UTF-8 JSON files, anchored to
+the repository containing the script, not the caller's current directory. Spaces
+and Unicode are supported. Absolute paths, empty/dot/traversal components,
+backslashes, symlink files or ancestors, missing files, directories, and special
+files are rejected. The same strict repository-relative policy applies to every
+mapped `run_dir`, which must be an existing nonsymlink directory.
+
+#### Binding manifest v1
+
+The manifest has exactly four fields. This complete **syntax example is
+synthetic and not ready for verification**: replace the zero contract pin,
+example target SHA, evidence IDs, and directories with your explicitly selected
+contract and retained artifacts. A copied example grants no approval or authority.
+
+```json
+{
+  "binding_schema": {
+    "name": "benchmark-controlled-artifact-bindings",
+    "version": 1
+  },
+  "contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "artifact_content_schema": {
+    "name": "benchmark-artifact-content",
+    "version": 1
+  },
+  "artifacts": [
+    {
+      "evidence_id": "synthetic-artifact-a",
+      "run_dir": "bench-output/baseline-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/synthetic-run-a"
+    },
+    {
+      "evidence_id": "synthetic-artifact-b",
+      "run_dir": "bench-output/baseline-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/synthetic-run-b"
+    }
+  ]
+}
+```
+
+- `binding_schema` and `artifact_content_schema` require the exact names and
+  integer versions shown; boolean versions, extra keys, and alternative digest
+  schemes are rejected.
+- `contract_sha256` is a lowercase 64-hex SHA-256 of the **whole canonical
+  contract**, as returned by `controlled_evidence_contract_sha256` after the
+  existing loader validates it. It is **not** the raw contract-file hash and
+  **not** `approval.scope_sha256`; the whole-contract pin includes the approval
+  record when present. Equivalent set/list permutations preserve this pin.
+- `artifacts` contains 1–128 exact `{evidence_id, run_dir}` objects. IDs use the
+  existing lowercase bounded identifier grammar. Duplicate IDs and directory
+  strings are errors, not deduplicated entries. Local directory aliases with the
+  same filesystem device/inode identity are also rejected before fingerprinting.
+- The mapping ID set must equal **all** unique
+  `variance_studies[].runs[].artifact_evidence_id` values. Each must resolve to
+  retained `benchmark_artifact` evidence. Missing, extra, unknown, non-artifact,
+  or unreferenced-retention mappings fail; there is no subset/best-effort mode.
+  Baseline records remain governed by the existing contract validator, not a
+  second selection mechanism.
+
+Each input file is bounded to **1 MiB including whitespace** and 64 nested
+objects/arrays. The binding loader rejects malformed UTF-8/JSON, non-object roots,
+duplicate object names at any depth, non-finite/overflowing numbers, unsupported
+numeric representations, and strings not representable as canonical UTF-8.
+The 128-mapping cap is new-verifier scope only, not a change to accepted
+controlled-evidence v1 documents.
+
+The binding manifest's canonical representation sorts `artifacts` by evidence
+ID and object keys lexically, preserving path spelling without Unicode or
+filesystem normalization. It uses compact JSON separators `,` and `:`,
+`ensure_ascii=False`, `allow_nan=False`, UTF-8, and exactly one final LF. Its
+canonical SHA-256 hashes the entire normalized manifest, including its schema,
+contract pin, content scheme, and mapping paths. This differs from the existing
+contract's indented canonical representation. Module helpers in
+`scripts/baseline.py` are `canonical_controlled_artifact_bindings`,
+`controlled_artifact_bindings_json_text`, `controlled_artifact_bindings_sha256`,
+and `load_controlled_artifact_bindings_file`; these perform syntax validation and
+normalization, **not** cross-document or artifact verification.
+
+#### Verification and result scope
+
+`verify_controlled_artifacts(repo_root, contract_json, bindings_json)` validates
+the entire contract and manifest, checks the canonical pin and complete mapping
+coverage, and validates **all** directory paths before any fingerprint, Git
+query, or artifact-payload hashing. It then invokes the existing
+`fingerprint_artifact` sequentially in evidence-ID order. For each mapping:
+
+1. Revalidate the actual retained files/checksums and rebuild the report through
+   the existing fingerprint path; copied reports or fingerprint JSON cannot
+   substitute for raw evidence.
+2. Require `bench-full` mode and exact target-SHA/run-ID equality with the
+   declared variance run. A valid smoke fingerprint is insufficient.
+3. Require the fresh whole-artifact content digest to equal that referenced
+   retention record's declared `sha256`, with distinct actual identities/content.
+
+The explicit manifest opts **only these mapped variance-run artifact references**
+into the `benchmark-artifact-content` v1 whole-artifact interpretation from
+[ADR 0005](docs/adr/0005-whole-artifact-fingerprint.md). It does not globally
+reinterpret `evidence_retention[].sha256` for existing v1 consumers or other
+evidence kinds. All fingerprint guards and local-only Git rules still apply:
+4 MiB checksum inventory, 10,000 descendant entries, streamed file hashes, no
+lazy fetch, and failure when required local Git objects are unavailable. Full
+inventories are discarded between artifacts; the result retains only summaries.
+
+Success emits one compact, sorted-key UTF-8 JSON document ending in LF, even
+under an ASCII stdout locale. Its fields are:
+
+- `verification_schema`: `benchmark-controlled-artifact-verification`, version 1.
+- `contract`: `contract_id` and whole-contract `canonical_sha256`.
+- `binding_manifest`: binding `schema` and canonical manifest `canonical_sha256`.
+- `artifact_content_schema`: the explicit `benchmark-artifact-content` v1 scheme.
+- `verified_artifacts`: evidence-ID-sorted records containing `evidence_id`,
+  `study_id`, `target_sha`, `run_id`, `mode`, and fresh `content_sha256`.
+- `verification_scope`: `variance_run_artifact_content_and_declared_run_identity_only`.
+- `qualification`: `integrity_only_not_authentication_or_owner_authorization`.
+- `performance_enforcement`: fixed `state: not_eligible` with
+  `reason: artifact_binding_verification_only`.
+- `not_verified`: the fixed list below, regardless of synthetic or real
+  approval-state declarations inside the contract.
+
+Explicitly **not verified**:
+
+| Result label | Outside this verifier's scope |
+|---|---|
+| `producer_set_sha256` | Comparing the opaque declared producer-set digest |
+| `scenario_set_sha256` | Comparing the opaque declared scenario-set digest |
+| `budget_scenario_identity_sha256` | Comparing a budget's scenario-identity digest |
+| `runner_profile_control_and_environment_equality` | Runner/profile control, attestation, or environment equality |
+| `statistical_method_and_variance_analysis` | Method execution, variance analysis, or statistical significance |
+| `independent_executions` | Proof that artifacts came from independent executions |
+| `non_artifact_and_unmapped_retained_evidence` | Contents of other retained evidence, including unmapped records |
+| `expiration_and_continued_retention` | Current expiration or continued availability; structural timestamp checks still apply |
+| `approval_authentication_and_owner_authorization` | Authenticating approvals, signers, or owner authorization |
+| `baseline_acceptance` | Accepting or promoting a baseline |
+| `performance_enforcement` | Budgets, performance verdicts, or enforcement eligibility |
+
+The report builder still checks each artifact's **intrinsic** producer/scenario
+completeness. That does not define external bytes for the opaque producer-set,
+scenario-set, or budget-identity digests, or compare those fields with artifacts.
+Unreferenced retention records and non-artifact evidence locators are not opened.
+
+Exit **0** means all bound content/run identities matched, **not performance
+pass** or complete-contract verification. Stderr is empty. Input/verification
+failure exits **1**, with a stderr diagnostic only and no partial result, even
+if an earlier mapping matched. Handled input errors produce no traceback;
+generic parsing/schema diagnostics do not echo supplied document values.
+Usage errors exit **2**, and help exits **0**. Module input failures raise
+`BaselineError`; returned results use `artifact_fingerprint_json_text` for the
+same canonical encoding as the CLI.
+
+Documents and artifacts must remain unchanged during a call; there is no atomic
+snapshot or race-proof filesystem guarantee. The command performs no writes,
+collection, implicit `latest` selection, opaque-locator fetch, network access,
+Cargo/benchmark execution, `controlled-evaluate`, workflow operation, or policy
+activation. A manifest pin is integrity identity, not a signature or approval.
+[ADR 0006](docs/adr/0006-controlled-artifact-bindings.md) records the additive
+opt-in decision. Broader PR-601 acceptance remains unfinished, with no ledger
+evidence promotion or implicit migration.
 
 The measured report below remains the June 2026 baseline; the harness does not
 replace those numbers until a clean, committed-SHA run is recorded.

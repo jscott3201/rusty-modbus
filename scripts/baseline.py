@@ -50,6 +50,24 @@ ARTIFACT_FINGERPRINT_QUALIFICATION = (
     "integrity_only_not_authentication_attestation_approval_baseline_acceptance_"
     "independent_run_proof_performance_verdict_or_policy_activation"
 )
+CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME = "benchmark-controlled-artifact-bindings"
+CONTROLLED_ARTIFACT_VERIFICATION_SCHEMA_NAME = "benchmark-controlled-artifact-verification"
+CONTROLLED_ARTIFACT_BINDINGS_MAX_BYTES = 1024 * 1024
+CONTROLLED_ARTIFACT_BINDINGS_MAX_ARTIFACTS = 128
+CONTROLLED_ARTIFACT_VERIFICATION_SCOPE = "variance_run_artifact_content_and_declared_run_identity_only"
+CONTROLLED_ARTIFACT_NOT_VERIFIED = (
+    "producer_set_sha256",
+    "scenario_set_sha256",
+    "budget_scenario_identity_sha256",
+    "runner_profile_control_and_environment_equality",
+    "statistical_method_and_variance_analysis",
+    "independent_executions",
+    "non_artifact_and_unmapped_retained_evidence",
+    "expiration_and_continued_retention",
+    "approval_authentication_and_owner_authorization",
+    "baseline_acceptance",
+    "performance_enforcement",
+)
 CONTROLLED_NOT_ELIGIBLE_EXIT = 3
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
@@ -4855,6 +4873,154 @@ def load_controlled_evidence_contract_file(repo_root: Path, value: str) -> dict[
         raise BaselineError("controlled evidence contract validation failed") from error
 
 
+def canonical_controlled_artifact_bindings(document: Any) -> dict[str, Any]:
+    """Validate manifest syntax only; pin, coverage and local files need the verifier."""
+    try:
+        document = _controlled_contract_exact_keys(
+            document, {"binding_schema", "contract_sha256", "artifact_content_schema", "artifacts"},
+            "controlled artifact bindings",
+        )
+        for field, name in (
+            ("binding_schema", CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME),
+            ("artifact_content_schema", ARTIFACT_CONTENT_SCHEMA_NAME),
+        ):
+            schema = _controlled_contract_exact_keys(document[field], {"name", "version"}, field)
+            if schema["name"] != name or _strict_int(schema["version"], field, minimum=1) != 1:
+                raise BaselineError("unsupported binding schema or artifact content scheme")
+        digest = _controlled_contract_digest(document["contract_sha256"], "contract_sha256")
+        artifacts = document["artifacts"]
+        if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= CONTROLLED_ARTIFACT_BINDINGS_MAX_ARTIFACTS:
+            raise BaselineError("binding manifest requires 1-128 artifact mappings")
+        normalized = []
+        evidence_ids: set[str] = set()
+        paths: set[str] = set()
+        for item in artifacts:
+            item = _controlled_contract_exact_keys(item, {"evidence_id", "run_dir"}, "artifact binding")
+            evidence_id = _controlled_contract_id(item["evidence_id"], "artifact evidence ID")
+            run_dir = item["run_dir"]
+            _strict_repository_relative_parts(run_dir, "artifact directory")
+            run_dir.encode("utf-8")
+            if evidence_id in evidence_ids or run_dir in paths:
+                raise BaselineError("duplicate artifact binding ID or directory")
+            evidence_ids.add(evidence_id)
+            paths.add(run_dir)
+            normalized.append({"evidence_id": evidence_id, "run_dir": run_dir})
+        return {
+            "binding_schema": {"name": CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME, "version": 1},
+            "artifact_content_schema": {"name": ARTIFACT_CONTENT_SCHEMA_NAME, "version": 1},
+            "contract_sha256": digest,
+            "artifacts": sorted(normalized, key=lambda item: item["evidence_id"]),
+        }
+    except (BaselineError, ValueError) as error:
+        # Exact-key/path helpers can include supplied values in their diagnostics.
+        raise BaselineError("controlled artifact bindings schema validation failed") from error
+
+
+def controlled_artifact_bindings_json_text(document: Any) -> str:
+    return artifact_fingerprint_json_text(canonical_controlled_artifact_bindings(document))
+
+
+def controlled_artifact_bindings_sha256(document: Any) -> str:
+    return hashlib.sha256(controlled_artifact_bindings_json_text(document).encode("utf-8")).hexdigest()
+
+
+def load_controlled_artifact_bindings_file(repo_root: Path, value: str) -> dict[str, Any]:
+    try:
+        path = _repository_local_input(repo_root, value, "artifact bindings path", expected="file")
+        with path.open("rb") as source:
+            raw = source.read(CONTROLLED_ARTIFACT_BINDINGS_MAX_BYTES + 1)
+    except (BaselineError, OSError, ValueError, RuntimeError) as error:
+        raise BaselineError("cannot read controlled artifact bindings file") from error
+    if len(raw) > CONTROLLED_ARTIFACT_BINDINGS_MAX_BYTES:
+        raise BaselineError("controlled artifact bindings file exceeds 1 MiB")
+    try:
+        text = raw.decode("utf-8")
+        _check_controlled_evidence_json_depth(text)
+        document = json.loads(
+            text, object_pairs_hook=_reject_duplicate_json_object,
+            parse_constant=_reject_nonfinite_json_constant,
+            parse_int=_controlled_evidence_json_number, parse_float=_controlled_evidence_json_number,
+        )
+    except (BaselineError, ValueError, RecursionError, OverflowError) as error:
+        raise BaselineError("cannot parse controlled artifact bindings JSON") from error
+    return canonical_controlled_artifact_bindings(document)
+
+
+def verify_controlled_artifacts(
+    repo_root: Path, contract_json: str, bindings_json: str
+) -> dict[str, Any]:
+    """Opt in to content/run-identity matching only, without verifying other evidence."""
+    contract = load_controlled_evidence_contract_file(repo_root, contract_json)
+    bindings = load_controlled_artifact_bindings_file(repo_root, bindings_json)
+    contract_digest = controlled_evidence_contract_sha256(contract)
+    if bindings["contract_sha256"] != contract_digest:
+        raise BaselineError("controlled artifact bindings contract pin mismatch")
+    runs = {
+        run["artifact_evidence_id"]: (study["study_id"], run)
+        for study in contract["variance_studies"] for run in study["runs"]
+    }
+    evidence = {item["evidence_id"]: item for item in contract["evidence_retention"]}
+    if {item["evidence_id"] for item in bindings["artifacts"]} != set(runs):
+        raise BaselineError("artifact bindings must cover exactly all variance-run evidence IDs")
+    if any(evidence[evidence_id]["kind"] != "benchmark_artifact" for evidence_id in runs):
+        raise BaselineError("artifact bindings require benchmark_artifact evidence")
+
+    # Complete all mapping/path preflight before any fingerprint or local Git query.
+    directories: set[tuple[int, int]] = set()
+    try:
+        for item in bindings["artifacts"]:
+            path = _repository_local_input(repo_root, item["run_dir"], "bound artifact directory", expected="directory")
+            metadata = path.stat()
+            identity = (metadata.st_dev, metadata.st_ino)
+            if identity in directories:
+                raise BaselineError("artifact directory aliases are not supported")
+            directories.add(identity)
+    except (BaselineError, OSError, ValueError, RuntimeError) as error:
+        raise BaselineError("controlled artifact binding directories are invalid or duplicated") from error
+
+    verified = []
+    identities: set[tuple[str, str]] = set()
+    digests: set[str] = set()
+    for item in bindings["artifacts"]:
+        evidence_id = item["evidence_id"]
+        study_id, run = runs[evidence_id]
+        try:
+            fingerprint = fingerprint_artifact(repo_root, item["run_dir"])
+        except BaselineError as error:
+            raise BaselineError("controlled artifact fingerprint validation failed") from error
+        if fingerprint["content"]["content_schema"] != bindings["artifact_content_schema"]:
+            raise BaselineError("controlled artifact fingerprint content scheme mismatch")
+        source, digest = fingerprint["source"], fingerprint["sha256"]
+        actual_identity = (source["target_sha"], source["run_id"])
+        if source["mode"] != "bench-full" or actual_identity != (run["target_sha"], run["run_id"]):
+            raise BaselineError("controlled artifact declared run identity or bench-full mode mismatch")
+        if actual_identity in identities or digest in digests:
+            raise BaselineError("controlled artifacts must have distinct run identities and content")
+        if digest != evidence[evidence_id]["sha256"]:
+            raise BaselineError("controlled artifact declared content digest mismatch")
+        identities.add(actual_identity)
+        digests.add(digest)
+        verified.append({
+            "evidence_id": evidence_id, "study_id": study_id,
+            "target_sha": source["target_sha"], "run_id": source["run_id"],
+            "mode": source["mode"], "content_sha256": digest,
+        })
+        del fingerprint  # Do not retain full inventories while processing later artifacts.
+    return {
+        "verification_schema": {"name": CONTROLLED_ARTIFACT_VERIFICATION_SCHEMA_NAME, "version": 1},
+        "contract": {"contract_id": contract["contract_id"], "canonical_sha256": contract_digest},
+        "binding_manifest": {
+            "schema": bindings["binding_schema"], "canonical_sha256": controlled_artifact_bindings_sha256(bindings),
+        },
+        "artifact_content_schema": bindings["artifact_content_schema"],
+        "verified_artifacts": verified,
+        "verification_scope": CONTROLLED_ARTIFACT_VERIFICATION_SCOPE,
+        "qualification": "integrity_only_not_authentication_or_owner_authorization",
+        "performance_enforcement": {"state": "not_eligible", "reason": "artifact_binding_verification_only"},
+        "not_verified": list(CONTROLLED_ARTIFACT_NOT_VERIFIED),
+    }
+
+
 def run_correctness(run: ArtifactRun) -> None:
     for spec in correctness_plan(run.repo_root):
         run.run_command(spec)
@@ -5060,6 +5226,16 @@ def build_parser() -> argparse.ArgumentParser:
         "contract_json",
         help="explicit repository-relative regular UTF-8 JSON file, at most 1 MiB; no symlinks",
     )
+    verify_artifacts = subparsers.add_parser(
+        "verify-controlled-artifacts",
+        help="read-only verification of explicitly bound variance-run artifact content and identity",
+        description=(
+            "Match every variance-run artifact using an explicit pinned binding manifest. "
+            "Content/run identity only; not approval, control proof or performance enforcement."
+        ),
+    )
+    verify_artifacts.add_argument("contract_json", help="repository-relative controlled-evidence v1 JSON file")
+    verify_artifacts.add_argument("bindings_json", help="repository-relative binding-manifest v1 JSON file (1 MiB, 128 mappings)")
     controlled_evaluate = subparsers.add_parser(
         "controlled-evaluate",
         help="rebuild complete artifacts and emit a fail-closed controlled preflight",
@@ -5170,6 +5346,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "validate-controlled-evidence":
             load_controlled_evidence_contract_file(repo_root, args.contract_json)
             print("controlled evidence contract structurally valid (validation only)")
+            return 0
+        if args.command == "verify-controlled-artifacts":
+            verification = verify_controlled_artifacts(repo_root, args.contract_json, args.bindings_json)
+            sys.stdout.buffer.write(artifact_fingerprint_json_text(verification).encode("utf-8"))
             return 0
         if args.command == "controlled-evaluate":
             evaluation = controlled_evaluate_artifacts(
