@@ -37,6 +37,9 @@ CONTROLLED_EVALUATION_SCHEMA_NAME = "benchmark-controlled-evaluation"
 CONTROLLED_EVALUATION_SCHEMA_VERSION = 1
 CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_NAME = "benchmark-controlled-evidence-contract"
 CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_VERSION = 1
+# File-loader resource limits only; the in-memory schema v1 APIs are unchanged.
+CONTROLLED_EVIDENCE_CONTRACT_MAX_BYTES = 1024 * 1024
+CONTROLLED_EVIDENCE_CONTRACT_MAX_DEPTH = 64
 CONTROLLED_NOT_ELIGIBLE_EXIT = 3
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
@@ -4657,6 +4660,75 @@ def controlled_evidence_contract_sha256(document: Any) -> str:
     ).hexdigest()
 
 
+def _check_controlled_evidence_json_depth(text: str) -> None:
+    # Count containers outside strings before invoking the recursive JSON decoder.
+    # This is only a resource guard; json.loads still owns all syntax validation.
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > CONTROLLED_EVIDENCE_CONTRACT_MAX_DEPTH:
+                raise BaselineError("controlled evidence contract JSON exceeds the nesting limit of 64")
+        elif character in "]}":
+            depth -= 1
+
+
+def _controlled_evidence_json_number(token: str) -> int | float:
+    # Check representability before potentially expensive arbitrary-precision int parsing.
+    # Keep finite integers exact rather than converting them through binary64.
+    number = float(token)
+    if not math.isfinite(number):
+        raise BaselineError("controlled evidence contract JSON contains an unrepresentable number")
+    return number if any(character in token for character in ".eE") else int(token)
+
+
+def load_controlled_evidence_contract_file(repo_root: Path, value: str) -> dict[str, Any]:
+    """Read one bounded local contract and normalize it; structural validation only."""
+    try:
+        path = _repository_local_input(
+            repo_root, value, "controlled evidence contract path", expected="file"
+        )
+        with path.open("rb") as source:
+            raw = source.read(CONTROLLED_EVIDENCE_CONTRACT_MAX_BYTES + 1)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise BaselineError("cannot read controlled evidence contract file") from error
+    if len(raw) > CONTROLLED_EVIDENCE_CONTRACT_MAX_BYTES:
+        raise BaselineError("controlled evidence contract file exceeds the 1 MiB byte limit")
+    try:
+        text = raw.decode("utf-8")
+        _check_controlled_evidence_json_depth(text)
+        document = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_json_object,
+            parse_constant=_reject_nonfinite_json_constant,
+            parse_int=_controlled_evidence_json_number,
+            parse_float=_controlled_evidence_json_number,
+        )
+    except BaselineError:
+        raise
+    except (ValueError, RecursionError, OverflowError) as error:
+        raise BaselineError("cannot parse controlled evidence contract JSON") from error
+    try:
+        # Reuse the existing validation and canonicalization, including scope hashing.
+        # Encoding also rejects escaped lone surrogates not representable as UTF-8.
+        canonical = controlled_evidence_contract_json_text(document)
+        return json.loads(canonical.encode("utf-8"))
+    except (BaselineError, ValueError, TypeError, RecursionError, OverflowError) as error:
+        # Schema diagnostics may contain supplied values; never echo them at this boundary.
+        raise BaselineError("controlled evidence contract validation failed") from error
+
+
 def run_correctness(run: ArtifactRun) -> None:
     for spec in correctness_plan(run.repo_root):
         run.run_command(spec)
@@ -4839,6 +4911,18 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-policy", help="strictly validate a disabled benchmark policy manifest"
     )
     validate_policy.add_argument("policy_json")
+    validate_controlled_evidence = subparsers.add_parser(
+        "validate-controlled-evidence",
+        help="read-only structural validation of a controlled evidence contract",
+        description=(
+            "Validate structure only; no evidence fetching, authentication, approval, "
+            "baseline acceptance, policy activation, or performance verdict."
+        ),
+    )
+    validate_controlled_evidence.add_argument(
+        "contract_json",
+        help="explicit repository-relative regular UTF-8 JSON file, at most 1 MiB; no symlinks",
+    )
     controlled_evaluate = subparsers.add_parser(
         "controlled-evaluate",
         help="rebuild complete artifacts and emit a fail-closed controlled preflight",
@@ -4939,6 +5023,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "validate-policy":
             load_policy_file(repo_root, args.policy_json)
             print(f"benchmark policy valid: {args.policy_json}")
+            return 0
+        if args.command == "validate-controlled-evidence":
+            load_controlled_evidence_contract_file(repo_root, args.contract_json)
+            print("controlled evidence contract structurally valid (validation only)")
             return 0
         if args.command == "controlled-evaluate":
             evaluation = controlled_evaluate_artifacts(

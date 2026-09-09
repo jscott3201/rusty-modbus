@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -588,6 +589,340 @@ def controlled_evidence_contract_fixture() -> dict:
         baseline._controlled_evidence_contract_approval_scope_sha256(document)
     )
     return document
+
+
+class ControlledEvidenceLoaderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        # Canonicalize macOS /var aliases before computing repository-relative paths.
+        self.root = Path(temporary.name).resolve() / "repository"
+        scripts = self.root / "scripts"
+        scripts.mkdir(parents=True)
+        self.script = scripts / "baseline.py"
+        shutil.copyfile(SCRIPTS / "baseline.py", self.script)
+        self.relative = "inputs/contrôle evidence.json"
+        self.path = self.root / self.relative
+        self.path.parent.mkdir()
+        self.document = controlled_evidence_contract_fixture()
+        self.path.write_text(json.dumps(self.document), encoding="utf-8")
+        policy_relative = "benchmarks/policy/benchmark-budget-policy-v1.json"
+        self.policy = self.root / policy_relative
+        self.policy.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / policy_relative, self.policy)
+
+    def inventory(self) -> dict:
+        return {
+            path.relative_to(self.root).as_posix(): (
+                ("symlink", str(path.readlink())) if path.is_symlink()
+                else ("file", path.read_bytes()) if path.is_file()
+                else ("directory", None) if path.is_dir()
+                else ("special", None)
+            )
+            for path in self.root.rglob("*")
+        }
+
+    def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(self.script), *args],
+            cwd=self.root.parent,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+
+    def test_loader_normalizes_permutations_without_writes(self) -> None:
+        permuted = copy.deepcopy(self.document)
+        for field in ("variance_studies", "baselines", "budget_rules", "evidence_retention"):
+            permuted[field].reverse()
+        for study in permuted["variance_studies"]:
+            study["runs"].reverse()
+        for part in ("runner", "profile", "binding"):
+            permuted["control"][part]["evidence_ids"].reverse()
+        self.path.write_text(json.dumps(permuted), encoding="utf-8")
+        before = self.inventory()
+
+        loaded = baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+
+        self.assertEqual(
+            loaded, json.loads(baseline.controlled_evidence_contract_json_text(self.document))
+        )
+        for field, identity in (
+            ("variance_studies", "study_id"),
+            ("baselines", "baseline_id"),
+            ("budget_rules", "budget_rule_id"),
+            ("evidence_retention", "evidence_id"),
+        ):
+            identities = [item[identity] for item in loaded[field]]
+            self.assertEqual(identities, sorted(identities))
+        self.assertEqual(self.inventory(), before)
+
+    def test_cli_success_from_alternate_cwd_is_structural_only_and_read_only(self) -> None:
+        # A cwd-relative decoy must not be read; locators are deliberately nonexistent.
+        decoy = self.root.parent / self.relative
+        decoy.parent.mkdir()
+        decoy.write_bytes(b"not the contract")
+        before = self.inventory()
+
+        result = self.cli("validate-controlled-evidence", self.relative)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout, "controlled evidence contract structurally valid (validation only)\n"
+        )
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(self.inventory(), before)
+        self.assertEqual(decoy.read_bytes(), b"not the contract")
+
+    def assert_input_failure(self, relative: str) -> None:
+        before = self.inventory()
+        with self.assertRaises(baseline.BaselineError):
+            baseline.load_controlled_evidence_contract_file(self.root, relative)
+        result = self.cli("validate-controlled-evidence", relative)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(result.stderr.startswith("baseline: "), result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("structurally valid", result.stderr)
+        self.assertNotIn("sensitive-document-value", result.stderr)
+        self.assertEqual(self.inventory(), before)
+
+    def test_explicit_local_regular_file_paths_are_required(self) -> None:
+        for relative in (
+            str(self.path), "C:/contract.json", "//server/contract.json", "",
+            ".", "..", "./inputs/contrôle evidence.json", "inputs/../contract.json",
+            "../contract.json", "inputs//contrôle evidence.json", "inputs/",
+            "inputs\\contract.json", "missing.json", "inputs", "inputs/missing.json",
+        ):
+            with self.subTest(path=relative):
+                self.assert_input_failure(relative)
+        with self.assertRaises(baseline.BaselineError):
+            baseline.load_controlled_evidence_contract_file(self.root, "bad\x00path")
+
+    def test_symlink_files_and_ancestors_are_rejected(self) -> None:
+        external = self.root.parent / "external.json"
+        external.write_bytes(self.path.read_bytes())
+        links = {
+            "file-link.json": self.path,
+            "external-link.json": external,
+            "dangling.json": self.root / "missing.json",
+            "ancestor-link": self.path.parent,
+            "external-ancestor": self.root.parent,
+        }
+        try:
+            for relative, target in links.items():
+                (self.root / relative).symlink_to(target, target_is_directory=target.is_dir())
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        external_before = external.read_bytes()
+        for relative in (
+            "file-link.json", "external-link.json", "dangling.json",
+            "ancestor-link/contrôle evidence.json", "external-ancestor/external.json",
+        ):
+            with self.subTest(path=relative):
+                self.assert_input_failure(relative)
+        self.assertEqual(external.read_bytes(), external_before)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO creation unavailable")
+    def test_special_file_is_rejected_without_opening(self) -> None:
+        os.mkfifo(self.root / "fifo.json")
+        with mock.patch.object(Path, "open", side_effect=AssertionError("must not open FIFO")):
+            with self.assertRaises(baseline.BaselineError):
+                baseline.load_controlled_evidence_contract_file(self.root, "fifo.json")
+        self.assert_input_failure("fifo.json")
+
+    def test_malformed_json_encoding_and_numbers_fail_without_tracebacks(self) -> None:
+        valid = self.path.read_bytes()
+        cases = {
+            "invalid-utf8": b'{"value":"\xff"}',
+            "empty": b"",
+            "truncated": b'{"sensitive-document-value":',
+            "trailing": valid + b" false",
+            "array-root": b"[]",
+            "null-root": b"null",
+            "string-root": b'"sensitive-document-value"',
+            "duplicate-root": valid.replace(
+                b'"contract_id":', b'"contract_id":"sensitive-document-value","contract_id":'
+            ),
+            "duplicate-nested": valid.replace(b'"version":', b'"version":1,"version":', 1),
+            "deep-object": b'{"x":' * 1500 + b"0" + b"}" * 1500,
+            "deep-array": b"[" * 1500 + b"0" + b"]" * 1500,
+            "escaped-surrogate": valid.replace(b"opaque:synthetic/", b"opaque:\\ud800/", 1),
+        }
+        for token in (
+            b"NaN", b"Infinity", b"-Infinity", b"1e9999", b"-1e9999",
+            b"9" * 400, b"9" * 5000,
+        ):
+            cases[f"number-{token[:12]!r}"] = valid.replace(b'"limit": 1.0', b'"limit": ' + token, 1)
+        for label, raw in cases.items():
+            with self.subTest(case=label):
+                self.path.write_bytes(raw)
+                self.assert_input_failure(self.relative)
+
+    def test_nesting_is_bounded_before_json_parsing(self) -> None:
+        for opener, closer in ((b'{"x":', b"}"), (b"[", b"]")):
+            with self.subTest(opener=opener):
+                self.path.write_bytes(opener * 65 + b"0" + closer * 65)
+                with mock.patch.object(
+                    baseline.json, "loads", side_effect=AssertionError("must not parse")
+                ), self.assertRaisesRegex(baseline.BaselineError, "nesting"):
+                    baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+                self.assert_input_failure(self.relative)
+        # The 64-container boundary reaches schema validation, not the depth guard.
+        self.path.write_bytes(b'{"x":' * 64 + b"0" + b"}" * 64)
+        with mock.patch.object(
+            baseline, "validate_controlled_evidence_contract", return_value=["invalid schema"]
+        ) as validate, self.assertRaises(baseline.BaselineError):
+            baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+        validate.assert_called_once()
+
+    def test_unrepresentable_numbers_are_rejected_before_schema_validation(self) -> None:
+        for token in (b"1e9999", b"-1e9999", b"9" * 400, b"9" * 5000):
+            with self.subTest(token=token[:12]):
+                self.path.write_bytes(b'{"value":' + token + b"}")
+                with mock.patch.object(
+                    baseline, "validate_controlled_evidence_contract",
+                    side_effect=AssertionError("must not validate unrepresentable numbers"),
+                ), self.assertRaises(baseline.BaselineError):
+                    baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+
+    def test_json_string_escapes_unicode_and_representable_numbers_are_preserved(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["evidence_retention"][0]["locator"] = (
+            'opaque:synthetic/é🧪"\\' + "[" * 80 + "]" * 80
+        )
+        # Large finite integers must remain integers, not rounded through float parsing.
+        document["budget_rules"][0]["limit"] = 2 ** 53 + 1
+        document["approval"]["scope_sha256"] = (
+            baseline._controlled_evidence_contract_approval_scope_sha256(document)
+        )
+        self.path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+        before = self.inventory()
+        loaded = baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+        self.assertEqual(
+            loaded, json.loads(baseline.controlled_evidence_contract_json_text(document))
+        )
+        result = self.cli("validate-controlled-evidence", self.relative)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(self.inventory(), before)
+
+    def test_byte_limit_is_inclusive_and_checked_before_parsing(self) -> None:
+        self.assertEqual(baseline.CONTROLLED_EVIDENCE_CONTRACT_MAX_BYTES, 1024 * 1024)
+        raw = self.path.read_bytes()
+        padded = raw + b" " * (1024 * 1024 - len(raw))
+        self.path.write_bytes(padded)
+        before = self.inventory()
+        self.assertEqual(
+            baseline.load_controlled_evidence_contract_file(self.root, self.relative),
+            json.loads(baseline.controlled_evidence_contract_json_text(self.document)),
+        )
+        self.assertEqual(self.cli("validate-controlled-evidence", self.relative).returncode, 0)
+        self.assertEqual(self.inventory(), before)
+        self.path.write_bytes(padded + b" ")
+        with mock.patch.object(baseline.json, "loads", side_effect=AssertionError("must not parse")):
+            with self.assertRaisesRegex(baseline.BaselineError, "1 MiB"):
+                baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+        self.assert_input_failure(self.relative)
+
+    def test_read_is_bounded_and_io_errors_are_baseline_errors(self) -> None:
+        source = mock.MagicMock()
+        source.__enter__.return_value.read.return_value = self.path.read_bytes()
+        with mock.patch.object(Path, "open", return_value=source) as opened:
+            baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+        opened.assert_called_once_with("rb")
+        source.__enter__.return_value.read.assert_called_once_with(1024 * 1024 + 1)
+        for error in (PermissionError("denied"), FileNotFoundError("removed")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                Path, "open", side_effect=error
+            ), self.assertRaises(baseline.BaselineError):
+                baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+
+    def test_existing_schema_lifecycle_and_approval_validation_is_delegated(self) -> None:
+        cases = [
+            (("contract_schema", "version"), 2),
+            (("contract_schema", "version"), True),
+            (("sensitive-document-value",), "sensitive-document-value"),
+            (("baseline_lifecycle", "selection"), "latest"),
+            (("baselines", 1, "promotion_chain"), []),
+            (("approval",), None),
+            (("approval", "scope_sha256"), "f" * 64),
+            (("approval", "authority_id"), "sensitive-document-value"),
+            (("variance_studies", 0, "runs", 1, "artifact_evidence_id"), "evidence-run-old-a"),
+            (("budget_rules", 0, "limit"), -1),
+            (("evidence_retention", 0, "locator"), "sensitive-document-value with spaces"),
+            (("baselines", 1, "run_id"), "sensitive-document-value\n"),
+            (("approval_authority",), []),
+        ]
+        for path, invalid in cases:
+            with self.subTest(path=path):
+                document = copy.deepcopy(self.document)
+                target = document
+                for part in path[:-1]:
+                    target = target[part]
+                target[path[-1]] = invalid
+                self.path.write_text(json.dumps(document), encoding="utf-8")
+                with mock.patch.object(
+                    baseline, "validate_controlled_evidence_contract",
+                    wraps=baseline.validate_controlled_evidence_contract,
+                ) as validate:
+                    self.assert_input_failure(self.relative)
+                    validate.assert_called_once_with(document)
+
+    def test_no_command_network_locator_or_write_edges_are_used(self) -> None:
+        before = self.inventory()
+        actual_open = Path.open
+
+        def input_only_open(path: Path, mode: str = "r"):
+            self.assertEqual(path, self.path)
+            self.assertEqual(mode, "rb")
+            return actual_open(path, mode)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for name in (
+                "bootstrap_repository", "collect_environment", "run_mode", "run_benchmarks",
+                "build_benchmark_report", "controlled_evaluate_artifacts", "write_json",
+                "load_policy_file",
+            ):
+                stack.enter_context(mock.patch.object(
+                    baseline, name, side_effect=AssertionError(f"forbidden edge: {name}")
+                ))
+            for name in ("subprocess.Popen", "socket.create_connection", "urllib.request.urlopen"):
+                stack.enter_context(mock.patch(name, side_effect=AssertionError(name)))
+            stack.enter_context(mock.patch.object(Path, "open", input_only_open))
+            stack.enter_context(mock.patch.object(Path, "glob", side_effect=AssertionError("discovery")))
+            stack.enter_context(mock.patch.object(Path, "rglob", side_effect=AssertionError("discovery")))
+            stack.enter_context(mock.patch.object(baseline, "__file__", str(self.script)))
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            stack.enter_context(contextlib.redirect_stderr(stderr))
+            baseline.load_controlled_evidence_contract_file(self.root, self.relative)
+            self.assertEqual(baseline.main(["validate-controlled-evidence", self.relative]), 0)
+        self.assertIn("structurally valid", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(self.inventory(), before)
+
+    def test_help_and_usage_exit_contract(self) -> None:
+        before = self.inventory()
+        for args in (("--help",), ("validate-controlled-evidence", "--help")):
+            with self.subTest(args=args):
+                result = self.cli(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("validate-controlled-evidence", result.stdout)
+                self.assertEqual(result.stderr, "")
+        for args in (
+            ("validate-controlled-evidence",),
+            ("validate-controlled-evidence", self.relative, "--latest"),
+            ("validate-controlled-evidence", self.relative, "extra.json"),
+        ):
+            with self.subTest(args=args):
+                result = self.cli(*args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("usage:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.inventory(), before)
 
 
 class BaselineHarnessTests(unittest.TestCase):
