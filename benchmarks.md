@@ -572,6 +572,10 @@ declared run identity for every variance-study run in one canonically pinned
 contract. The existing structural-only validator, contract/approval-scope hashes,
 fingerprint command, producers, and policy commands are unchanged.
 
+This section specifies the preserved **v1** behavior. The opt-in v2 extension
+below additionally checks versioned producer-set and scenario-set identities;
+v1 manifests and their canonical hashes/results are not implicitly upgraded.
+
 Supply both files explicitly; the example paths below are not shipped production
 instances:
 
@@ -736,6 +740,188 @@ activation. A manifest pin is integrity identity, not a signature or approval.
 [ADR 0006](docs/adr/0006-controlled-artifact-bindings.md) records the additive
 opt-in decision. Broader PR-601 acceptance remains unfinished, with no ledger
 evidence promotion or implicit migration.
+
+### Producer and scenario identities with opt-in binding v2
+
+Derive complete producer-record and scenario-workload identities from a retained
+artifact, without collecting benchmarks or trusting a saved report/identity file:
+
+```bash
+python3 scripts/baseline.py artifact-identities --help
+python3 scripts/baseline.py artifact-identities 'bench-output/baseline-v1/<SHA>/<run-id>'
+```
+
+The quoted path is a placeholder for an existing supported `bench-smoke` or
+`bench-full` run. The command shares fingerprint admission: an explicit directory
+relative to the script's repository root; strict path/tree/checksum validation;
+and a rebuilt report using local target-SHA Git objects with no lazy fetching or
+replacement objects. Unsupported, malformed, dirty, incomplete, or copy-only
+sources fail closed. The existing report validator's prescribed producer
+records **and order remain unchanged**. No source report is read before the
+tree guards. Missing local objects never trigger a fetch or weaker fallback.
+
+#### Exact set preimages
+
+Two distinct schema names inside the hashed preimages domain-separate these
+identities from each other and from whole-artifact content:
+
+- **`benchmark-producer-set` v1:** exactly `set_schema` and `producers`.
+  `producers` contains every complete `{adapter, id, producer, version}` record,
+  sorted by the UTF-8 bytes of `id`. All four fields are non-empty strings;
+  missing/extra fields and duplicate IDs fail rather than being ignored or
+  deduplicated. Changing any record field changes identity, or causes the
+  retained source to be rejected if its producer is unsupported.
+- **`benchmark-scenario-set` v1:** exactly `set_schema` and `scenarios`.
+  Every scenario is projected to exactly `{kind, producer_id, identity}`.
+  Projections are sorted by the UTF-8 bytes of each complete canonical projection
+  JSON (using the encoding below, including its final LF). This is bytewise
+  ordering, not numeric tuple ordering. Duplicate complete comparison keys fail,
+  including Criterion identities whose source paths differ.
+
+TCP stress projections require `kind=tcp_stress`, the supported stress producer
+ID, and all eight identity fields: `clients`, `duration_seconds`, `in_flight`,
+`operation`, `registers`, `repetitions`, `transport`, and `warmup_seconds`.
+Criterion projections require `kind=criterion_estimate`, the supported Criterion
+producer ID, and exactly `benchmark_id`. Validation reuses the existing complete
+comparison identity rules: strings, integers and booleans are not interchangeable,
+and unsupported kinds, producers or extra identity fields are errors.
+
+Both preimages use compact sorted-key JSON, separators `,` and `:`, non-ASCII
+Unicode emitted directly, standard JSON string escaping, no NaN/Infinity, UTF-8
+without a BOM, and exactly one final LF. SHA-256 hashes those exact bytes.
+Strings retain their exact spelling without Unicode normalization; integers are
+not converted through floating point. The schema envelope is
+`"set_schema":{"name":"benchmark-producer-set","version":1}` or the analogous
+scenario-set name. Canonical encoding is the existing
+`artifact_fingerprint_json_text` encoding.
+
+**Excluded from both set preimages:** measured metrics, correctness counters,
+samples, retained-evidence locations/references, source run ID/SHA/mode,
+timestamps, and runner/environment metadata. Workload changes such as repetitions, duration or
+warmup are **not** excluded. Producer labels (including script-path strings) and
+Criterion benchmark IDs remain identity data. Source mode and run identity are
+checked separately
+by bindings. Matching these set identities does not establish whole-file equality,
+full report-comparison eligibility, runner control, or performance comparability.
+Canonical projection bytes used for ordering do **not** define the still-
+unverified budget `scenario_identity.identity_sha256`; no per-scenario digest
+contract is introduced here.
+
+Independent encoding vectors (synthetic records, not valid artifact fixtures),
+each shown as one exact line followed by LF:
+
+```json
+{"producers":[{"adapter":"A","id":"a","producer":"tool","version":"1"},{"adapter":"β","id":"b","producer":"other","version":"2"}],"set_schema":{"name":"benchmark-producer-set","version":1}}
+```
+
+Producer digest: `d7a54f4d353a92f0e37f78bb610c46b07c05d6d437479609275f775c225c1f38`.
+
+```json
+{"scenarios":[{"identity":{"benchmark_id":"codec/decode"},"kind":"criterion_estimate","producer_id":"criterion-0.5.1-private-estimates-layout"},{"identity":{"clients":1,"duration_seconds":5,"in_flight":8,"operation":"read","registers":10,"repetitions":5,"transport":"tcp","warmup_seconds":1},"kind":"tcp_stress","producer_id":"rusty-modbus-stress-json-v1"}],"set_schema":{"name":"benchmark-scenario-set","version":1}}
+```
+
+Scenario digest: `f34c95968055803ee6753dca4f433da4afe879adcf6cd976de0a15f7dcc16fb1`.
+
+The pure module helpers `producer_set_identity(producers)` and
+`scenario_set_identity(projections)` return `{preimage, sha256}`. The latter
+accepts exact projections, not full scenario records with metrics/sources.
+These helpers validate/encode sets only; they do not prove retained-artifact
+validity, supported producer execution, or source authenticity.
+`artifact_identities(repo_root, run_dir)` provides the guarded artifact path.
+
+#### Derive, choose contract inputs, then verify
+
+1. Derive identities for each explicitly selected retained run with
+   `artifact-identities`. Use `fingerprint-artifact` separately when choosing
+   the existing whole-artifact content digests. Do not redirect output into the
+   source artifact: that would alter its retained inventory.
+2. An owner chooses the contract's study/run `producer_set_sha256` and
+   `scenario_set_sha256` values and the mapped whole-content digests. All runs
+   must still satisfy the existing contract's study consistency requirements.
+   If material contract inputs change, an owner must separately handle any
+   approval-scope structure and whole-contract pin refresh. Computing a new hash
+   does **not** create, renew, authenticate or authorize approval.
+3. Explicitly choose a binding manifest **version 2** with the v1 fields plus
+   the two required identity schemes. The following complete example is
+   synthetic: replace its zero pin, target SHA, evidence IDs and paths with
+   explicitly chosen data; it is not a production approval or ready-to-use file.
+
+```json
+{
+  "binding_schema": {"name": "benchmark-controlled-artifact-bindings", "version": 2},
+  "contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "artifact_content_schema": {"name": "benchmark-artifact-content", "version": 1},
+  "producer_set_schema": {"name": "benchmark-producer-set", "version": 1},
+  "scenario_set_schema": {"name": "benchmark-scenario-set", "version": 1},
+  "artifacts": [
+    {"evidence_id": "synthetic-artifact-a", "run_dir": "bench-output/baseline-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/synthetic-run-a"},
+    {"evidence_id": "synthetic-artifact-b", "run_dir": "bench-output/baseline-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/synthetic-run-b"}
+  ]
+}
+```
+
+4. Run the same explicit verifier command:
+
+```bash
+python3 scripts/baseline.py verify-controlled-artifacts \
+  inputs/controlled-evidence.json inputs/artifact-bindings-v2.json
+```
+
+V1 still requires exactly its original four fields. V2 requires exactly six.
+Mixed fields, omitted/unsupported schemes, boolean/unknown versions, bad pins,
+coverage gaps and unsafe paths fail before artifact work. The canonical manifest
+digest includes the version and both scheme records. The whole-contract v1
+schema, canonical hash and approval-scope hash are unchanged.
+
+For v2, each artifact's fresh set digests must match **both its run and study**
+declarations, in addition to every existing content, identity, `bench-full`,
+coverage and alias check. Correct set digests cannot substitute for correct
+whole-content bytes. A private shared evidence loader returns the fingerprint
+and rebuilt report from one validation path; v2 does not perform a second full
+artifact-validation pass. Processing is sequential, and full reports, inventories
+and set preimages are released before the next binding.
+
+#### Output and remaining limits
+
+`artifact-identities` emits `identity_schema` named `benchmark-artifact-identities`
+version 1, `producer_set` and `scenario_set` objects containing the exact
+`preimage` and `sha256`, and source `mode`, `run_id`, and `target_sha`. Its fixed
+scope is `producer_records_and_complete_scenario_workload_identity_only`.
+
+Binding v2 emits `verification_schema` version **2**, top-level
+`producer_set_schema`/`scenario_set_schema`, and the two matched set digests in
+each compact `verified_artifacts` row. Its fixed scope is
+`variance_run_artifact_content_run_identity_and_producer_scenario_sets_only`.
+It does not dump per-binding reports or preimages. V1 canonical manifest bytes,
+hashes, result version/bytes, qualifications, and public fingerprint call behavior
+remain unchanged.
+
+New identity output and v2 results qualify their hashes as
+`integrity_only_not_authentication_producer_execution_attestation_or_owner_authorization`.
+Their `not_verified` list removes **only** `producer_set_sha256` and
+`scenario_set_sha256` from the v1 list above. Budget scenario identity, runner
+control/environment equality, statistical/variance analysis, independent
+executions, other evidence, retention, approval/authentication, baseline acceptance
+and performance enforcement remain unverified. `performance_enforcement.state`
+is always `not_eligible`; the derivation command uses reason
+`artifact_identity_derivation_only`, and v2 retains
+`artifact_binding_verification_only`. Identity derivation/matching is not a
+performance pass or producer execution attestation.
+
+Both commands emit canonical UTF-8/LF JSON independent of stdout locale. Exit 0
+means derivation/matching only; input failure is exit 1 with stderr only and no
+partial JSON or handled-input traceback; usage errors are exit 2 and help is
+exit 0. Module input failures raise `BaselineError`.
+
+All existing guards remain: manifest input 1 MiB/depth 64/128 mappings, artifact
+checksum inventory 4 MiB/10,000 entries, streamed hashing and local-only Git.
+Existing report-parser resource characteristics remain unchanged. Documents and
+artifacts must remain unchanged; no atomic snapshot or race-proof filesystem
+guarantee is claimed. No command rewrites contracts, approvals, policies or
+artifacts, collects measurements, fetches locators, invokes Cargo/network,
+selects a latest run, or makes a clock-based decision. Broader PR-601 acceptance
+and budget-identity verification remain unfinished with no ledger promotion.
+See [ADR 0007](docs/adr/0007-producer-scenario-identities.md).
 
 The measured report below remains the June 2026 baseline; the harness does not
 replace those numbers until a clean, committed-SHA run is recorded.

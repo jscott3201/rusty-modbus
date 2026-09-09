@@ -68,6 +68,14 @@ CONTROLLED_ARTIFACT_NOT_VERIFIED = (
     "baseline_acceptance",
     "performance_enforcement",
 )
+PRODUCER_SET_SCHEMA_NAME = "benchmark-producer-set"
+SCENARIO_SET_SCHEMA_NAME = "benchmark-scenario-set"
+ARTIFACT_IDENTITIES_SCHEMA_NAME = "benchmark-artifact-identities"
+SET_IDENTITY_QUALIFICATION = "integrity_only_not_authentication_producer_execution_attestation_or_owner_authorization"
+CONTROLLED_SET_DIGEST_FIELDS = ("producer_set_sha256", "scenario_set_sha256")
+CONTROLLED_IDENTITY_NOT_VERIFIED = tuple(
+    field for field in CONTROLLED_ARTIFACT_NOT_VERIFIED if field not in CONTROLLED_SET_DIGEST_FIELDS
+)
 CONTROLLED_NOT_ELIGIBLE_EXIT = 3
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
@@ -3931,8 +3939,8 @@ def _artifact_content_fingerprint(files: list[dict[str, str]]) -> tuple[dict[str
     return content, digest
 
 
-def fingerprint_artifact(repo_root: Path, value: str) -> dict[str, Any]:
-    """Validate and fingerprint unchanged retained bytes; no authority is conferred."""
+def _load_benchmark_artifact_evidence(repo_root: Path, value: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Shared admission boundary: strict tree/checksums, rebuilt report and current content."""
     try:
         repo_root = repo_root.resolve()
         run_dir = _repository_local_input(repo_root, value, "artifact directory", expected="directory")
@@ -3945,7 +3953,7 @@ def fingerprint_artifact(repo_root: Path, value: str) -> dict[str, Any]:
                 raise BaselineError("artifact fingerprint checksum mismatch after report validation")
             inventory.append({"path": relative, "sha256": digest})
         content, digest = _artifact_content_fingerprint(inventory)
-        return {
+        fingerprint = {
             "content": content,
             "fingerprint_schema": {
                 "name": ARTIFACT_FINGERPRINT_SCHEMA_NAME, "version": ARTIFACT_FINGERPRINT_VERSION,
@@ -3954,8 +3962,99 @@ def fingerprint_artifact(repo_root: Path, value: str) -> dict[str, Any]:
             "sha256": digest,
             "source": {field: report["run"][field] for field in ("mode", "run_id", "target_sha")},
         }
+        return fingerprint, report
     except (OSError, ValueError, OverflowError, RecursionError) as error:
         raise BaselineError("cannot fingerprint unreadable or malformed benchmark artifact") from error
+
+
+def fingerprint_artifact(repo_root: Path, value: str) -> dict[str, Any]:
+    """Validate and fingerprint unchanged retained bytes; no authority is conferred."""
+    fingerprint, _ = _load_benchmark_artifact_evidence(repo_root, value)
+    return fingerprint
+
+
+def _set_identity(preimage: dict[str, Any]) -> dict[str, Any]:
+    digest = hashlib.sha256(artifact_fingerprint_json_text(preimage).encode("utf-8")).hexdigest()
+    return {"preimage": preimage, "sha256": digest}
+
+
+def producer_set_identity(producers: Any) -> dict[str, Any]:
+    """Pure set encoding, not proof of supported producers or artifact validity."""
+    if not isinstance(producers, list) or not producers:
+        raise BaselineError("producer set must be a non-empty list")
+    normalized = []
+    seen: set[str] = set()
+    try:
+        for record in producers:
+            record = _controlled_contract_exact_keys(record, {"adapter", "id", "producer", "version"}, "producer")
+            record = {field: _require_nonempty_string(record[field], f"producer.{field}")
+                      for field in ("adapter", "id", "producer", "version")}
+            if record["id"] in seen:
+                raise BaselineError("duplicate producer identity")
+            seen.add(record["id"])
+            normalized.append(record)
+        return _set_identity({
+            "set_schema": {"name": PRODUCER_SET_SCHEMA_NAME, "version": 1},
+            "producers": sorted(normalized, key=lambda record: record["id"].encode("utf-8")),
+        })
+    except (ValueError, OverflowError, RecursionError) as error:
+        raise BaselineError("cannot encode producer-set identity") from error
+
+
+def scenario_set_identity(projections: Any) -> dict[str, Any]:
+    """Encode exact identity projections using the comparison key's type/duplicate rules."""
+    if not isinstance(projections, list) or not projections:
+        raise BaselineError("scenario set must be a non-empty list")
+    normalized = []
+    seen: set[tuple[str | int, ...]] = set()
+    try:
+        for projection in projections:
+            projection = _controlled_contract_exact_keys(projection, {"kind", "producer_id", "identity"}, "scenario projection")
+            identity = projection["identity"]
+            if isinstance(identity, dict) and any(not isinstance(field, str) for field in identity):
+                raise BaselineError("scenario identity keys must be strings")
+            key = _comparison_identity_key(projection["kind"], projection["producer_id"], projection["identity"], "scenario projection")
+            if key in seen:
+                raise BaselineError("duplicate complete scenario identity")
+            seen.add(key)
+            normalized.append({"kind": projection["kind"], "producer_id": projection["producer_id"],
+                               "identity": dict(projection["identity"])})
+        return _set_identity({
+            "set_schema": {"name": SCENARIO_SET_SCHEMA_NAME, "version": 1},
+            "scenarios": sorted(normalized, key=lambda item: artifact_fingerprint_json_text(item).encode("utf-8")),
+        })
+    except (ValueError, OverflowError, RecursionError) as error:
+        raise BaselineError("cannot encode scenario-set identity") from error
+
+
+def _report_identity_sets(report: dict[str, Any]) -> dict[str, Any]:
+    # Call only after the evidence loader validates the report, including its
+    # prescribed producer records/order. Projection never makes a report valid.
+    return {
+        "producer_set": producer_set_identity(report["producers"]),
+        "scenario_set": scenario_set_identity([
+            {field: scenario[field] for field in ("kind", "producer_id", "identity")}
+            for scenario in report["scenarios"]
+        ]),
+    }
+
+
+def artifact_identities(repo_root: Path, value: str) -> dict[str, Any]:
+    """Derive set identities from retained source evidence, never from a saved report."""
+    try:
+        fingerprint, report = _load_benchmark_artifact_evidence(repo_root, value)
+        identities = _report_identity_sets(report)
+    except BaselineError as error:
+        raise BaselineError("artifact identity derivation failed") from error
+    return {
+        "identity_schema": {"name": ARTIFACT_IDENTITIES_SCHEMA_NAME, "version": 1},
+        **identities,
+        "source": fingerprint["source"],
+        "verification_scope": "producer_records_and_complete_scenario_workload_identity_only",
+        "qualification": SET_IDENTITY_QUALIFICATION,
+        "performance_enforcement": {"state": "not_eligible", "reason": "artifact_identity_derivation_only"},
+        "not_verified": list(CONTROLLED_IDENTITY_NOT_VERIFIED),
+    }
 
 
 def _controlled_contract_exact_keys(
@@ -4876,14 +4975,21 @@ def load_controlled_evidence_contract_file(repo_root: Path, value: str) -> dict[
 def canonical_controlled_artifact_bindings(document: Any) -> dict[str, Any]:
     """Validate manifest syntax only; pin, coverage and local files need the verifier."""
     try:
+        if not isinstance(document, dict):
+            raise BaselineError("binding manifest must be an object")
+        schema = _controlled_contract_exact_keys(document.get("binding_schema"), {"name", "version"}, "binding_schema")
+        version = _strict_int(schema["version"], "binding_schema.version", minimum=1)
+        if schema["name"] != CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME or version not in (1, 2):
+            raise BaselineError("unsupported binding schema")
+        keys = {"binding_schema", "contract_sha256", "artifact_content_schema", "artifacts"}
+        schemes = [("artifact_content_schema", ARTIFACT_CONTENT_SCHEMA_NAME)]
+        if version == 2:
+            keys.update(("producer_set_schema", "scenario_set_schema"))
+            schemes.extend((("producer_set_schema", PRODUCER_SET_SCHEMA_NAME), ("scenario_set_schema", SCENARIO_SET_SCHEMA_NAME)))
         document = _controlled_contract_exact_keys(
-            document, {"binding_schema", "contract_sha256", "artifact_content_schema", "artifacts"},
-            "controlled artifact bindings",
+            document, keys, "controlled artifact bindings",
         )
-        for field, name in (
-            ("binding_schema", CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME),
-            ("artifact_content_schema", ARTIFACT_CONTENT_SCHEMA_NAME),
-        ):
+        for field, name in schemes:
             schema = _controlled_contract_exact_keys(document[field], {"name", "version"}, field)
             if schema["name"] != name or _strict_int(schema["version"], field, minimum=1) != 1:
                 raise BaselineError("unsupported binding schema or artifact content scheme")
@@ -4905,12 +5011,15 @@ def canonical_controlled_artifact_bindings(document: Any) -> dict[str, Any]:
             evidence_ids.add(evidence_id)
             paths.add(run_dir)
             normalized.append({"evidence_id": evidence_id, "run_dir": run_dir})
-        return {
-            "binding_schema": {"name": CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME, "version": 1},
+        canonical = {
+            "binding_schema": {"name": CONTROLLED_ARTIFACT_BINDINGS_SCHEMA_NAME, "version": version},
             "artifact_content_schema": {"name": ARTIFACT_CONTENT_SCHEMA_NAME, "version": 1},
             "contract_sha256": digest,
             "artifacts": sorted(normalized, key=lambda item: item["evidence_id"]),
         }
+        if version == 2:
+            canonical.update({field: {"name": name, "version": 1} for field, name in schemes[1:]})
+        return canonical
     except (BaselineError, ValueError) as error:
         # Exact-key/path helpers can include supplied values in their diagnostics.
         raise BaselineError("controlled artifact bindings schema validation failed") from error
@@ -4949,9 +5058,10 @@ def load_controlled_artifact_bindings_file(repo_root: Path, value: str) -> dict[
 def verify_controlled_artifacts(
     repo_root: Path, contract_json: str, bindings_json: str
 ) -> dict[str, Any]:
-    """Opt in to content/run-identity matching only, without verifying other evidence."""
+    """Opt in to bounded content/run/set identity checks, without verifying other evidence."""
     contract = load_controlled_evidence_contract_file(repo_root, contract_json)
     bindings = load_controlled_artifact_bindings_file(repo_root, bindings_json)
+    version = bindings["binding_schema"]["version"]
     contract_digest = controlled_evidence_contract_sha256(contract)
     if bindings["contract_sha256"] != contract_digest:
         raise BaselineError("controlled artifact bindings contract pin mismatch")
@@ -4960,6 +5070,7 @@ def verify_controlled_artifacts(
         for study in contract["variance_studies"] for run in study["runs"]
     }
     evidence = {item["evidence_id"]: item for item in contract["evidence_retention"]}
+    studies = {study["study_id"]: study for study in contract["variance_studies"]}
     if {item["evidence_id"] for item in bindings["artifacts"]} != set(runs):
         raise BaselineError("artifact bindings must cover exactly all variance-run evidence IDs")
     if any(evidence[evidence_id]["kind"] != "benchmark_artifact" for evidence_id in runs):
@@ -4984,8 +5095,12 @@ def verify_controlled_artifacts(
     for item in bindings["artifacts"]:
         evidence_id = item["evidence_id"]
         study_id, run = runs[evidence_id]
+        report: dict[str, Any] | None = None
         try:
-            fingerprint = fingerprint_artifact(repo_root, item["run_dir"])
+            if version == 1:
+                fingerprint = fingerprint_artifact(repo_root, item["run_dir"])
+            else:
+                fingerprint, report = _load_benchmark_artifact_evidence(repo_root, item["run_dir"])
         except BaselineError as error:
             raise BaselineError("controlled artifact fingerprint validation failed") from error
         if fingerprint["content"]["content_schema"] != bindings["artifact_content_schema"]:
@@ -5000,14 +5115,30 @@ def verify_controlled_artifacts(
             raise BaselineError("controlled artifact declared content digest mismatch")
         identities.add(actual_identity)
         digests.add(digest)
-        verified.append({
+        row = {
             "evidence_id": evidence_id, "study_id": study_id,
             "target_sha": source["target_sha"], "run_id": source["run_id"],
             "mode": source["mode"], "content_sha256": digest,
-        })
+        }
+        if version == 2:
+            assert report is not None  # The v2 evidence-loader branch supplies it.
+            try:
+                sets = _report_identity_sets(report)
+            except BaselineError as error:
+                raise BaselineError("controlled artifact set identity validation failed") from error
+            for name in ("producer", "scenario"):
+                field = f"{name}_set_sha256"
+                if sets[f"{name}_set"]["preimage"]["set_schema"] != bindings[f"{name}_set_schema"]:
+                    raise BaselineError(f"controlled artifact {name}-set scheme mismatch")
+                actual = sets[f"{name}_set"]["sha256"]
+                if actual != run[field] or actual != studies[study_id][field]:
+                    raise BaselineError(f"controlled artifact declared {name}-set digest mismatch")
+                row[field] = actual
+            del report, sets
+        verified.append(row)
         del fingerprint  # Do not retain full inventories while processing later artifacts.
-    return {
-        "verification_schema": {"name": CONTROLLED_ARTIFACT_VERIFICATION_SCHEMA_NAME, "version": 1},
+    result = {
+        "verification_schema": {"name": CONTROLLED_ARTIFACT_VERIFICATION_SCHEMA_NAME, "version": version},
         "contract": {"contract_id": contract["contract_id"], "canonical_sha256": contract_digest},
         "binding_manifest": {
             "schema": bindings["binding_schema"], "canonical_sha256": controlled_artifact_bindings_sha256(bindings),
@@ -5019,6 +5150,15 @@ def verify_controlled_artifacts(
         "performance_enforcement": {"state": "not_eligible", "reason": "artifact_binding_verification_only"},
         "not_verified": list(CONTROLLED_ARTIFACT_NOT_VERIFIED),
     }
+    if version == 2:
+        result.update({
+            "producer_set_schema": bindings["producer_set_schema"],
+            "scenario_set_schema": bindings["scenario_set_schema"],
+            "verification_scope": "variance_run_artifact_content_run_identity_and_producer_scenario_sets_only",
+            "qualification": SET_IDENTITY_QUALIFICATION,
+            "not_verified": list(CONTROLLED_IDENTITY_NOT_VERIFIED),
+        })
+    return result
 
 
 def run_correctness(run: ArtifactRun) -> None:
@@ -5190,6 +5330,12 @@ def build_parser() -> argparse.ArgumentParser:
     fingerprint.add_argument(
         "run_dir", help="explicit repository-relative bench-smoke/bench-full directory; no symlinks",
     )
+    identities = subparsers.add_parser(
+        "artifact-identities",
+        help="derive producer/scenario set identities from a validated retained benchmark artifact",
+        description="Read-only identity derivation, not producer execution attestation, runner control or performance approval.",
+    )
+    identities.add_argument("run_dir", help="explicit repository-relative bench-smoke/bench-full directory; local Git objects required")
     report = subparsers.add_parser(
         "report",
         help="validate a benchmark artifact and render observational JSON and Markdown",
@@ -5231,11 +5377,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="read-only verification of explicitly bound variance-run artifact content and identity",
         description=(
             "Match every variance-run artifact using an explicit pinned binding manifest. "
-            "Content/run identity only; not approval, control proof or performance enforcement."
+            "V2 also checks producer/scenario set identities; neither version proves approval, "
+            "control or performance enforcement."
         ),
     )
     verify_artifacts.add_argument("contract_json", help="repository-relative controlled-evidence v1 JSON file")
-    verify_artifacts.add_argument("bindings_json", help="repository-relative binding-manifest v1 JSON file (1 MiB, 128 mappings)")
+    verify_artifacts.add_argument("bindings_json", help="repository-relative binding-manifest v1/v2 JSON file (1 MiB, 128 mappings)")
     controlled_evaluate = subparsers.add_parser(
         "controlled-evaluate",
         help="rebuild complete artifacts and emit a fail-closed controlled preflight",
@@ -5316,6 +5463,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Machine output is UTF-8 with LF, independent of the terminal's encoding.
             payload = artifact_fingerprint_json_text(fingerprint).encode("utf-8")
             sys.stdout.buffer.write(payload)
+            return 0
+        if args.command == "artifact-identities":
+            identities = artifact_identities(repo_root, args.run_dir)
+            sys.stdout.buffer.write(artifact_fingerprint_json_text(identities).encode("utf-8"))
             return 0
         if args.command == "report":
             run_dir = Path(args.run_dir)
