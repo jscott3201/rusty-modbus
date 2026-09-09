@@ -4571,5 +4571,566 @@ class ControlledArtifactBindingTests(unittest.TestCase):
             self.assertIn(b"usage:", result.stderr)
 
 
+class SetIdentityTests(unittest.TestCase):
+    def producers(self) -> list[dict]:
+        return [
+            {"adapter": "β", "id": "b", "producer": "other", "version": "2"},
+            {"adapter": "A", "id": "a", "producer": "tool", "version": "1"},
+        ]
+
+    def scenarios(self) -> list[dict]:
+        return [
+            {"kind": "tcp_stress", "producer_id": "rusty-modbus-stress-json-v1", "identity": {
+                "clients": 1, "duration_seconds": 5, "in_flight": 8, "operation": "read",
+                "registers": 10, "repetitions": 5, "transport": "tcp", "warmup_seconds": 1,
+            }},
+            {"kind": "criterion_estimate", "producer_id": "criterion-0.5.1-private-estimates-layout",
+             "identity": {"benchmark_id": "codec/decode"}},
+        ]
+
+    def test_producer_set_known_preimage_and_independent_openssl_digest(self) -> None:
+        expected = (
+            '{"producers":[{"adapter":"A","id":"a","producer":"tool","version":"1"},'
+            '{"adapter":"β","id":"b","producer":"other","version":"2"}],'
+            '"set_schema":{"name":"benchmark-producer-set","version":1}}\n'
+        )
+        result = baseline.producer_set_identity(self.producers())
+        self.assertEqual(baseline.artifact_fingerprint_json_text(result["preimage"]), expected)
+        self.assertEqual(result["sha256"], "d7a54f4d353a92f0e37f78bb610c46b07c05d6d437479609275f775c225c1f38")
+
+    def test_scenario_set_known_preimage_and_independent_openssl_digest(self) -> None:
+        expected = (
+            '{"scenarios":[{"identity":{"benchmark_id":"codec/decode"},"kind":"criterion_estimate",'
+            '"producer_id":"criterion-0.5.1-private-estimates-layout"},'
+            '{"identity":{"clients":1,"duration_seconds":5,"in_flight":8,"operation":"read",'
+            '"registers":10,"repetitions":5,"transport":"tcp","warmup_seconds":1},'
+            '"kind":"tcp_stress","producer_id":"rusty-modbus-stress-json-v1"}],'
+            '"set_schema":{"name":"benchmark-scenario-set","version":1}}\n'
+        )
+        result = baseline.scenario_set_identity(self.scenarios())
+        self.assertEqual(baseline.artifact_fingerprint_json_text(result["preimage"]), expected)
+        self.assertEqual(result["sha256"], "f34c95968055803ee6753dca4f433da4afe879adcf6cd976de0a15f7dcc16fb1")
+
+
+    def test_sets_are_order_independent_and_detached_from_inputs(self) -> None:
+        for helper, records in ((baseline.producer_set_identity, self.producers()),
+                                (baseline.scenario_set_identity, self.scenarios())):
+            original = copy.deepcopy(records)
+            result = helper(records)
+            self.assertEqual(helper(list(reversed(records))), result)
+            self.assertEqual(records, original)
+            snapshot = copy.deepcopy(result)
+            records[0].clear()
+            self.assertEqual(result, snapshot)
+
+    def test_every_producer_field_affects_identity_and_malformed_records_fail(self) -> None:
+        records = self.producers()
+        original = baseline.producer_set_identity(records)
+        for field in ("id", "adapter", "producer", "version"):
+            changed = copy.deepcopy(records)
+            changed[0][field] += "-different"
+            self.assertNotEqual(baseline.producer_set_identity(changed)["sha256"], original["sha256"])
+            for value in (None, 1, True, ""):
+                changed[0][field] = value
+                with self.subTest(field=field, value=value), self.assertRaises(baseline.BaselineError):
+                    baseline.producer_set_identity(changed)
+        for invalid in ([], None, {}, [records[0], records[0]], [dict(records[0], extra="no")], [{"id": "only"}]):
+            with self.subTest(invalid=invalid), self.assertRaises(baseline.BaselineError):
+                baseline.producer_set_identity(invalid)
+        changed = copy.deepcopy(records)
+        changed[1]["id"] = changed[0]["id"]
+        with self.assertRaisesRegex(baseline.BaselineError, "duplicate"):
+            baseline.producer_set_identity(changed)
+
+    def test_all_tcp_fields_and_types_are_part_of_the_complete_key(self) -> None:
+        projection = self.scenarios()[0]
+        original = baseline.scenario_set_identity([projection])["sha256"]
+        for field in projection["identity"]:
+            changed = copy.deepcopy(projection)
+            if field == "transport":
+                changed["identity"][field] = "rtu"
+                with self.assertRaises(baseline.BaselineError):
+                    baseline.scenario_set_identity([changed])
+            else:
+                changed["identity"][field] = "mixed" if field == "operation" else changed["identity"][field] + 1
+                self.assertNotEqual(baseline.scenario_set_identity([changed])["sha256"], original, field)
+            for invalid in (True, "1", 1.0, None):
+                changed = copy.deepcopy(projection)
+                changed["identity"][field] = invalid
+                with self.subTest(field=field, invalid=invalid), self.assertRaises(baseline.BaselineError):
+                    baseline.scenario_set_identity([changed])
+            changed = copy.deepcopy(projection)
+            del changed["identity"][field]
+            with self.assertRaises(baseline.BaselineError):
+                baseline.scenario_set_identity([changed])
+
+    def test_criterion_kind_producer_and_duplicate_keys_are_strict(self) -> None:
+        records = self.scenarios()
+        changed = copy.deepcopy(records)
+        changed[1]["identity"]["benchmark_id"] = "codec/encode"
+        self.assertNotEqual(baseline.scenario_set_identity(changed)["sha256"], baseline.scenario_set_identity(records)["sha256"])
+        for index in (0, 1):
+            for field, value in (("kind", "unsupported"), ("producer_id", "other"),
+                                 ("identity", {}), ("extra", "not permitted")):
+                changed = copy.deepcopy(records)
+                changed[index][field] = value
+                with self.subTest(index=index, field=field), self.assertRaises(baseline.BaselineError):
+                    baseline.scenario_set_identity(changed)
+            with self.assertRaisesRegex(baseline.BaselineError, "duplicate"):
+                baseline.scenario_set_identity([records[index], copy.deepcopy(records[index])])
+        for invalid in ([], None, {}, [dict(records[1], sources=[])],
+                        [dict(records[1], identity={"benchmark_id": "x", 1: 0, "extra": 0})]):
+            with self.subTest(invalid=invalid), self.assertRaises(baseline.BaselineError):
+                baseline.scenario_set_identity(invalid)
+
+
+class ArtifactIdentityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Compose just the existing fixture; do not inherit and rerun its test suite.
+        self.f = ControlledArtifactBindingTests("test_complete_bindings_match_independent_hashes_and_identity_read_only")
+        self.addCleanup(self.f.doCleanups)
+        self.f.setUp()
+
+    def encoded(self, document: dict) -> bytes:
+        return (json.dumps(
+            document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ) + "\n").encode("utf-8")
+
+    def independent_sets(self, report: dict) -> dict:
+        producers = sorted(copy.deepcopy(report["producers"]), key=lambda item: item["id"].encode("utf-8"))
+        scenarios = [{key: copy.deepcopy(item[key]) for key in ("kind", "producer_id", "identity")}
+                     for item in report["scenarios"]]
+        result = {}
+        for key, name, records in (
+            ("producers", "producer", producers),
+            ("scenarios", "scenario", sorted(scenarios, key=self.encoded)),
+        ):
+            preimage = {"set_schema": {"name": f"benchmark-{name}-set", "version": 1}, key: records}
+            result[f"{name}_set"] = {"preimage": preimage, "sha256": hashlib.sha256(self.encoded(preimage)).hexdigest()}
+        return result
+
+    def enable_v2(self) -> dict:
+        expected = None
+        for artifact in self.f.artifacts.values():
+            report = json.loads((artifact.run_dir / "benchmark-report-v1.json").read_text())
+            identities = self.independent_sets(report)
+            if expected is not None:
+                self.assertEqual(identities, expected)
+            expected = identities
+        assert expected is not None
+        for name in ("producer", "scenario"):
+            field = f"{name}_set_sha256"
+            self.f.study[field] = expected[f"{name}_set"]["sha256"]
+            for run in self.f.study["runs"]:
+                run[field] = self.f.study[field]
+            self.f.bindings[f"{name}_set_schema"] = {"name": f"benchmark-{name}-set", "version": 1}
+        self.f.bindings["binding_schema"]["version"] = 2
+        self.f.refresh_contract_pin()
+        return expected
+
+    def test_artifact_identity_cli_rebuilds_full_source_read_only(self) -> None:
+        artifact = self.f.artifacts["evidence-run-current-a"]
+        relative = artifact.run_dir.relative_to(self.f.root).as_posix()
+        report = json.loads((artifact.run_dir / "benchmark-report-v1.json").read_text())
+        expected = self.independent_sets(report)
+        before = self.f.inventory()
+        result = self.f.cli("artifact-identities", relative, ascii_stdout=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b"")
+        document = json.loads(result.stdout)
+        self.assertEqual(document["identity_schema"], {"name": "benchmark-artifact-identities", "version": 1})
+        for field in ("producer_set", "scenario_set"):
+            self.assertEqual(document[field], expected[field])
+        self.assertEqual(document["source"], {"target_sha": self.f.sha, "run_id": artifact.run_id, "mode": "bench-full"})
+        self.assertEqual(result.stdout, self.encoded(document))
+        self.assertEqual(self.f.inventory(), before)
+
+    def test_manifest_v2_matches_independently_derived_sets(self) -> None:
+        expected = self.enable_v2()
+        before = self.f.inventory()
+        result = self.f.verify()
+        self.assertEqual(result["verification_schema"]["version"], 2)
+        for row in result["verified_artifacts"]:
+            for name in ("producer", "scenario"):
+                self.assertEqual(row[f"{name}_set_sha256"], expected[f"{name}_set"]["sha256"])
+        self.assertEqual(result["not_verified"], list(baseline.CONTROLLED_ARTIFACT_NOT_VERIFIED)[2:])
+        self.assertEqual(result["performance_enforcement"]["state"], "not_eligible")
+        self.assertEqual(self.f.inventory(), before)
+        self.f.bindings["artifacts"].reverse()
+        self.f.study["runs"].reverse()
+        self.f.write_documents()  # Canonical pins/results must survive these permutations.
+        self.assertEqual(self.f.verify(), result)
+
+    def test_v1_manifest_and_result_bytes_are_frozen(self) -> None:
+        # Characterization against the parent before implementation; all result keys
+        # and qualifications are explicitly frozen, not inferred from the result.
+        manifest_bytes = self.encoded(self.f.bindings)
+        expected = {
+            "verification_schema": {"name": "benchmark-controlled-artifact-verification", "version": 1},
+            "contract": {"contract_id": self.f.contract["contract_id"], "canonical_sha256": self.f.bindings["contract_sha256"]},
+            "binding_manifest": {"schema": {"name": "benchmark-controlled-artifact-bindings", "version": 1},
+                                 "canonical_sha256": hashlib.sha256(manifest_bytes).hexdigest()},
+            "artifact_content_schema": {"name": "benchmark-artifact-content", "version": 1},
+            "verified_artifacts": self.f.expected_bindings,
+            "verification_scope": "variance_run_artifact_content_and_declared_run_identity_only",
+            "qualification": "integrity_only_not_authentication_or_owner_authorization",
+            "performance_enforcement": {"state": "not_eligible", "reason": "artifact_binding_verification_only"},
+            "not_verified": [
+                "producer_set_sha256", "scenario_set_sha256", "budget_scenario_identity_sha256",
+                "runner_profile_control_and_environment_equality", "statistical_method_and_variance_analysis",
+                "independent_executions", "non_artifact_and_unmapped_retained_evidence",
+                "expiration_and_continued_retention", "approval_authentication_and_owner_authorization",
+                "baseline_acceptance", "performance_enforcement",
+            ],
+        }
+        self.assertEqual(baseline.controlled_artifact_bindings_json_text(self.f.bindings).encode("utf-8"), manifest_bytes)
+        result = self.f.cli("verify-controlled-artifacts", self.f.contract_relative, self.f.bindings_relative)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.encoded(expected))
+        self.assertEqual(result.stderr, b"")
+
+    def assert_failure(self, relative: str | None = None, *, before_artifacts: bool = False) -> None:
+        with contextlib.ExitStack() as stack:
+            if before_artifacts:
+                stack.enter_context(mock.patch.object(
+                    baseline, "_load_benchmark_artifact_evidence", side_effect=AssertionError("premature evidence load")
+                ))
+            if relative is None:
+                self.f.assert_failure(before_artifacts=before_artifacts)
+            else:
+                before = self.f.inventory()
+                with self.assertRaises(baseline.BaselineError):
+                    baseline.artifact_identities(self.f.root, relative)
+                result = self.f.cli("artifact-identities", relative)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(result.stdout, b"")
+                self.assertNotIn(b"Traceback", result.stderr)
+                self.assertEqual(self.f.inventory(), before)
+
+    def refresh_content_pin(self, evidence_id: str) -> None:
+        artifact = self.f.artifacts[evidence_id]
+        digest = self.f.independent_content_sha256(artifact.run_dir)
+        next(item for item in self.f.contract["evidence_retention"] if item["evidence_id"] == evidence_id)["sha256"] = digest
+        self.f.refresh_contract_pin()
+
+    def rewrite_stress(self, artifact: baseline.ArtifactRun, *, duration_delta: int = 0, measurement_delta: float = 0) -> None:
+        # Update a retained synthetic source coherently without running a benchmark.
+        summary_path = artifact.run_dir / "summary.json"
+        summary = json.loads(summary_path.read_text())
+        for sample in summary["stress_samples"]:
+            sample["duration_secs"] += duration_delta
+            sample["throughput_ops_sec"] += measurement_delta
+            sample["per_client_ops_sec"] += measurement_delta
+            parsed = artifact.run_dir / "stress/parsed" / f"stress-{sample['operation']}-d{sample['in_flight']}-r{sample['repetition']}.json"
+            baseline.write_json(parsed, sample)
+            raw = {key: value for key, value in sample.items() if key not in ("command_id", "repetition")}
+            baseline.write_json(artifact.run_dir / "commands" / sample["command_id"] / "command.stdout", raw)
+        repetitions = max(item["repetition"] for item in summary["stress_samples"])
+        summary["stress_aggregates"] = baseline.aggregate_stress_samples(
+            summary["stress_samples"], baseline.stress_scenarios(artifact.mode, repetitions)
+        )
+        baseline.write_json(summary_path, summary)
+        baseline.write_summary_csv(artifact.run_dir / "summary.csv", summary["stress_aggregates"], summary["criterion_results"])
+        report = baseline.build_benchmark_report(self.f.root, artifact.run_dir, require_artifact_checksums=False)
+        for name in ("benchmark-report-v1.json", "benchmark-report-v1.md"):
+            (artifact.run_dir / name).unlink()  # Replace only task-owned synthetic fixture views.
+        baseline.write_report_pair(artifact.run_dir, report)
+        baseline.write_checksums(self.f.root, artifact.run_dir)
+
+    def test_pure_projection_excludes_metrics_paths_run_metadata_and_runner(self) -> None:
+        artifact = self.f.artifacts["evidence-run-current-a"]
+        report = baseline.build_benchmark_report(self.f.root, artifact.run_dir)
+        shifted = shifted_report_fixture(report)
+        criterion = next(item for item in shifted["scenarios"] if item["kind"] == "criterion_estimate")
+        criterion["sources"][0]["private_estimates_json"] = criterion["sources"][0]["private_estimates_json"].replace("01-tcp_throughput", "99-other")
+        shifted["source_artifact"]["provenance"]["started_utc"] = "2020-01-01T00:00:00Z"
+        self.assertEqual(baseline.validate_report_document(shifted), [])
+        self.assertEqual(baseline._report_identity_sets(report), baseline._report_identity_sets(shifted))
+        reordered = copy.deepcopy(report)
+        reordered["producers"].reverse()
+        self.assertTrue(baseline.validate_report_document(reordered))  # Existing order remains strict.
+        self.assertEqual(baseline.producer_set_identity(report["producers"]), baseline.producer_set_identity(reordered["producers"]))
+
+    def test_metrics_only_changes_match_v2_after_whole_content_pin_refresh(self) -> None:
+        expected = self.enable_v2()
+        artifact = self.f.artifacts["evidence-run-current-b"]
+        old_content = self.f.independent_content_sha256(artifact.run_dir)
+        self.rewrite_stress(artifact, measurement_delta=25)
+        self.assertNotEqual(self.f.independent_content_sha256(artifact.run_dir), old_content)
+        self.refresh_content_pin("evidence-run-current-b")
+        actual = baseline.artifact_identities(self.f.root, artifact.run_dir.relative_to(self.f.root).as_posix())
+        for field in ("producer_set", "scenario_set"):
+            self.assertEqual(actual[field], expected[field])
+        self.assertEqual(self.f.verify()["verification_schema"]["version"], 2)
+
+    def test_real_workload_change_fails_second_binding_but_v1_stays_structural(self) -> None:
+        expected = self.enable_v2()
+        artifact = self.f.artifacts["evidence-run-current-b"]
+        self.rewrite_stress(artifact, duration_delta=1)
+        self.refresh_content_pin("evidence-run-current-b")
+        actual = baseline.artifact_identities(self.f.root, artifact.run_dir.relative_to(self.f.root).as_posix())
+        self.assertEqual(actual["producer_set"], expected["producer_set"])
+        self.assertNotEqual(actual["scenario_set"]["sha256"], expected["scenario_set"]["sha256"])
+        with self.assertRaisesRegex(baseline.BaselineError, "scenario-set"):
+            self.f.verify()
+        self.assert_failure()
+        self.f.bindings["binding_schema"]["version"] = 1
+        del self.f.bindings["producer_set_schema"], self.f.bindings["scenario_set_schema"]
+        self.f.write_documents()
+        self.f.assert_verification_scope(self.f.verify())
+
+    def test_actual_producer_record_mismatch_and_unsupported_source_fail_closed(self) -> None:
+        expected = self.enable_v2()
+        artifact = self.f.artifacts["evidence-run-current-b"]
+        report = json.loads((artifact.run_dir / "benchmark-report-v1.json").read_text())
+        report["producers"][0]["adapter"] += " changed"
+        different = self.independent_sets(report)["producer_set"]["sha256"]
+        self.assertNotEqual(different, expected["producer_set"]["sha256"])
+        self.f.study["producer_set_sha256"] = different
+        for run in self.f.study["runs"]:
+            run["producer_set_sha256"] = different
+        self.f.refresh_contract_pin()
+        with self.assertRaisesRegex(baseline.BaselineError, "producer-set"):
+            self.f.verify()
+        self.assert_failure()
+        provenance_path = artifact.run_dir / "provenance.json"
+        provenance = json.loads(provenance_path.read_text())
+        provenance["harness_version"] = "unsupported"
+        baseline.write_json(provenance_path, provenance)
+        baseline.write_checksums(self.f.root, artifact.run_dir)
+        self.assert_failure(artifact.run_dir.relative_to(self.f.root).as_posix())
+
+    def test_v2_manifest_scheme_pin_coverage_and_path_errors_precede_artifact_work(self) -> None:
+        self.enable_v2()
+        original = copy.deepcopy(self.f.bindings)
+        cases = []
+        for field in ("producer_set_schema", "scenario_set_schema"):
+            missing = copy.deepcopy(original)
+            del missing[field]
+            cases.append(missing)
+            for key, value in (("version", True), ("version", 2), ("name", "unsupported"), ("extra", "not permitted")):
+                changed = copy.deepcopy(original)
+                changed[field][key] = value
+                cases.append(changed)
+        for version in (True, 1, 3):
+            changed = copy.deepcopy(original)
+            changed["binding_schema"]["version"] = version
+            cases.append(changed)
+        stale = copy.deepcopy(original)
+        stale["contract_sha256"] = "f" * 64
+        missing_run = copy.deepcopy(original)
+        missing_run["artifacts"].pop()
+        invalid_path = copy.deepcopy(original)
+        invalid_path["artifacts"][1]["run_dir"] = "../outside"
+        cases.extend((stale, missing_run, invalid_path))
+        for position, document in enumerate(cases):
+            with self.subTest(case=position):
+                self.f.bindings = document
+                self.f.write_documents()
+                self.assert_failure(before_artifacts=True)
+
+    def test_v2_does_not_relax_content_or_source_identity_checks(self) -> None:
+        expected = self.enable_v2()
+        a, b = self.f.bindings["artifacts"]
+        a["run_dir"], b["run_dir"] = b["run_dir"], a["run_dir"]
+        self.f.write_documents()
+        with self.assertRaisesRegex(baseline.BaselineError, "run identity"):
+            self.f.verify()  # Both sets still match; source run identity does not.
+        self.assert_failure()
+        a["run_dir"], b["run_dir"] = b["run_dir"], a["run_dir"]
+        self.f.write_documents()
+        artifact = self.f.artifacts["evidence-run-current-b"]
+        next(artifact.run_dir.glob("commands/*/command.stderr")).write_bytes(b"changed raw bytes")
+        baseline.write_checksums(self.f.root, artifact.run_dir)
+        actual = baseline.artifact_identities(self.f.root, b["run_dir"])
+        for field in ("producer_set", "scenario_set"):
+            self.assertEqual(actual[field], expected[field])
+        with self.assertRaisesRegex(baseline.BaselineError, "content digest"):
+            self.f.verify()
+        self.assert_failure()
+
+    def test_smoke_derivation_succeeds_but_v2_still_requires_full(self) -> None:
+        self.enable_v2()
+        smoke = self.f.make_artifact("identity-smoke", mode="bench-smoke")
+        relative = smoke.run_dir.relative_to(self.f.root).as_posix()
+        # A real Unicode Criterion identity must be emitted as UTF-8 even when
+        # stdout's text encoding is ASCII. Leave the copied report stale deliberately.
+        summary_path = smoke.run_dir / "summary.json"
+        summary = json.loads(summary_path.read_text())
+        criterion = summary["criterion_results"][0]
+        new_source = smoke.run_dir / "criterion/raw/01-tcp_throughput/épreuve/new/estimates.json"
+        new_source.parent.mkdir(parents=True)
+        shutil.copyfile(self.f.root / criterion["source"], new_source)
+        criterion["source"] = new_source.relative_to(self.f.root).as_posix()
+        criterion["benchmark_id"] = "épreuve"
+        baseline.write_json(summary_path, summary)
+        baseline.write_json(smoke.run_dir / "criterion/parsed-estimates.json", summary["criterion_results"])
+        baseline.write_checksums(self.f.root, smoke.run_dir)
+        result = self.f.cli("artifact-identities", relative, ascii_stdout=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["source"]["mode"], "bench-smoke")
+        self.assertIn('"benchmark_id":"épreuve"'.encode("utf-8"), result.stdout)
+        self.f.study["runs"][1]["run_id"] = smoke.run_id
+        self.f.bindings["artifacts"][1]["run_dir"] = relative
+        next(item for item in self.f.contract["evidence_retention"] if item["evidence_id"] == "evidence-run-current-b")["sha256"] = self.f.independent_content_sha256(smoke.run_dir)
+        self.f.refresh_contract_pin()
+        with self.assertRaisesRegex(baseline.BaselineError, "bench-full"):
+            self.f.verify()
+        self.assert_failure()
+
+    def test_duplicate_criterion_keys_with_distinct_sources_do_not_weaken_v1(self) -> None:
+        smoke = self.f.make_artifact("duplicate-smoke", mode="bench-smoke")
+        summary_path = smoke.run_dir / "summary.json"
+        summary = json.loads(summary_path.read_text())
+        duplicate = copy.deepcopy(summary["criterion_results"][0])
+        new_source = smoke.run_dir / "criterion/raw/02-other" / duplicate["benchmark_id"] / "new/estimates.json"
+        new_source.parent.mkdir(parents=True)
+        shutil.copyfile(self.f.root / duplicate["source"], new_source)
+        duplicate["source"] = new_source.relative_to(self.f.root).as_posix()
+        summary["criterion_results"].append(duplicate)
+        baseline.write_json(summary_path, summary)
+        baseline.write_json(smoke.run_dir / "criterion/parsed-estimates.json", summary["criterion_results"])
+        baseline.write_checksums(self.f.root, smoke.run_dir)
+        relative = smoke.run_dir.relative_to(self.f.root).as_posix()
+        baseline.fingerprint_artifact(self.f.root, relative)  # Preserve old admission behavior.
+        self.assert_failure(relative)  # New comparison-based identities reject the duplicate.
+
+    def test_derivation_rejects_incomplete_dirty_malformed_and_copy_only_sources(self) -> None:
+        artifact = self.f.artifacts["evidence-run-current-b"]
+        relative = artifact.run_dir.relative_to(self.f.root).as_posix()
+        summary_path = artifact.run_dir / "summary.json"
+        provenance_path = artifact.run_dir / "provenance.json"
+        summary_bytes, provenance_bytes = summary_path.read_bytes(), provenance_path.read_bytes()
+        for case in ("malformed", "dirty", "incomplete"):
+            with self.subTest(case=case):
+                summary_path.write_bytes(summary_bytes)
+                provenance_path.write_bytes(provenance_bytes)
+                if case == "malformed":
+                    summary_path.write_bytes(b"\xff")
+                elif case == "dirty":
+                    provenance = json.loads(provenance_bytes)
+                    provenance.update(dirty=True, dirty_override=True)
+                    baseline.write_json(provenance_path, provenance)
+                else:
+                    summary = json.loads(summary_bytes)
+                    summary.update(stress_samples=[], stress_aggregates=[])
+                    baseline.write_json(summary_path, summary)
+                baseline.write_checksums(self.f.root, artifact.run_dir)
+                self.assert_failure(relative)  # The copied complete report was never changed.
+        self.assert_failure(relative + "/benchmark-report-v1.json")
+
+    def test_shared_loader_guards_unsafe_trees_before_any_payload_read(self) -> None:
+        artifact = self.f.artifacts["evidence-run-current-a"]
+        relative = artifact.run_dir.relative_to(self.f.root).as_posix()
+        link = artifact.run_dir / "outside-link"
+        try:
+            link.symlink_to(self.f.script)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        with mock.patch.object(Path, "open", side_effect=AssertionError("unsafe payload read")):
+            with self.assertRaises(baseline.BaselineError):
+                baseline.artifact_identities(self.f.root, relative)
+        self.assert_failure(relative)
+        link.unlink()
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(link)
+            with mock.patch.object(Path, "open", side_effect=AssertionError("FIFO read")):
+                with self.assertRaises(baseline.BaselineError):
+                    baseline.artifact_identities(self.f.root, relative)
+            self.assert_failure(relative)
+
+    def test_missing_local_objects_fail_for_derivation_and_v2(self) -> None:
+        self.enable_v2()
+        (self.f.root / ".git/objects" / self.f.sha[:2] / self.f.sha[2:]).unlink()
+        self.assert_failure(self.f.bindings["artifacts"][0]["run_dir"])
+        self.assert_failure()
+
+    def test_v2_single_validation_per_artifact_and_release_between_runs(self) -> None:
+        self.enable_v2()
+        original_loader = baseline._load_benchmark_artifact_evidence
+        previous = []
+        visited = []
+
+        class Tracked(dict):
+            pass
+
+        def load(root, path):
+            for reference in previous:
+                self.assertIsNone(reference(), "full report/inventory retained across runs")
+            fingerprint, report = original_loader(root, path)
+            fingerprint, report = Tracked(fingerprint), Tracked(report)
+            previous[:] = [weakref.ref(fingerprint), weakref.ref(report)]
+            visited.append(path)
+            return fingerprint, report
+
+        with mock.patch.object(baseline, "_load_benchmark_artifact_evidence", load), \
+                mock.patch.object(baseline, "build_benchmark_report", wraps=baseline.build_benchmark_report) as rebuild, \
+                mock.patch.object(baseline, "fingerprint_artifact", side_effect=AssertionError("duplicate public fingerprint pass")):
+            self.f.verify()
+        self.assertEqual(rebuild.call_count, 2)
+        self.assertEqual(visited, [item["run_dir"] for item in self.f.bindings["artifacts"]])
+        self.assertTrue(all(reference() is None for reference in previous))
+
+    def test_v2_output_and_new_commands_are_read_only_local_git_only(self) -> None:
+        self.enable_v2()
+        actual_run, actual_open = subprocess.run, Path.open
+        calls = []
+
+        def local_git(argv, **kwargs):
+            self.assertEqual(tuple(argv[:5]), ("git", "--no-lazy-fetch", "--no-replace-objects", "cat-file", "blob"))
+            self.assertIn(argv[5], (f"{self.f.sha}:Cargo.lock", f"{self.f.sha}:benchmarks/Cargo.toml"))
+            calls.append(argv[5])
+            return actual_run(argv, **kwargs)
+
+        def read_only_open(path, mode="r", *args, **kwargs):
+            self.assertIn(mode, ("r", "rb"))
+            self.assertTrue(path in (self.f.contract_path, self.f.bindings_path) or any(
+                path.is_relative_to(artifact.run_dir) for artifact in self.f.artifacts.values()
+            ))
+            return actual_open(path, mode, *args, **kwargs)
+
+        before = self.f.inventory()
+        output, stderr = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with contextlib.ExitStack() as stack:
+            for name in ("run_mode", "run_benchmarks", "bootstrap_repository", "collect_environment", "utc_now",
+                         "load_policy_file", "controlled_evaluate_artifacts", "write_json", "write_checksums"):
+                stack.enter_context(mock.patch.object(baseline, name, side_effect=AssertionError(name)))
+            for name in ("socket.create_connection", "urllib.request.urlopen"):
+                stack.enter_context(mock.patch(name, side_effect=AssertionError(name)))
+            stack.enter_context(mock.patch.object(baseline.subprocess, "run", local_git))
+            stack.enter_context(mock.patch.object(Path, "open", read_only_open))
+            stack.enter_context(mock.patch.object(baseline, "__file__", str(self.f.script)))
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            stack.enter_context(contextlib.redirect_stderr(stderr))
+            identities = baseline.artifact_identities(self.f.root, self.f.bindings["artifacts"][0]["run_dir"])
+            self.assertEqual(baseline.main(["verify-controlled-artifacts", self.f.contract_relative, self.f.bindings_relative]), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(len(calls), 6)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(result["not_verified"], list(baseline.CONTROLLED_ARTIFACT_NOT_VERIFIED)[2:])
+        self.assertEqual(result["qualification"], "integrity_only_not_authentication_producer_execution_attestation_or_owner_authorization")
+        self.assertEqual(result["verification_scope"], "variance_run_artifact_content_run_identity_and_producer_scenario_sets_only")
+        self.assertEqual(result["performance_enforcement"]["state"], "not_eligible")
+        for name in ("producer", "scenario"):
+            self.assertEqual(result[f"{name}_set_schema"], identities[f"{name}_set"]["preimage"]["set_schema"])
+        for forbidden in (b'"preimage"', b'"files"', b'"approved"'):
+            self.assertNotIn(forbidden, output.getvalue())
+        self.assertEqual(self.f.inventory(), before)
+        cli = self.f.cli("verify-controlled-artifacts", self.f.contract_relative, self.f.bindings_relative, ascii_stdout=True)
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        self.assertEqual(cli.stdout, output.getvalue())
+
+    def test_new_help_and_usage_errors(self) -> None:
+        for args in (("--help",), ("artifact-identities", "--help"), ("verify-controlled-artifacts", "--help")):
+            result = self.f.cli(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, b"")
+        for args in (("artifact-identities",), ("artifact-identities", "missing", "--latest")):
+            result = self.f.cli(*args)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stdout, b"")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
