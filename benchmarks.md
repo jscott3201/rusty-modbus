@@ -328,22 +328,66 @@ plus an explicit approval path. This disabled preflight defines none of those
 items and emits no performance pass/fail, improvement, regression, or threshold
 verdict.
 
-### Internal controlled evidence contract (definition only)
+### Internal controlled evidence contract (structural validation only)
 
 `scripts/baseline.py` also owns the separate, provider-neutral
-`benchmark-controlled-evidence-contract` schema version `1`. This is an internal,
-definition-only document contract. There is no checked-in production instance,
-loader, CLI command, evaluator, workflow call edge, benchmark run, baseline
-promotion, budget calculation, or policy activation for it. It is intentionally
-not part of `benchmark-budget-policy` state and is not consumed by
+`benchmark-controlled-evidence-contract` schema version `1`. This internal
+document contract has a read-only file loader and structural-validation CLI.
+There is still no checked-in production instance, evaluator, workflow call edge,
+benchmark run, baseline promotion, budget calculation, or policy activation for
+it. It is intentionally not part of `benchmark-budget-policy` state and is not consumed by
 `load_policy_file` or `controlled-evaluate`.
 
-The only module APIs validate a supplied in-memory document, render canonical
+The existing in-memory APIs validate a supplied document, render canonical
 sorted-key JSON with a trailing newline, and hash those canonical bytes:
 
 - `validate_controlled_evidence_contract(document)`
 - `controlled_evidence_contract_json_text(document)`
 - `controlled_evidence_contract_sha256(document)`
+
+`load_controlled_evidence_contract_file(repo_root, contract_json)` reads one
+explicit local file, delegates validation and normalization to those same APIs,
+and returns the validated normalized document. Input or schema errors raise
+`BaselineError`; existing in-memory schema v1 semantics remain unchanged.
+
+For a schema-v1 document that you supply at `bench-output/controlled-evidence.json`
+(an example path, not a shipped production contract), run:
+
+```bash
+python3 scripts/baseline.py validate-controlled-evidence --help
+python3 scripts/baseline.py validate-controlled-evidence bench-output/controlled-evidence.json
+```
+
+The positional path must name a regular file relative to the repository root
+containing the script, **not the caller's current directory**. Absolute paths,
+empty paths or components, `.`/`..` components, backslash separators, symlink files
+or ancestors inside the repository, missing files, directories, and special files
+are rejected. Spaces and Unicode are supported; quote such paths in the shell.
+These are static local-input checks, not a race-proof sandbox against concurrent
+filesystem replacement.
+
+The new loader reads at most **1 MiB (1,048,576 bytes)** plus one byte to detect
+oversize input; the limit includes whitespace. JSON must be UTF-8, have an object
+root, and contain at most 64 nested objects/arrays. Invalid encoding or syntax,
+duplicate object names at any depth, `NaN`/`Infinity`, overflow exponents, huge
+integers outside finite numeric representability, and strings that cannot be
+encoded as canonical UTF-8 are rejected. Finite integers retain their exact
+values. These resource guards apply only to this loader, not existing commands.
+
+CLI exit/output contract:
+
+- **0**: stdout is `controlled evidence contract structurally valid (validation only)`
+  followed by a newline; stderr is empty.
+- **1**: input or schema failure; stderr diagnostic only, no success payload or
+  traceback for handled bad input. Diagnostics do not echo document values.
+- **2**: argparse usage error, such as missing arguments or unknown flags.
+
+Validation reads only the named contract. It does not resolve or fetch opaque
+evidence locators, verify retained evidence contents or continued retention,
+discover a `latest` contract, invoke Git/Cargo/benchmarks, access the network,
+write files, or activate policy. A structurally valid document is not an
+attestation, authentication, approval, baseline acceptance, statistical
+significance result, or performance verdict.
 
 Schema v1 requires exact keys and bounded identities. Set-like evidence
 references, variance studies and runs, baseline records, budget rules, and
@@ -404,7 +448,7 @@ The checked-in disabled policy and the read-only `controlled-evaluate` exit-`3`
 preflight remain unchanged and non-enforcing. Activating any runner/profile,
 method, repeated-variance process, baseline promotion, budget, approval
 authority, retention process, or performance gate requires a separate
-owner-approved PR. This definition-only schema does not advance controlled
+owner-approved PR. This schema and its validator do not advance controlled
 performance acceptance or any ledger evidence status.
 
 The measured report below remains the June 2026 baseline; the harness does not
