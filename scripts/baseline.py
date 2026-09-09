@@ -12,6 +12,7 @@ import math
 import os
 import platform
 import re
+import stat
 import statistics
 import subprocess
 import sys
@@ -40,6 +41,15 @@ CONTROLLED_EVIDENCE_CONTRACT_SCHEMA_VERSION = 1
 # File-loader resource limits only; the in-memory schema v1 APIs are unchanged.
 CONTROLLED_EVIDENCE_CONTRACT_MAX_BYTES = 1024 * 1024
 CONTROLLED_EVIDENCE_CONTRACT_MAX_DEPTH = 64
+ARTIFACT_CONTENT_SCHEMA_NAME = "benchmark-artifact-content"
+ARTIFACT_FINGERPRINT_SCHEMA_NAME = "benchmark-artifact-fingerprint"
+ARTIFACT_FINGERPRINT_VERSION = 1
+ARTIFACT_FINGERPRINT_MAX_CHECKSUM_BYTES = 4 * 1024 * 1024
+ARTIFACT_FINGERPRINT_MAX_ENTRIES = 10_000
+ARTIFACT_FINGERPRINT_QUALIFICATION = (
+    "integrity_only_not_authentication_attestation_approval_baseline_acceptance_"
+    "independent_run_proof_performance_verdict_or_policy_activation"
+)
 CONTROLLED_NOT_ELIGIBLE_EXIT = 3
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
@@ -1459,11 +1469,14 @@ def _require_nonempty_string(value: Any, label: str) -> str:
     return value
 
 
-def criterion_version_from_target_lock(repo_root: Path, target_sha: str) -> str:
+def criterion_version_from_target_lock(
+    repo_root: Path, target_sha: str, *, local_git_only: bool = False
+) -> str:
     target_sha = validate_full_sha(target_sha)
+    git_flags = ("--no-lazy-fetch", "--no-replace-objects") if local_git_only else ()
     try:
         completed = subprocess.run(
-            ("git", "cat-file", "blob", f"{target_sha}:Cargo.lock"),
+            ("git", *git_flags, "cat-file", "blob", f"{target_sha}:Cargo.lock"),
             cwd=repo_root,
             capture_output=True,
             check=False,
@@ -1498,11 +1511,14 @@ def criterion_version_from_target_lock(repo_root: Path, target_sha: str) -> str:
     return version
 
 
-def benchmark_targets_from_target_manifest(repo_root: Path, target_sha: str) -> list[str]:
+def benchmark_targets_from_target_manifest(
+    repo_root: Path, target_sha: str, *, local_git_only: bool = False
+) -> list[str]:
     target_sha = validate_full_sha(target_sha)
+    git_flags = ("--no-lazy-fetch", "--no-replace-objects") if local_git_only else ()
     try:
         completed = subprocess.run(
-            ("git", "cat-file", "blob", f"{target_sha}:benchmarks/Cargo.toml"),
+            ("git", *git_flags, "cat-file", "blob", f"{target_sha}:benchmarks/Cargo.toml"),
             cwd=repo_root,
             capture_output=True,
             check=False,
@@ -1542,9 +1558,12 @@ def benchmark_targets_from_target_manifest(repo_root: Path, target_sha: str) -> 
 
 
 def verified_criterion_version(
-    repo_root: Path, target_sha: str, *, declared_version: str | None = None
+    repo_root: Path, target_sha: str, *, declared_version: str | None = None,
+    local_git_only: bool = False,
 ) -> str:
-    locked_version = criterion_version_from_target_lock(repo_root, target_sha)
+    locked_version = criterion_version_from_target_lock(
+        repo_root, target_sha, local_git_only=local_git_only
+    )
     if declared_version is not None and declared_version != locked_version:
         raise BaselineError(
             "report Criterion version does not match target-SHA Cargo.lock: "
@@ -1922,6 +1941,7 @@ def build_benchmark_report(
     run_dir: Path,
     *,
     require_artifact_checksums: bool = True,
+    local_git_only: bool = False,
 ) -> dict[str, Any]:
     repo_root = repo_root.resolve()
     run_dir = run_dir.resolve()
@@ -1985,12 +2005,16 @@ def build_benchmark_report(
         provenance.get("ended_utc"), "provenance.json ended_utc"
     )
     recorded_environment = _validate_report_environment(environment)
-    criterion_version = verified_criterion_version(repo_root, target_sha)
+    criterion_version = verified_criterion_version(
+        repo_root, target_sha, local_git_only=local_git_only
+    )
     expected_criterion_targets = None
     if mode == "bench-full":
         expected_criterion_targets = [
             target
-            for target in benchmark_targets_from_target_manifest(repo_root, target_sha)
+            for target in benchmark_targets_from_target_manifest(
+                repo_root, target_sha, local_git_only=local_git_only
+            )
             if target.startswith("tcp_")
         ]
         if not expected_criterion_targets:
@@ -3814,6 +3838,108 @@ def controlled_evaluate_artifacts(
     return build_controlled_evaluation(policy, baseline_report, candidate_report)
 
 
+def _fingerprint_artifact_preflight(
+    repo_root: Path, run_dir: Path
+) -> tuple[dict[str, Path], dict[str, str]]:
+    """Check every entry and manifest path before legacy validation opens any payload."""
+    files: dict[str, Path] = {}
+    pending = [run_dir]
+    entry_count = 0
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                entry_count += 1
+                if entry_count > ARTIFACT_FINGERPRINT_MAX_ENTRIES:
+                    raise BaselineError("artifact fingerprint entry limit exceeded (10000)")
+                path = Path(entry.path)
+                relative = path.relative_to(run_dir).as_posix()
+                _strict_repository_relative_parts(relative, "artifact entry path")
+                relative.encode("utf-8")
+                mode = entry.stat(follow_symlinks=False).st_mode
+                if stat.S_ISLNK(mode):
+                    raise BaselineError("artifact fingerprint must not contain symlinks")
+                if stat.S_ISDIR(mode):
+                    pending.append(path)
+                elif stat.S_ISREG(mode):
+                    if path.name == "checksums.sha256" and relative != "checksums.sha256":
+                        raise BaselineError("artifact fingerprint rejects nested checksums.sha256 files")
+                    files[relative] = path
+                else:
+                    raise BaselineError("artifact fingerprint requires regular files and directories only")
+
+    checksum_path = files.pop("checksums.sha256", None)
+    if checksum_path is None:
+        raise BaselineError("artifact fingerprint requires root checksums.sha256")
+    with checksum_path.open("rb") as source:
+        raw = source.read(ARTIFACT_FINGERPRINT_MAX_CHECKSUM_BYTES + 1)
+    if len(raw) > ARTIFACT_FINGERPRINT_MAX_CHECKSUM_BYTES:
+        raise BaselineError("artifact fingerprint checksum inventory exceeds 4 MiB")
+    expected = {path.relative_to(repo_root).as_posix(): name for name, path in files.items()}
+    listed: dict[str, str] = {}
+    for line in raw.decode("utf-8").splitlines():
+        parts = line.split("  ", 1)
+        if len(parts) != 2 or not SHA256_DIGEST.fullmatch(parts[0]):
+            raise BaselineError("artifact fingerprint checksum inventory has invalid syntax")
+        digest, relative = parts
+        _strict_repository_relative_parts(relative, "checksum path")
+        if relative in listed:
+            raise BaselineError("artifact fingerprint checksum inventory has duplicate paths")
+        # Exact membership rejects escapes, aliases and absent files without opening them.
+        if relative not in expected:
+            raise BaselineError("checksum path is not a retained file inside the named artifact")
+        listed[relative] = digest
+    if list(listed) != sorted(listed, key=lambda path: path.encode("utf-8")):
+        raise BaselineError("artifact fingerprint checksum paths must be in bytewise order")
+    if set(listed) != set(expected):
+        raise BaselineError("artifact fingerprint checksum inventory does not cover every retained file")
+    return files, {expected[path]: digest for path, digest in listed.items()}
+
+
+def artifact_fingerprint_json_text(document: dict[str, Any]) -> str:
+    """Canonical encoding for generated fingerprint output and its content preimage."""
+    return json.dumps(
+        document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ) + "\n"
+
+
+def _artifact_content_fingerprint(files: list[dict[str, str]]) -> tuple[dict[str, Any], str]:
+    content = {
+        "content_schema": {
+            "name": ARTIFACT_CONTENT_SCHEMA_NAME, "version": ARTIFACT_FINGERPRINT_VERSION,
+        },
+        "files": sorted(files, key=lambda item: item["path"].encode("utf-8")),
+    }
+    digest = hashlib.sha256(artifact_fingerprint_json_text(content).encode("utf-8")).hexdigest()
+    return content, digest
+
+
+def fingerprint_artifact(repo_root: Path, value: str) -> dict[str, Any]:
+    """Validate and fingerprint unchanged retained bytes; no authority is conferred."""
+    try:
+        repo_root = repo_root.resolve()
+        run_dir = _repository_local_input(repo_root, value, "artifact directory", expected="directory")
+        files, checksums = _fingerprint_artifact_preflight(repo_root, run_dir)
+        report = build_benchmark_report(repo_root, run_dir, local_git_only=True)
+        inventory = []
+        for relative, path in files.items():
+            digest = _sha256(path)
+            if digest != checksums[relative]:
+                raise BaselineError("artifact fingerprint checksum mismatch after report validation")
+            inventory.append({"path": relative, "sha256": digest})
+        content, digest = _artifact_content_fingerprint(inventory)
+        return {
+            "content": content,
+            "fingerprint_schema": {
+                "name": ARTIFACT_FINGERPRINT_SCHEMA_NAME, "version": ARTIFACT_FINGERPRINT_VERSION,
+            },
+            "qualification": ARTIFACT_FINGERPRINT_QUALIFICATION,
+            "sha256": digest,
+            "source": {field: report["run"][field] for field in ("mode", "run_id", "target_sha")},
+        }
+    except (OSError, ValueError, OverflowError, RecursionError) as error:
+        raise BaselineError("cannot fingerprint unreadable or malformed benchmark artifact") from error
+
+
 def _controlled_contract_exact_keys(
     value: Any, expected: set[str], label: str
 ) -> dict[str, Any]:
@@ -4887,6 +5013,17 @@ def build_parser() -> argparse.ArgumentParser:
         "validate", help="validate a retained baseline artifact and checksum inventory"
     )
     validate.add_argument("run_dir")
+    fingerprint = subparsers.add_parser(
+        "fingerprint-artifact",
+        help="validate a complete benchmark artifact and emit whole-artifact content identity",
+        description=(
+            "Read-only whole-artifact fingerprint, not attestation, approval or a performance verdict. "
+            "Requires local target-SHA Git objects; never fetches or runs benchmarks."
+        ),
+    )
+    fingerprint.add_argument(
+        "run_dir", help="explicit repository-relative bench-smoke/bench-full directory; no symlinks",
+    )
     report = subparsers.add_parser(
         "report",
         help="validate a benchmark artifact and render observational JSON and Markdown",
@@ -4997,6 +5134,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"baseline artifact: {error}", file=sys.stderr)
                 return 1
             print(f"baseline artifact valid: {run_dir.resolve().relative_to(repo_root)}")
+            return 0
+        if args.command == "fingerprint-artifact":
+            fingerprint = fingerprint_artifact(repo_root, args.run_dir)
+            # Machine output is UTF-8 with LF, independent of the terminal's encoding.
+            payload = artifact_fingerprint_json_text(fingerprint).encode("utf-8")
+            sys.stdout.buffer.write(payload)
             return 0
         if args.command == "report":
             run_dir = Path(args.run_dir)
