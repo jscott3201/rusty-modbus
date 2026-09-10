@@ -317,6 +317,22 @@ class ConformanceLedgerTests(unittest.TestCase):
         for limitation in ("Client-only", "network-wrap", "gateway", "identical reused 16-bit ID", "wire-ambiguous"):
             self.assertIn(limitation, gap["detail"])
 
+    def test_identity_only_tls_foundation_does_not_close_role_or_pki_gaps(self) -> None:
+        requirements = {item["id"]: item for item in self.canonical["requirements"]}
+        test = next(item for item in self.canonical["tests"] if item["id"] == "spec_tls_server")
+        self.assertEqual(test["requirement_ids"], ["SEC-002", "SEC-004", "SEC-009"])
+        for identifier in test["requirement_ids"]:
+            self.assertIn("spec_tls_server", requirements[identifier]["test_ids"])
+        for identifier in ("SEC-004", "SEC-007", "SEC-008", "SEC-009", "SEC-010"):
+            assessment = requirements[identifier]["assessments"][0]
+            self.assertEqual(assessment["evidence"], "implemented")
+            self.assertEqual(assessment["disposition"], "compatibility-deviation")
+            self.assertIsNotNone(requirements[identifier]["evidence_gap"])
+        self.assertIn("identity-only", requirements["SEC-009"]["evidence_gap"]["detail"])
+        findings = {item["id"]: item for item in self.canonical["findings"]}
+        self.assertEqual(findings["F-014"]["status"], "open")
+        self.assertEqual(findings["F-015"]["status"], "open")
+
     def test_review_seed_and_conformance_spec_locator_are_checkout_safe(self) -> None:
         review_seed = self.canonical["baseline"]["review_seed"]
         self.assertIn("Externally supplied, gitignored", review_seed)

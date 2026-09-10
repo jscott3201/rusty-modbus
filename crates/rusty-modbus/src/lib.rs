@@ -13,7 +13,7 @@
 //! | `rtu-tcp` | no      | Alias for `rtu` without physical serial dependencies |
 //! | `server`  | no      | Modbus server with pluggable data store |
 //! | `gateway` | no      | TCP ↔ RTU bridge gateway |
-//! | `tls`     | no      | TLS 1.3 transport (Modbus/TCP Security V36) |
+//! | `tls`     | no      | TLS 1.3 transport; with `server`, opt-in identity-only mTLS serving |
 //! | `pool`    | no      | Connection pooling with raw-drop retirement + verdict-gated TCP client reuse |
 //! | `full`    | no      | All features above |
 
@@ -55,6 +55,25 @@ pub use rusty_modbus_server as server;
 /// Convenience alias for [`rusty_modbus_server::ModbusServer`].
 #[cfg(feature = "server")]
 pub type Server<S> = rusty_modbus_server::ModbusServer<S>;
+
+/// Identity-only sequential mTLS server (requires both `server` and `tls`).
+/// All CA-authenticated peers have datastore access; this is not role authorization.
+///
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use std::sync::Arc;
+/// use rusty_modbus::{server::{InMemoryStore, StoreConfig, TlsModbusServerConfig}, tls::TlsServerConfig, TlsServer};
+/// let mut config = TlsModbusServerConfig::new(TlsServerConfig {
+///     server_cert: "server.pem".into(), server_key: "server-key.pem".into(),
+///     ca_cert: "client-ca.pem".into(), ..TlsServerConfig::default()
+/// });
+/// config.listen_addr = "127.0.0.1:802".parse()?;
+/// let server = TlsServer::start(config, Arc::new(InMemoryStore::new(StoreConfig::default()))).await?;
+/// let _outcome = server.stop().await;
+/// # Ok(()) }
+/// ```
+#[cfg(all(feature = "server", feature = "tls"))]
+pub type TlsServer<S> = rusty_modbus_server::TlsModbusServer<S>;
 
 // Gateway.
 #[cfg(feature = "gateway")]

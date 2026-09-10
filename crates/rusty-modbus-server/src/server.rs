@@ -205,7 +205,10 @@ async fn supervise<S: DataStore + 'static>(
     drain_connections(&mut connections, deadline).await
 }
 
-async fn drain_connections(connections: &mut JoinSet<()>, deadline: Instant) -> ShutdownOutcome {
+pub(crate) async fn drain_connections(
+    connections: &mut JoinSet<()>,
+    deadline: Instant,
+) -> ShutdownOutcome {
     while !connections.is_empty() {
         tokio::select! {
             biased;
@@ -227,7 +230,7 @@ async fn drain_connections(connections: &mut JoinSet<()>, deadline: Instant) -> 
     ShutdownOutcome::Drained
 }
 
-fn report_connection_result(result: Result<(), JoinError>) {
+pub(crate) fn report_connection_result(result: Result<(), JoinError>) {
     if let Err(error) = result
         && !error.is_cancelled()
     {
@@ -235,9 +238,13 @@ fn report_connection_result(result: Result<(), JoinError>) {
     }
 }
 
-async fn handle_connection<S: DataStore>(
-    mut sink: rusty_modbus_tcp::TcpSink,
-    mut stream: rusty_modbus_tcp::TcpRecvStream,
+pub(crate) async fn handle_connection<
+    S: DataStore,
+    T: TransportSink + Send,
+    R: TransportStream + Send,
+>(
+    mut sink: T,
+    mut stream: R,
     peer_addr: SocketAddr,
     unit_id: UnitId,
     store: Arc<S>,
@@ -315,29 +322,29 @@ async fn handle_connection<S: DataStore>(
 }
 
 #[derive(Debug)]
-struct AcceptBackoff {
+pub(crate) struct AcceptBackoff {
     next: Duration,
 }
 
 impl AcceptBackoff {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             next: ACCEPT_BACKOFF_INITIAL,
         }
     }
 
-    fn failure_delay(&mut self) -> Duration {
+    pub(crate) fn failure_delay(&mut self) -> Duration {
         let delay = self.next;
         self.next = self.next.saturating_mul(2).min(ACCEPT_BACKOFF_MAXIMUM);
         delay
     }
 
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.next = ACCEPT_BACKOFF_INITIAL;
     }
 }
 
-async fn backoff_interrupted(
+pub(crate) async fn backoff_interrupted(
     delay: Duration,
     shutdown_rx: &mut watch::Receiver<Option<Instant>>,
 ) -> bool {

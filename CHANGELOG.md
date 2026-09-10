@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Added opt-in Rust `TlsModbusServer`: bounded sequential identity-only mTLS
+  serving, handshake limits/timeouts and owned shutdown. All trusted peers have
+  datastore access; disabled mTLS and authorization callbacks are rejected at
+  startup. This is not role authorization or full Security-profile completion.
+  Facade `server` + `tls` enables it without changing default features.
 - Added synchronous, idempotent `ModbusClient::abort()` for immediate
   cancellation without a live Tokio runtime. The Python async and sync clients
   expose the same method, and Python `ClientConfig` now exposes the Rust client

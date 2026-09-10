@@ -15,7 +15,7 @@ rusty-modbus-rtu = { path = "../rusty-modbus-rtu" }
 rusty-modbus-tls = { path = "../rusty-modbus-tls" }
 rusty-modbus-pool = { path = "../rusty-modbus-pool" }
 rusty-modbus-gateway = { path = "../rusty-modbus-gateway" }
-rusty-modbus-server = { path = "../rusty-modbus-server" }
+rusty-modbus-server = { path = "../rusty-modbus-server", features = ["tls"] }
 rusty-modbus-client = { path = "../rusty-modbus-client" }
 rusty-modbus-sim = { path = "../rusty-modbus-sim" }
 bytes = "1"
@@ -26,3 +26,5 @@ tokio-util = { version = "0.7", features = ["codec"] }
 
 [dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+rcgen = "0.14"
+tempfile = "3"

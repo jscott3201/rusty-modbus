@@ -7,6 +7,7 @@
 #![warn(missing_docs, clippy::all, clippy::pedantic)]
 #![allow(clippy::missing_errors_doc)]
 
+pub mod acceptor;
 pub mod config;
 pub mod connect;
 pub mod error;
@@ -14,6 +15,7 @@ pub mod listener;
 pub mod role;
 pub(crate) mod tls_config;
 
+pub use acceptor::TlsServerAcceptor;
 pub use config::{AuthzCallback, AuthzDecision, AuthzRequest, TlsClientConfig, TlsServerConfig};
 pub use connect::{TlsRecvStream, TlsSink, TlsTransport};
 pub use error::TlsError;
