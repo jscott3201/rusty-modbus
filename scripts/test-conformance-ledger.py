@@ -269,7 +269,7 @@ class ConformanceLedgerTests(unittest.TestCase):
             "APP-011": "PR-402",
             "APP-012": "PR-402",
             "APP-013": "PR-402",
-            "TCP-006": "PR-201",
+            "TCP-006": "PR-201, PR-402",
             "TCP-010": "PR-302",
             "TCP-011": "PR-401, PR-701",
             "TCP-013": "PR-403",
@@ -301,6 +301,21 @@ class ConformanceLedgerTests(unittest.TestCase):
             if item["evidence_gap"]
         }
         self.assertEqual(actual, expected)
+
+    def test_client_transaction_reclaim_mapping_keeps_evidence_and_wire_limits_scoped(self) -> None:
+        requirement = next(item for item in self.canonical["requirements"] if item["id"] == "TCP-006")
+        self.assertEqual(requirement["test_ids"], ["spec_client_transaction_reclaim"])
+        mapped = next(item for item in self.canonical["tests"] if item["id"] == "spec_client_transaction_reclaim")
+        self.assertEqual(mapped["path"], "crates/rusty-modbus-conformance/tests/spec_client_transaction_reclaim.rs")
+        self.assertEqual(mapped["requirement_ids"], ["TCP-006"])
+        self.assertEqual(
+            {item["profile"]: item["evidence"] for item in requirement["assessments"]},
+            {"tcp-client": "implemented", "gateway": "implemented"},
+        )
+        gap = requirement["evidence_gap"]
+        self.assertEqual(gap["follow_up"], "PR-201, PR-402")
+        for limitation in ("Client-only", "network-wrap", "gateway", "identical reused 16-bit ID", "wire-ambiguous"):
+            self.assertIn(limitation, gap["detail"])
 
     def test_review_seed_and_conformance_spec_locator_are_checkout_safe(self) -> None:
         review_seed = self.canonical["baseline"]["review_seed"]

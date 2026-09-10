@@ -475,6 +475,312 @@ mod tests {
         Bytes::from(vec![0x03, 0x02, high, low])
     }
 
+    fn guarded(manager: &TransactionManager) -> (TransactionRegistration<'_>, ResponseReceiver) {
+        manager
+            .register_guarded(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                Instant::now() + std::time::Duration::from_hours(1),
+            )
+            .unwrap()
+    }
+
+    fn assert_waiting(receiver: &mut ResponseReceiver) {
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    fn assert_register_value(receiver: &mut ResponseReceiver, expected: u16) {
+        // Nonblocking: mutations must fail an assertion, never wait for a lost sender.
+        let response = receiver.try_recv().unwrap().unwrap();
+        let OwnedResponsePdu::ReadHoldingRegisters(registers) = response else {
+            panic!("expected a holding-register response");
+        };
+        assert_eq!(registers.count(), 1);
+        assert_eq!(registers.register(0), expected);
+    }
+
+    #[test]
+    fn reclaim_guard_drop_keeps_unrelated_slot_and_rejects_late_reply() {
+        let manager = TransactionManager::new();
+        let (cancelled, mut cancelled_rx) = guarded(&manager);
+        let cancelled_id = cancelled.transaction_id();
+        let (live, mut live_rx) = guarded(&manager);
+        assert_eq!(manager.pending_count(), 2);
+
+        drop(cancelled);
+        assert_eq!(manager.pending_count(), 1);
+        assert!(matches!(
+            cancelled_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert_waiting(&mut live_rx);
+        assert_eq!(
+            manager.complete_response(cancelled_id, UnitId(1), holding_register_response(0xDEAD)),
+            CompletionOutcome::UnknownOrDuplicate
+        );
+        assert_eq!(manager.pending_count(), 1);
+        assert_waiting(&mut live_rx);
+        assert_eq!(
+            manager.complete_response(
+                live.transaction_id(),
+                UnitId(1),
+                holding_register_response(0x1234)
+            ),
+            CompletionOutcome::Delivered
+        );
+        assert_register_value(&mut live_rx, 0x1234);
+        drop(live);
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
+    fn reclaim_after_wrap_reused_index_rejects_old_full_id() {
+        let manager = TransactionManager::new();
+        manager.next_id.store(u16::MAX, Ordering::Relaxed);
+        let (old, mut old_rx) = guarded(&manager);
+        let old_id = old.transaction_id();
+        let (unrelated, mut unrelated_rx) = guarded(&manager);
+        assert_eq!(old_id, TransactionId(u16::MAX));
+        assert_eq!(unrelated.transaction_id(), TransactionId(1));
+        drop(old);
+        assert!(matches!(
+            old_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+
+        // Seed the later post-wrap collision instead of making 65k network calls.
+        // These are DIFFERENT full IDs; same-ID reuse after a full cycle is not proved.
+        manager.next_id.store(15, Ordering::Relaxed);
+        let (fresh, mut fresh_rx) = guarded(&manager);
+        let fresh_id = fresh.transaction_id();
+        assert_ne!(fresh_id, old_id);
+        assert_eq!(
+            usize::from(old_id.0) % MAX_SLOTS,
+            usize::from(fresh_id.0) % MAX_SLOTS
+        );
+        assert_eq!(manager.pending_count(), 2);
+        assert_eq!(
+            manager.complete_response(old_id, UnitId(1), holding_register_response(0xDEAD)),
+            CompletionOutcome::UnknownOrDuplicate
+        );
+        assert_eq!(manager.pending_count(), 2);
+        assert_waiting(&mut fresh_rx);
+        assert_waiting(&mut unrelated_rx);
+        assert_eq!(
+            manager.complete_response(fresh_id, UnitId(1), holding_register_response(0xBEEF)),
+            CompletionOutcome::Delivered
+        );
+        assert_register_value(&mut fresh_rx, 0xBEEF);
+        assert_waiting(&mut unrelated_rx);
+        assert_eq!(
+            manager.complete_response(
+                unrelated.transaction_id(),
+                UnitId(1),
+                holding_register_response(0x1234)
+            ),
+            CompletionOutcome::Delivered
+        );
+        assert_register_value(&mut unrelated_rx, 0x1234);
+        drop((fresh, unrelated));
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
+    fn reclaim_one_guard_restores_full_wrapped_ring_without_mutating_live_receivers() {
+        let manager = TransactionManager::new();
+        manager.next_id.store(u16::MAX - 1, Ordering::Relaxed);
+        let mut pending: Vec<_> = (0..MAX_SLOTS).map(|_| guarded(&manager)).collect();
+        let mut ids: Vec<_> = pending
+            .iter()
+            .map(|(guard, _)| guard.transaction_id().0)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), MAX_SLOTS);
+        assert!(!ids.contains(&0));
+        assert_eq!(manager.pending_count(), MAX_SLOTS);
+        assert!(matches!(
+            manager.register_guarded(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                Instant::now()
+            ),
+            Err(ClientError::TransactionConflict(_))
+        ));
+        assert_eq!(manager.pending_count(), MAX_SLOTS);
+        for (_, receiver) in &mut pending {
+            assert_waiting(receiver);
+        }
+
+        let (cancelled, mut cancelled_rx) = pending.remove(4);
+        let cancelled_id = cancelled.transaction_id();
+        drop(cancelled);
+        assert_eq!(manager.pending_count(), MAX_SLOTS - 1);
+        assert!(matches!(
+            cancelled_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        let (fresh, mut fresh_rx) = guarded(&manager);
+        let fresh_id = fresh.transaction_id();
+        assert_ne!(fresh_id, cancelled_id);
+        assert_ne!(fresh_id.0, 0);
+        assert!(
+            pending
+                .iter()
+                .all(|(guard, _)| guard.transaction_id() != fresh_id)
+        );
+        assert_eq!(
+            usize::from(fresh_id.0) % MAX_SLOTS,
+            usize::from(cancelled_id.0) % MAX_SLOTS
+        );
+        assert_eq!(manager.pending_count(), MAX_SLOTS);
+        assert!(matches!(
+            manager.register_guarded(
+                UnitId(1),
+                FunctionCode::ReadHoldingRegisters,
+                Instant::now()
+            ),
+            Err(ClientError::TransactionConflict(_))
+        ));
+        assert_eq!(
+            manager.complete_response(cancelled_id, UnitId(1), holding_register_response(0xDEAD)),
+            CompletionOutcome::UnknownOrDuplicate
+        );
+        assert_waiting(&mut fresh_rx);
+        for (_, receiver) in &mut pending {
+            assert_waiting(receiver);
+        }
+        for (index, (guard, mut receiver)) in pending.into_iter().enumerate() {
+            let value = 0x1000 + u16::try_from(index).unwrap();
+            assert_eq!(
+                manager.complete_response(
+                    guard.transaction_id(),
+                    UnitId(1),
+                    holding_register_response(value)
+                ),
+                CompletionOutcome::Delivered
+            );
+            assert_register_value(&mut receiver, value);
+        }
+        assert_eq!(manager.pending_count(), 1);
+        assert_eq!(
+            manager.complete_response(fresh_id, UnitId(1), holding_register_response(0xCAFE)),
+            CompletionOutcome::Delivered
+        );
+        assert_register_value(&mut fresh_rx, 0xCAFE);
+        drop(fresh);
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
+    fn reclaim_expired_wrapped_slot_survives_old_guard_drop_and_late_reply() {
+        let manager = TransactionManager::new();
+        manager.next_id.store(u16::MAX, Ordering::Relaxed);
+        let due = Instant::now();
+        let (expired, mut expired_rx) = manager
+            .register_guarded(UnitId(1), FunctionCode::ReadHoldingRegisters, due)
+            .unwrap();
+        let expired_id = expired.transaction_id();
+        let (unrelated, mut unrelated_rx) = guarded(&manager);
+        assert!(manager.expire_due_and_next_deadline(due).is_some());
+        assert!(matches!(
+            expired_rx.try_recv(),
+            Ok(Err(ClientError::Timeout))
+        ));
+        assert_eq!(manager.pending_count(), 1);
+
+        manager.next_id.store(15, Ordering::Relaxed);
+        let (fresh, mut fresh_rx) = guarded(&manager);
+        assert_eq!(
+            usize::from(fresh.transaction_id().0) % MAX_SLOTS,
+            usize::from(expired_id.0) % MAX_SLOTS
+        );
+        drop(expired); // An obsolete registration must not remove the replacement.
+        assert_eq!(manager.pending_count(), 2);
+        assert_eq!(
+            manager.complete_response(expired_id, UnitId(1), holding_register_response(0xDEAD)),
+            CompletionOutcome::UnknownOrDuplicate
+        );
+        assert_waiting(&mut fresh_rx);
+        assert_waiting(&mut unrelated_rx);
+        assert_eq!(
+            manager.complete_response(
+                fresh.transaction_id(),
+                UnitId(1),
+                holding_register_response(0xBEEF)
+            ),
+            CompletionOutcome::Delivered
+        );
+        assert_register_value(&mut fresh_rx, 0xBEEF);
+        assert_eq!(
+            manager.complete_response(
+                unrelated.transaction_id(),
+                UnitId(1),
+                holding_register_response(0x1234)
+            ),
+            CompletionOutcome::Delivered
+        );
+        assert_register_value(&mut unrelated_rx, 0x1234);
+        drop((fresh, unrelated));
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
+    fn reclaim_cancel_all_fences_old_guards_and_replies_from_fresh_manager_slots() {
+        let manager = TransactionManager::new();
+        manager.next_id.store(u16::MAX - 2, Ordering::Relaxed);
+        let mut old: Vec<_> = (0..4).map(|_| guarded(&manager)).collect();
+        let old_ids: Vec<_> = old
+            .iter()
+            .map(|(guard, _)| guard.transaction_id())
+            .collect();
+        manager.cancel_all(|| ClientError::ShuttingDown);
+        assert_eq!(manager.pending_count(), 0);
+        for (_, receiver) in &mut old {
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(Err(ClientError::ShuttingDown))
+            ));
+        }
+
+        // Manager-only reuse probe: this does NOT reopen a shut-down ModbusClient.
+        manager.next_id.store(13, Ordering::Relaxed);
+        let mut fresh: Vec<_> = (0..4).map(|_| guarded(&manager)).collect();
+        assert!(
+            fresh
+                .iter()
+                .all(|(guard, _)| !old_ids.contains(&guard.transaction_id()))
+        );
+        drop(old);
+        assert_eq!(manager.pending_count(), 4);
+        for id in old_ids {
+            assert_eq!(
+                manager.complete_response(id, UnitId(1), holding_register_response(0xDEAD)),
+                CompletionOutcome::UnknownOrDuplicate
+            );
+        }
+        assert_eq!(manager.pending_count(), 4);
+        for (_, receiver) in &mut fresh {
+            assert_waiting(receiver);
+        }
+        for (index, (guard, mut receiver)) in fresh.into_iter().enumerate() {
+            let value = 0x2000 + u16::try_from(index).unwrap();
+            assert_eq!(
+                manager.complete_response(
+                    guard.transaction_id(),
+                    UnitId(1),
+                    holding_register_response(value)
+                ),
+                CompletionOutcome::Delivered
+            );
+            assert_register_value(&mut receiver, value);
+        }
+        assert_eq!(manager.pending_count(), 0);
+    }
+
     #[test]
     fn transaction_ids_skip_zero_after_wraparound() {
         let manager = TransactionManager::new();
