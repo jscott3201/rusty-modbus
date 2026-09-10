@@ -2,12 +2,12 @@
   "schema_version": 1,
   "baseline": {
     "repository": "jscott3201/rusty-modbus",
-    "base_sha": "f829b2aff9e72d08aa1f051847bfd24942eebc65",
+    "base_sha": "908a147c358f9947166c413b194d338827570b1c",
     "base_ref": "dev",
-    "as_of": "2026-09-01",
+    "as_of": "2026-09-09",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 54
+    "test_count": 55
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -1874,11 +1874,13 @@
           "path": "crates/rusty-modbus-client/src/transaction.rs"
         }
       ],
-      "test_ids": [],
+      "test_ids": [
+        "spec_client_transaction_reclaim"
+      ],
       "evidence_gap": {
-        "detail": "Slot allocation is implemented, but hostile wraparound and cancellation reclaim evidence is incomplete.",
+        "detail": "Client-only deterministic unit/transport tests cover seeded wrap, exact guarded reclaim, expiry/terminal cleanup, retry attempts, live capacity, and different-full-ID stale replies. A full 16-bit network-wrap campaign and gateway reclaim/correlation evidence remain unrecorded. Ancient replies with an identical reused 16-bit ID after a whole cycle remain wire-ambiguous; these tests do not exclude that case. Test mapping alone does not promote evidence levels.",
         "owner": "maintainers",
-        "follow_up": "PR-201"
+        "follow_up": "PR-201, PR-402"
       },
       "assessments": [
         {
@@ -4026,6 +4028,14 @@
         "TCP-007",
         "CONF-001",
         "CONF-002"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_client_transaction_reclaim",
+      "path": "crates/rusty-modbus-conformance/tests/spec_client_transaction_reclaim.rs",
+      "requirement_ids": [
+        "TCP-006"
       ],
       "category": null
     },

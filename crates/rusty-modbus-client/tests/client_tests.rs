@@ -142,6 +142,13 @@ async fn poll_once<F: Future>(future: Pin<&mut F>) -> Option<F::Output> {
     }
 }
 
+fn mbap_transaction_id(frame: &Frame) -> u16 {
+    let FrameHeader::Mbap(header) = frame.header else {
+        panic!("expected MBAP request");
+    };
+    header.transaction_id.get()
+}
+
 /// Start a test server that responds to ReadHoldingRegisters with [0x1234, 0x5678].
 async fn start_register_server() -> SocketAddr {
     let listener =
@@ -1268,6 +1275,146 @@ async fn cancelled_request_releases_permit_and_deadline_reclaims_slot() {
         ))
         .unwrap();
     assert_eq!(next.await.unwrap(), vec![0x002A]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn reclaim_cancelled_registration_rejects_queued_same_ring_stale_payload() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(
+        sink,
+        stream,
+        ClientConfig {
+            timeout: Duration::from_secs(60),
+            max_in_flight: 1,
+            retry: RetryConfig {
+                max_retries: 0,
+                ..RetryConfig::default()
+            },
+            ..ClientConfig::default()
+        },
+    );
+    let mut oldest = None;
+    for _ in 0..16 {
+        controls.outcome_tx.send(SendOutcome::Success).unwrap();
+        let mut cancelled = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+        assert!(poll_once(cancelled.as_mut()).await.is_none());
+        let sent = controls.sent_rx.try_recv().unwrap();
+        oldest.get_or_insert(sent);
+        drop(cancelled);
+    }
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::DispatchCancelled)
+    );
+
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut replacement = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(replacement.as_mut()).await.is_none());
+    let fresh = controls.sent_rx.try_recv().unwrap();
+    let oldest = oldest.unwrap();
+    assert_ne!(mbap_transaction_id(&fresh), mbap_transaction_id(&oldest));
+    assert_eq!(
+        mbap_transaction_id(&fresh) % 16,
+        mbap_transaction_id(&oldest) % 16
+    );
+    // FIFO wrong-then-right payloads: success is not based on a premature pending poll.
+    controls
+        .response_tx
+        .send(mbap_response(
+            &oldest,
+            Bytes::from_static(&[0x03, 0x02, 0xDE, 0xAD]),
+        ))
+        .unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &fresh,
+            Bytes::from_static(&[0x03, 0x02, 0xBE, 0xEF]),
+        ))
+        .unwrap();
+    assert_eq!(replacement.await.unwrap(), vec![0xBEEF]);
+    assert_no_sent_frame(&mut controls);
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::DispatchCancelled)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn reclaim_timed_out_attempt_rejects_old_payload_and_preserves_operation_permit() {
+    let (sink, stream, mut controls) = controlled_transport();
+    let client = ModbusClient::from_transport(
+        sink,
+        stream,
+        ClientConfig {
+            timeout: Duration::from_millis(20),
+            max_in_flight: 1,
+            retry: RetryConfig {
+                max_retries: 1,
+                retry_delay: Duration::from_millis(10),
+                ..RetryConfig::default()
+            },
+            ..ClientConfig::default()
+        },
+    );
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    let mut request = Box::pin(client.read_holding_registers(UnitId(1), 0, 1));
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let first = controls.sent_rx.try_recv().unwrap();
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert!(poll_once(request.as_mut()).await.is_none());
+
+    let mut waiting = Box::pin(client.read_holding_registers(UnitId(1), 1, 1));
+    assert!(poll_once(waiting.as_mut()).await.is_none());
+    tokio::time::advance(Duration::from_millis(9)).await;
+    assert!(poll_once(request.as_mut()).await.is_none());
+    assert_no_sent_frame(&mut controls);
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert!(poll_once(request.as_mut()).await.is_none());
+    let retry = controls.sent_rx.try_recv().unwrap();
+    assert_ne!(mbap_transaction_id(&first), mbap_transaction_id(&retry));
+    assert_ne!(mbap_transaction_id(&retry), 0);
+    assert_eq!(first.pdu, retry.pdu);
+    assert!(poll_once(waiting.as_mut()).await.is_none());
+    assert_no_sent_frame(&mut controls);
+    controls
+        .response_tx
+        .send(mbap_response(
+            &first,
+            Bytes::from_static(&[0x03, 0x02, 0xDE, 0xAD]),
+        ))
+        .unwrap();
+    controls
+        .response_tx
+        .send(mbap_response(
+            &retry,
+            Bytes::from_static(&[0x03, 0x02, 0xBE, 0xEF]),
+        ))
+        .unwrap();
+    assert_eq!(request.await.unwrap(), vec![0xBEEF]);
+
+    // The same logical operation held its permit across attempts/backoff; its
+    // completion now admits the waiting operation without a leaked registration.
+    controls.outcome_tx.send(SendOutcome::Success).unwrap();
+    assert!(poll_once(waiting.as_mut()).await.is_none());
+    let next = controls.sent_rx.try_recv().unwrap();
+    assert_ne!(mbap_transaction_id(&next), mbap_transaction_id(&retry));
+    controls
+        .response_tx
+        .send(mbap_response(
+            &next,
+            Bytes::from_static(&[0x03, 0x02, 0xCA, 0xFE]),
+        ))
+        .unwrap();
+    assert_eq!(waiting.await.unwrap(), vec![0xCAFE]);
+    assert_no_sent_frame(&mut controls);
+    client.shutdown().await;
+    assert_eq!(
+        client.session_reuse_verdict(),
+        SessionReuseVerdict::Retire(SessionRetirementReason::RequestTimedOut)
+    );
 }
 
 #[tokio::test(start_paused = true)]

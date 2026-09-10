@@ -8,11 +8,11 @@ This ledger reports repository-scoped evidence for named profiles. It does not s
 ## Baseline
 
 - Repository: `jscott3201/rusty-modbus`
-- Base: `dev` at `f829b2aff9e72d08aa1f051847bfd24942eebc65`
-- Inventory date: `2026-09-01`
+- Base: `dev` at `908a147c358f9947166c413b194d338827570b1c`
+- Inventory date: `2026-09-09`
 - Review seed: Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency
 - Requirements: 70
-- Conformance test files: 54
+- Conformance test files: 55
 - Evidence in this seed records repository implementation and mappings; test-file existence does not prove execution.
 
 ## Evidence scale
@@ -78,7 +78,7 @@ Client requests and responses carried in MBAP frames over TCP.
 | [`TCP-002`](#requirement-tcp-002) | The MBAP protocol identifier is zero for Modbus | `supported` | `implemented` | — |
 | [`TCP-003`](#requirement-tcp-003) | The MBAP length counts Unit Identifier plus PDU and bounds the ADU to 260 bytes | `supported` | `implemented` | — |
 | [`TCP-004`](#requirement-tcp-004) | TCP fragmentation and coalescing do not change ADU boundaries | `supported` | `implemented` | — |
-| [`TCP-006`](#requirement-tcp-006) | Transaction identifiers are unique while in flight and are reclaimed | `supported` | `implemented` | Slot allocation is implemented, but hostile wraparound and cancellation reclaim evidence is incomplete. |
+| [`TCP-006`](#requirement-tcp-006) | Transaction identifiers are unique while in flight and are reclaimed | `supported` | `implemented` | Client-only deterministic unit/transport tests cover seeded wrap, exact guarded reclaim, expiry/terminal cleanup, retry attempts, live capacity, and different-full-ID stale replies. A full 16-bit network-wrap campaign and gateway reclaim/correlation evidence remain unrecorded. Ancient replies with an identical reused 16-bit ID after a whole cycle remain wire-ambiguous; these tests do not exclude that case. Test mapping alone does not promote evidence levels. |
 | [`TCP-007`](#requirement-tcp-007) | A response matches the expected Unit Identifier and function | `supported` | `implemented` | — |
 | [`TCP-008`](#requirement-tcp-008) | Direct and gateway Unit Identifier behavior is explicit | `supported` | `implemented` | — |
 | [`TCP-009`](#requirement-tcp-009) | TCP port 502 is the configurable default | `supported` | `implemented` | — |
@@ -296,7 +296,7 @@ TCP request routing to configured RTU-over-TCP backends; no physical serial gate
 | [`TCP-003`](#requirement-tcp-003) | The MBAP length counts Unit Identifier plus PDU and bounds the ADU to 260 bytes | `supported` | `implemented` | — |
 | [`TCP-004`](#requirement-tcp-004) | TCP fragmentation and coalescing do not change ADU boundaries | `supported` | `implemented` | — |
 | [`TCP-005`](#requirement-tcp-005) | A server copies the request Transaction Identifier into its response | `supported` | `implemented` | — |
-| [`TCP-006`](#requirement-tcp-006) | Transaction identifiers are unique while in flight and are reclaimed | `supported` | `implemented` | Slot allocation is implemented, but hostile wraparound and cancellation reclaim evidence is incomplete. |
+| [`TCP-006`](#requirement-tcp-006) | Transaction identifiers are unique while in flight and are reclaimed | `supported` | `implemented` | Client-only deterministic unit/transport tests cover seeded wrap, exact guarded reclaim, expiry/terminal cleanup, retry attempts, live capacity, and different-full-ID stale replies. A full 16-bit network-wrap campaign and gateway reclaim/correlation evidence remain unrecorded. Ancient replies with an identical reused 16-bit ID after a whole cycle remain wire-ambiguous; these tests do not exclude that case. Test mapping alone does not promote evidence levels. |
 | [`TCP-007`](#requirement-tcp-007) | A response matches the expected Unit Identifier and function | `supported` | `implemented` | — |
 | [`TCP-008`](#requirement-tcp-008) | Direct and gateway Unit Identifier behavior is explicit | `supported` | `implemented` | — |
 | [`TCP-009`](#requirement-tcp-009) | TCP port 502 is the configurable default | `supported` | `implemented` | — |
@@ -519,7 +519,7 @@ RTU ADUs carried on a TCP byte stream without MBAP semantics; this is neither ph
 <a id="requirement-tcp-005"></a>
 | `TCP-005` — A server copies the request Transaction Identifier into its response | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3 and §4.4.1, Transaction Identifier pairing | `crates/rusty-modbus-frame/src/mbap.rs`; `crates/rusty-modbus-server/src/server.rs` | `spec_client_server`, `spec_mbap_framing`, `spec_tcp_transport` |
 <a id="requirement-tcp-006"></a>
-| `TCP-006` — Transaction identifiers are unique while in flight and are reclaimed | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §4.4.1, client transaction management | `crates/rusty-modbus-client/src/transaction.rs` | Gap: Slot allocation is implemented, but hostile wraparound and cancellation reclaim evidence is incomplete. (PR-201) |
+| `TCP-006` — Transaction identifiers are unique while in flight and are reclaimed | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §4.4.1, client transaction management | `crates/rusty-modbus-client/src/transaction.rs` | `spec_client_transaction_reclaim`; Gap: Client-only deterministic unit/transport tests cover seeded wrap, exact guarded reclaim, expiry/terminal cleanup, retry attempts, live capacity, and different-full-ID stale replies. A full 16-bit network-wrap campaign and gateway reclaim/correlation evidence remain unrecorded. Ancient replies with an identical reused 16-bit ID after a whole cycle remain wire-ambiguous; these tests do not exclude that case. Test mapping alone does not promote evidence levels. (PR-201, PR-402) |
 <a id="requirement-tcp-007"></a>
 | `TCP-007` — A response matches the expected Unit Identifier and function | `MUST` | [modbus-tcp-guide](https://www.modbus.org/file/secure/messagingimplementationguide.pdf) `V1.0b`, §3.1.3 and §4.4.1, response identity and transaction pairing | `crates/rusty-modbus-client/src/error.rs`; `crates/rusty-modbus-client/src/reader.rs`; `crates/rusty-modbus-client/src/transaction.rs` | `spec_client_server` |
 <a id="requirement-tcp-008"></a>
@@ -637,6 +637,7 @@ Mappings identify intended coverage. They do not assert that a test executed.
 | `spec_client_response_shape` | `crates/rusty-modbus-conformance/tests/spec_client_response_shape.rs` | `APP-011`, `APP-012`, `APP-013` |
 | `spec_client_retry_policy` | `crates/rusty-modbus-conformance/tests/spec_client_retry_policy.rs` | `APP-018`, `TCP-011`, `CONF-002` |
 | `spec_client_server` | `crates/rusty-modbus-conformance/tests/spec_client_server.rs` | `TCP-005`, `TCP-007`, `CONF-001`, `CONF-002` |
+| `spec_client_transaction_reclaim` | `crates/rusty-modbus-conformance/tests/spec_client_transaction_reclaim.rs` | `TCP-006` |
 | `spec_constants` | `crates/rusty-modbus-conformance/tests/spec_constants.rs` | `APP-001`, `APP-004`, `APP-005`, `APP-006`, `APP-007`, `APP-008`, `APP-009`, `TCP-009`, `RTU-002`, `SEC-001`, `SEC-005` |
 | `spec_crc16` | `crates/rusty-modbus-conformance/tests/spec_crc16.rs` | `RTU-003` |
 | `spec_custom_functions` | `crates/rusty-modbus-conformance/tests/spec_custom_functions.rs` | `APP-017` |
