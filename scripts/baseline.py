@@ -91,6 +91,14 @@ SCENARIO_METRIC_CORRESPONDENCE = {
     ),
     "criterion_estimate": (("mean_estimate", "ns", "maximum", "nanoseconds"),),
 }
+STUDY_OBSERVATIONS_SCHEMA_NAME = "benchmark-study-observations"
+STUDY_OBSERVATIONS_MAX_ROWS = 4096
+STUDY_OBSERVATION_KEY_FIELDS = ("budget_rule_id", "study_id", "artifact_evidence_id")
+STUDY_OBSERVATION_METRIC_SEMANTICS = {
+    "throughput": "recorded_per_repetition_throughput_statistics_within_one_run",
+    "p99_latency": "statistics_of_recorded_per_repetition_p99s_not_pooled_latency",
+    "mean_estimate": "producer_within_run_estimate_and_interval_not_cross_run_uncertainty",
+}
 CONTROLLED_NOT_ELIGIBLE_EXIT = 3
 STRESS_PRODUCER_ID = "rusty-modbus-stress-json-v1"
 CRITERION_PRODUCER_ID = "criterion-0.5.1-private-estimates-layout"
@@ -4088,8 +4096,10 @@ def scenario_identity(projection: Any) -> dict[str, Any]:
         raise BaselineError("cannot encode individual scenario identity") from error
 
 
-def _individual_scenario_index(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Index a validated report once; retain identity and metric spellings, not values."""
+def _individual_scenario_index(
+    report: dict[str, Any], *, capture_metrics: bool = False
+) -> dict[str, dict[str, Any]]:
+    """Index once; optional private metric views live only for the current verified run."""
     index = {}
     for scenario in report["scenarios"]:
         entry = scenario_identity({field: scenario[field] for field in ("kind", "producer_id", "identity")})
@@ -4107,6 +4117,8 @@ def _individual_scenario_index(report: dict[str, Any]) -> dict[str, dict[str, An
                 raise BaselineError("scenario metric is missing or has an unsupported report unit")
             descriptors.append({"metric": metric, "unit": unit, "direction": direction, "report_unit": report_unit})
         entry["metrics"] = descriptors
+        if capture_metrics:
+            entry["_recorded_metrics"] = metrics
         index[digest] = entry
     return index
 
@@ -5166,13 +5178,15 @@ def load_controlled_artifact_bindings_file(repo_root: Path, value: str) -> dict[
     return canonical_controlled_artifact_bindings(document)
 
 
-def verify_controlled_artifacts(
-    repo_root: Path, contract_json: str, bindings_json: str
-) -> dict[str, Any]:
-    """Opt in to bounded content/run/set identity checks, without verifying other evidence."""
+def _verify_controlled_artifacts(
+    repo_root: Path, contract_json: str, bindings_json: str, *, capture_observations: bool = False
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Shared verification path; observation capture never bypasses an existing gate."""
     contract = load_controlled_evidence_contract_file(repo_root, contract_json)
     bindings = load_controlled_artifact_bindings_file(repo_root, bindings_json)
     version = bindings["binding_schema"]["version"]
+    if capture_observations and version != 3:
+        raise BaselineError("study observations require binding manifest version 3")
     contract_digest = controlled_evidence_contract_sha256(contract)
     if bindings["contract_sha256"] != contract_digest:
         raise BaselineError("controlled artifact bindings contract pin mismatch")
@@ -5221,6 +5235,15 @@ def verify_controlled_artifacts(
     except (BaselineError, OSError, ValueError, RuntimeError) as error:
         raise BaselineError("controlled artifact binding directories are invalid or duplicated") from error
 
+    expected_observation_count = 0
+    if capture_observations:
+        expected_observation_count = sum(
+            len(studies[study_id]["runs"])
+            for binding in bindings["budget_bindings"] for study_id in binding["study_ids"]
+        )
+        if expected_observation_count > STUDY_OBSERVATIONS_MAX_ROWS:
+            raise BaselineError("study observation row limit exceeded (4096)")
+    observations = []
     verified = []
     identities: set[tuple[str, str]] = set()
     digests: set[str] = set()
@@ -5267,10 +5290,27 @@ def verify_controlled_artifacts(
                     raise BaselineError(f"controlled artifact declared {name}-set digest mismatch")
                 row[field] = actual
             if version == 3:
-                scenario_index = _individual_scenario_index(report)
+                if capture_observations:
+                    scenario_index = _individual_scenario_index(report, capture_metrics=True)
+                else:
+                    scenario_index = _individual_scenario_index(report)
                 for budget_id in budgets_by_study.get(study_id, []):
                     _match_budget_scenario(scenario_index, budget_rules[budget_id], bindings["scenario_identity_schema"])
                     budget_matches[budget_id]["matched_run_count"] += 1
+                    if capture_observations:
+                        rule = budget_rules[budget_id]
+                        scenario_digest = rule["scenario_identity"]["identity_sha256"]
+                        recorded_metric = copy.deepcopy(scenario_index[scenario_digest]["_recorded_metrics"][rule["metric"]])
+                        observations.append({
+                            "budget_rule_id": budget_id,
+                            "declared_scenario_id": rule["scenario_identity"]["scenario_id"],
+                            "study_id": study_id, "artifact_evidence_id": evidence_id,
+                            "target_sha": source["target_sha"], "run_id": source["run_id"],
+                            "artifact_content_sha256": digest, "scenario_identity_sha256": scenario_digest,
+                            "metric": rule["metric"], "budget_unit": rule["unit"], "budget_direction": rule["direction"],
+                            "report_unit": recorded_metric["unit"], "recorded_metric": recorded_metric,
+                        })
+                        del recorded_metric
                 del scenario_index
             del report, sets
         verified.append(row)
@@ -5308,7 +5348,41 @@ def verify_controlled_artifacts(
             "budget_evaluation": {"state": "not_evaluated", "reason": "scenario_metric_matching_only"},
             "not_verified": list(CONTROLLED_SCOPED_BUDGET_NOT_VERIFIED),
         })
+    if capture_observations:
+        keys = [tuple(row[field] for field in STUDY_OBSERVATION_KEY_FIELDS) for row in observations]
+        if len(keys) != expected_observation_count or len(set(keys)) != expected_observation_count:
+            raise BaselineError("study observation row coverage is incomplete or duplicated")
+        observations.sort(key=lambda row: tuple(row[field] for field in STUDY_OBSERVATION_KEY_FIELDS))
+    return result, observations
+
+
+def verify_controlled_artifacts(
+    repo_root: Path, contract_json: str, bindings_json: str
+) -> dict[str, Any]:
+    """Opt in to bounded content/run/set identity checks, without verifying other evidence."""
+    result, _ = _verify_controlled_artifacts(repo_root, contract_json, bindings_json)
     return result
+
+
+def study_observations(repo_root: Path, contract_json: str, bindings_json: str) -> dict[str, Any]:
+    """Export complete recorded run metrics in the same pass as successful v3 verification."""
+    verification, observations = _verify_controlled_artifacts(
+        repo_root, contract_json, bindings_json, capture_observations=True
+    )
+    return {
+        "observations_schema": {"name": STUDY_OBSERVATIONS_SCHEMA_NAME, "version": 1},
+        "verification": verification,
+        "observation_unit": "retained_bench-full_run",
+        "observation_count": len(observations),
+        "observations": observations,
+        "metric_semantics": dict(STUDY_OBSERVATION_METRIC_SEMANTICS),
+        "verification_scope": "recorded_run_metrics_from_verified_explicit_budget_study_scopes_only",
+        "qualification": SET_IDENTITY_QUALIFICATION,
+        "cross_run_analysis": {"state": "not_performed", "reason": "recorded_run_metric_export_only"},
+        "budget_evaluation": dict(verification["budget_evaluation"]),
+        "performance_enforcement": dict(verification["performance_enforcement"]),
+        "not_verified": list(verification["not_verified"]),
+    }
 
 
 def run_correctness(run: ArtifactRun) -> None:
@@ -5538,6 +5612,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_artifacts.add_argument("contract_json", help="repository-relative controlled-evidence v1 JSON file")
     verify_artifacts.add_argument("bindings_json", help="repository-relative binding-manifest v1/v2/v3 JSON file (1 MiB, bounded mappings)")
+    observations = subparsers.add_parser(
+        "study-observations", help="export complete recorded run metric objects after v3 verification",
+        description="Read-only recorded-run export, not independent samples, cross-run analysis or budget evaluation.",
+    )
+    observations.add_argument("contract_json", help="explicit repository-relative controlled-evidence v1 JSON file")
+    observations.add_argument("bindings_json", help="explicit repository-relative binding v3 JSON file; at most 4096 observation rows")
     controlled_evaluate = subparsers.add_parser(
         "controlled-evaluate",
         help="rebuild complete artifacts and emit a fail-closed controlled preflight",
@@ -5660,6 +5740,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "verify-controlled-artifacts":
             verification = verify_controlled_artifacts(repo_root, args.contract_json, args.bindings_json)
             sys.stdout.buffer.write(artifact_fingerprint_json_text(verification).encode("utf-8"))
+            return 0
+        if args.command == "study-observations":
+            observations = study_observations(repo_root, args.contract_json, args.bindings_json)
+            sys.stdout.buffer.write(artifact_fingerprint_json_text(observations).encode("utf-8"))
             return 0
         if args.command == "controlled-evaluate":
             evaluation = controlled_evaluate_artifacts(
