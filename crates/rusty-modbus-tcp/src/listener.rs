@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_util::StreamExt;
 use rusty_modbus_frame::mbap::MbapCodec;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 use tracing::{debug, trace};
 
@@ -22,7 +22,8 @@ use crate::error::TransportError;
 pub struct TcpServerMetricsSnapshot {
     /// Connections currently holding an admission reservation.
     pub active_connections: usize,
-    /// Connections returned successfully by [`TcpServerListener::accept`].
+    /// TCP sockets returned by [`TcpServerListener::accept_socket`] or
+    /// [`TcpServerListener::accept`], not authenticated TLS sessions.
     pub accepted_connections: usize,
     /// Connections rejected by IP access control.
     pub access_denied_connections: usize,
@@ -115,7 +116,8 @@ fn increment_saturating(counter: &AtomicUsize) {
 
 /// RAII guard that decrements the active connection counter on drop.
 ///
-/// Returned alongside connection halves from [`TcpServerListener::accept`].
+/// Returned by [`TcpServerListener::accept_socket`] or alongside connection
+/// halves from [`TcpServerListener::accept`].
 /// Callers must hold this guard for the lifetime of the connection to ensure
 /// the counter stays accurate.
 #[derive(Debug)]
@@ -172,6 +174,31 @@ impl TcpServerListener {
     pub async fn accept(
         &self,
     ) -> Result<(TcpSink, TcpRecvStream, SocketAddr, ConnectionGuard), TransportError> {
+        let (stream, addr, guard) = self.accept_socket().await?;
+        let framed = Framed::new(stream, MbapCodec);
+        let (sink, recv_stream) = framed.split();
+        Ok((
+            TcpSink::new(sink, self.config.tcp.write_timeout),
+            TcpRecvStream::new(recv_stream, self.config.tcp.read_timeout),
+            addr,
+            guard,
+        ))
+    }
+
+    /// Accept an unframed TCP socket after IP ACL, connection reservation and
+    /// `TCP_NODELAY` setup. Denied/over-limit sockets are dropped and retried.
+    ///
+    /// The socket is not encrypted or authenticated. An upgrading caller must
+    /// retain the guard through handshake and session, and provide its own
+    /// handshake cancellation/deadline and subsequent I/O timeouts.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::Io` on accept or socket setup failure. A setup
+    /// failure releases its reservation before returning.
+    pub async fn accept_socket(
+        &self,
+    ) -> Result<(TcpStream, SocketAddr, ConnectionGuard), TransportError> {
         loop {
             let (stream, addr) = self.listener.accept().await?;
             trace!(peer_addr = %addr, "accepted TCP connection");
@@ -208,15 +235,8 @@ impl TcpServerListener {
                 Ok::<_, std::io::Error>(stream)
             })?;
 
-            let framed = Framed::new(stream, MbapCodec);
-            let (sink, recv_stream) = framed.split();
-
-            let sink = TcpSink::new(sink, self.config.tcp.write_timeout);
-            let recv = TcpRecvStream::new(recv_stream, self.config.tcp.read_timeout);
-
             self.metrics.record_accepted();
-
-            return Ok((sink, recv, addr, guard));
+            return Ok((stream, addr, guard));
         }
     }
 
@@ -264,5 +284,51 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(metrics.snapshot().active_connections, 0);
         assert!(metrics.reserve_connection(1).is_some());
+    }
+
+    #[tokio::test]
+    async fn raw_admission_preserves_limit_nodelay_and_guard_lifetime() {
+        let listener = Arc::new(
+            TcpServerListener::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                TcpServerConfig {
+                    max_connections: 1,
+                    tcp: crate::config::TcpConfig {
+                        tcp_nodelay: false,
+                        ..crate::config::TcpConfig::default()
+                    },
+                    ..TcpServerConfig::default()
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        let address = listener.local_addr().unwrap();
+        let first = TcpStream::connect(address).await.unwrap();
+        let (socket, _, guard) = listener.accept_socket().await.unwrap();
+        assert!(!socket.nodelay().unwrap());
+        drop(socket);
+        assert_eq!(listener.metrics().snapshot().active_connections, 1);
+        let accepting = Arc::clone(&listener);
+        let task = tokio::spawn(async move { accepting.accept_socket().await });
+        let rejected = TcpStream::connect(address).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while listener.metrics().snapshot().connection_limit_rejections == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(guard);
+        let third = TcpStream::connect(address).await.unwrap();
+        let (socket, _, guard) = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!socket.nodelay().unwrap());
+        assert_eq!(listener.metrics().snapshot().accepted_connections, 2);
+        drop((guard, socket, first, rejected, third));
+        assert_eq!(listener.metrics().snapshot().active_connections, 0);
     }
 }

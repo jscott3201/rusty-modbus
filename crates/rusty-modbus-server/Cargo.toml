@@ -17,15 +17,24 @@ rusty-modbus-types = { path = "../rusty-modbus-types", version = "0.1.1" }
 rusty-modbus-codec = { path = "../rusty-modbus-codec", version = "0.1.1" }
 rusty-modbus-frame = { path = "../rusty-modbus-frame", version = "0.1.1" }
 rusty-modbus-tcp = { path = "../rusty-modbus-tcp", version = "0.1.1" }
+rusty-modbus-tls = { path = "../rusty-modbus-tls", version = "0.1.1", optional = true }
 tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net"] }
 bytes = "1"
 parking_lot = "0.12"
 thiserror = "2"
 tracing = { version = "0.1.44", features = ["attributes"] }
 
+[features]
+default = []
+tls = ["dep:rusty-modbus-tls"]
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 rusty-modbus-client = { path = "../rusty-modbus-client" }
+rcgen = "0.14"
+tempfile = "3"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+tokio-rustls = "0.26"
 
 [package.metadata.docs.rs]
 all-features = true

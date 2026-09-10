@@ -35,7 +35,7 @@ smaller API when they only need codec, transport, server, or simulator pieces.
 | `rusty-modbus-rtu` | Serial RTU and RTU-over-TCP transports, plus timestamp-driven RTU assembly. |
 | `rusty-modbus-tls` | Modbus/TCP Security TLS transport and role primitives using rustls; not a composed secured server. |
 | `rusty-modbus-client` | Pipelined async client with typed function-code methods. |
-| `rusty-modbus-server` | Async server and pluggable `DataStore` trait. |
+| `rusty-modbus-server` | TCP server and `DataStore`; optional bounded identity-only TLS foundation, not role authorization. |
 | `rusty-modbus-pool` | Connection pooling for client workloads. |
 | `rusty-modbus-gateway` | TCP frontend with RTU-over-TCP backend routing and frame translation; not a physical serial gateway. |
 | `rusty-modbus-sim` | YAML-driven static Modbus/TCP simulator library and installable executable. |
@@ -51,7 +51,7 @@ by the GitHub release pipeline instead of crates.io.
 | `rtu` | no | `rusty_modbus::rtu` configuration and RTU-over-TCP support, without physical serial dependencies |
 | `rtu-serial` | no | Physical serial support in `rusty_modbus::rtu`, in addition to `rtu` |
 | `rtu-tcp` | no | Alias for `rtu`, without physical serial dependencies |
-| `tls` | no | `rusty_modbus::tls` |
+| `tls` | no | `rusty_modbus::tls`; with `server`, identity-only TLS server types and `TlsServer` alias |
 | `server` | no | `rusty_modbus::server`, `rusty_modbus::Server` |
 | `gateway` | no | `rusty_modbus::gateway`, `rusty_modbus::Gateway` |
 | `pool` | no | `rusty_modbus::pool` |
@@ -59,6 +59,72 @@ by the GitHub release pipeline instead of crates.io.
 
 The foundation crates `types`, `codec`, and `frame` are always re-exported by
 the facade crate.
+
+## Identity-only TLS server
+
+This opt-in Rust API is deliberately narrower than a role-authorized Modbus
+Security server. Enable `rusty-modbus-server/tls`, or facade `server` + `tls`
+(`full` also includes both). TLS-only does not enable the server dependency;
+default TCP and server-only normal graphs remain TLS-free.
+
+```rust,no_run
+use std::sync::Arc;
+use rusty_modbus::{server::{InMemoryStore, StoreConfig, TlsModbusServerConfig}, tls::TlsServerConfig, TlsServer};
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let config = TlsModbusServerConfig::new(TlsServerConfig {
+    server_cert: "server.pem".into(), server_key: "server-key.pem".into(),
+    ca_cert: "client-ca.pem".into(), ..TlsServerConfig::default()
+});
+let server = TlsServer::start(config, Arc::new(InMemoryStore::new(StoreConfig::default()))).await?;
+let address = server.local_addr();
+let counters = server.metrics();
+let outcome = server.stop().await;
+# let _ = (address, counters, outcome);
+# Ok(()) }
+```
+
+Paths are operator-supplied certificates/keys, not shipped credentials. New
+startup rejects `require_client_cert=false`, **any** `authz_callback`, zero
+capacities/timeouts and capacities above Tokio's semaphore bound before bind.
+Invalid certificate/CA/key errors also precede bind. Errors are the separate
+`IdentityTlsConfigError` / `TlsServerStartError` types; existing server error enums
+are unchanged.
+
+All CA-authenticated peers have datastore access. Role metadata is not consulted
+per request, and absent or unparseable roles retain the legacy extractor's `None`
+handling. Do not infer strict R-22 validation, role authorization, PKI lifecycle,
+or full Security-profile completion. The low-level TLS config's allow-all
+`authorize` default and listener behavior have not changed.
+
+Defaults: address `0.0.0.0:802`, Unit ID 1, connection maximum 64, handshake
+maximum 16, handshake timeout 5s, shutdown timeout 10s, read/write timeouts 30s,
+nodelay true, no IP ACL. Every TCP-admitted socket consumes the effective
+`min(max_connections, tls.max_connections)` bound through handshake/session.
+Concurrent handshakes use the lesser of that bound and `max_handshakes`; excess
+sockets are rejected, not queued in unbounded tasks. IP ACL/nodelay precede TLS;
+TLS uses the existing TLS 1.3/512-byte-fragment builder. Read/write `None` disables
+that I/O timer, not connection bounds or stop cancellation.
+
+Requests are sequential per connection, with existing dispatch, broadcast/unit,
+PDU-bound and atomic-store behavior. The new config omits ineffective pipelining
+or outbound TCP settings. `stop()` uses the existing one-deadline, caller-
+cancellation-safe coordinator: pending handshakes cancel, admitted requests
+drain, and unfinished yielding tasks are aborted/joined. Drop is a nonwaiting
+abort request; a non-yielding handler can delay cleanup and immediate rebinding
+is not promised.
+
+`TlsServerMetrics` embeds unchanged `ServerMetrics`. Its TCP accepted/active
+counts include unauthenticated handshake sockets; separate TLS counters expose
+starts, successes, failures, timeouts, cancellations, saturation and active
+sessions. Snapshots are nontransactional. No key/certificate contents are logged.
+No Python/CLI/simulator/gateway API is added. Pipelining, complete peer-context
+authorization and performance/scale qualification remain later work.
+
+The lower-level composition seams are `TcpServerListener::accept_socket`
+(ACL/reservation/nodelay before returning a plaintext TCP socket and lifetime
+guard) and `TlsServerAcceptor::accept` (TLS upgrade plus explicit framed I/O
+timeouts and owned role). Upgrade callers retain guards and own handshake and
+authorization policy. See [ADR 0010](adr/0010-identity-only-tls-server.md).
 
 ## Physical RTU configuration
 

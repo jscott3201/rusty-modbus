@@ -1,32 +1,25 @@
 //! TLS server listener — accepts incoming Modbus/TCP Security connections.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
-
-use futures_util::StreamExt;
-use rusty_modbus_frame::mbap::MbapCodec;
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
-use tokio_util::codec::Framed;
 use tracing::{debug, trace};
 
+use crate::TlsServerAcceptor;
 use crate::config::TlsServerConfig;
 use crate::connect::{TlsRecvStream, TlsSink};
 use crate::error::TlsError;
-use crate::tls_config;
 
 /// TLS server listener with mutual authentication.
 pub struct TlsServerListener {
     tcp_listener: TcpListener,
-    tls_acceptor: TlsAcceptor,
+    tls_acceptor: TlsServerAcceptor,
 }
 
 impl TlsServerListener {
     /// Bind and prepare for TLS-secured Modbus connections.
     #[tracing::instrument(level = "debug", skip(config), fields(addr = %addr))]
     pub async fn bind(addr: SocketAddr, config: &TlsServerConfig) -> Result<Self, TlsError> {
-        let rustls_config = tls_config::build_server_config(config)?;
-        let tls_acceptor = TlsAcceptor::from(Arc::new(rustls_config));
+        let tls_acceptor = TlsServerAcceptor::new(config)?;
 
         let tcp_listener = TcpListener::bind(addr).await.map_err(TlsError::Io)?;
         debug!(addr = %tcp_listener.local_addr()?, "TLS Modbus listener bound");
@@ -54,34 +47,14 @@ impl TlsServerListener {
         tcp_stream.set_nodelay(true)?;
 
         debug!(peer_addr = %addr, "starting TLS server handshake");
-        let tls_stream = self
-            .tls_acceptor
-            .accept(tcp_stream)
-            .await
-            .map_err(|e| TlsError::Handshake(e.to_string()))?;
-
-        // Extract the client role from its leaf certificate before framing.
-        let role = tls_stream
-            .get_ref()
-            .1
-            .peer_certificates()
-            .and_then(<[_]>::first)
-            .and_then(|cert| crate::role::extract_role(cert.as_ref()));
+        let (sink, stream, role) = self.tls_acceptor.accept(tcp_stream, None, None).await?;
         debug!(
             peer_addr = %addr,
             role = role.as_deref().unwrap_or("null"),
             "TLS server handshake complete"
         );
 
-        let framed = Framed::new(tls_stream, MbapCodec);
-        let (sink, stream) = framed.split();
-
-        Ok((
-            TlsSink::new(sink, None),
-            TlsRecvStream::new(stream, None),
-            addr,
-            role,
-        ))
+        Ok((sink, stream, addr, role))
     }
 
     /// Local address the listener is bound to.

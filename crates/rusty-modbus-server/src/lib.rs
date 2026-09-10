@@ -17,6 +17,8 @@ mod lifecycle;
 mod response_encode;
 pub mod server;
 pub mod store;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 pub use config::{DeviceIdentification, ServerConfig};
 pub use error::{ServerConfigError, ServerError};
@@ -24,3 +26,8 @@ pub use lifecycle::{ServerMetrics, ShutdownOutcome};
 pub use server::ModbusServer;
 pub use store::memory::{InMemoryStore, StoreConfig, StoreError};
 pub use store::{CommEventLog, CommEventLogMeta, DataStore};
+#[cfg(feature = "tls")]
+pub use tls::{
+    IdentityTlsConfigError, TlsModbusServer, TlsModbusServerConfig, TlsServerMetrics,
+    TlsServerStartError,
+};

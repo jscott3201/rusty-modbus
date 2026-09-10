@@ -8,7 +8,7 @@ use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
 use rusty_modbus_frame::frame::{Frame, FrameHeader};
 use rusty_modbus_tcp::transport::{TransportSink, TransportStream};
 use rusty_modbus_tls::config::{TlsClientConfig, TlsServerConfig};
-use rusty_modbus_tls::{TlsServerListener, TlsTransport};
+use rusty_modbus_tls::{TlsServerAcceptor, TlsServerListener, TlsTransport};
 use rusty_modbus_types::MbapHeader;
 use tempfile::NamedTempFile;
 
@@ -111,6 +111,44 @@ fn make_frame(txn: u16, unit: u8, pdu: &[u8]) -> Frame {
         header: FrameHeader::Mbap(MbapHeader::new(txn, unit, pdu.len() as u16)),
         pdu: Bytes::copy_from_slice(pdu),
     }
+}
+
+#[tokio::test]
+async fn admitted_socket_upgrade_preserves_owned_role_and_read_timeout() {
+    let certs = generate_certs_custom(&["localhost"], true, Some("operator"));
+    let config = TlsServerConfig {
+        server_cert: certs.server_cert_path.path().into(),
+        server_key: certs.server_key_path.path().into(),
+        ca_cert: certs.ca_cert_path.path().into(),
+        ..TlsServerConfig::default()
+    };
+    let acceptor = TlsServerAcceptor::new(&config).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let (_, mut stream, role) = acceptor
+            .accept(socket, Some(Duration::from_millis(20)), None)
+            .await
+            .unwrap();
+        assert_eq!(role.as_deref(), Some("operator"));
+        assert!(matches!(
+            stream.recv().await,
+            Err(rusty_modbus_tcp::TransportError::Timeout)
+        ));
+    });
+    let client = TlsClientConfig {
+        ca_cert: certs.ca_cert_path.path().into(),
+        client_cert: certs.client_cert_path.path().into(),
+        client_key: certs.client_key_path.path().into(),
+        ..TlsClientConfig::default()
+    };
+    let halves = TlsTransport::connect(address, &client).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), server)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(halves);
 }
 
 #[tokio::test]

@@ -2,12 +2,12 @@
   "schema_version": 1,
   "baseline": {
     "repository": "jscott3201/rusty-modbus",
-    "base_sha": "908a147c358f9947166c413b194d338827570b1c",
+    "base_sha": "7ab1486bb288d56dac2b1275a6937968da953bae",
     "base_ref": "dev",
     "as_of": "2026-09-09",
     "review_seed": "Externally supplied, gitignored forward-plan review matrix read from the local planning bundle on 2026-08-23; historical seed only and not a clean-checkout dependency",
     "requirement_count": 70,
-    "test_count": 55
+    "test_count": 56
   },
   "certification_notice": "This ledger reports repository-scoped evidence for named profiles. It does not state or imply Modbus Organization conformance testing or certification.",
   "documents": [
@@ -3054,6 +3054,15 @@
       "owner": "maintainers",
       "implementation_refs": [
         {
+          "path": "crates/rusty-modbus-server/src/tls.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/server.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/acceptor.rs"
+        },
+        {
           "path": "crates/rusty-modbus-tls/src/tls_config.rs"
         },
         {
@@ -3064,6 +3073,7 @@
         }
       ],
       "test_ids": [
+        "spec_tls_server",
         "spec_tls_transport"
       ],
       "evidence_gap": null,
@@ -3122,6 +3132,9 @@
       "owner": "maintainers",
       "implementation_refs": [
         {
+          "path": "crates/rusty-modbus-server/src/tls.rs"
+        },
+        {
           "path": "crates/rusty-modbus-tls/src/config.rs"
         },
         {
@@ -3135,10 +3148,11 @@
         }
       ],
       "test_ids": [
+        "spec_tls_server",
         "spec_tls_transport"
       ],
       "evidence_gap": {
-        "detail": "Mutual certificate authentication is the default, but require_client_cert=false enables a nonconformant compatibility mode.",
+        "detail": "The opt-in Rust identity-only TlsModbusServer requires mutual certificate authentication and rejects require_client_cert=false before bind. The unchanged low-level TlsServerListener still supports that explicit compatibility opt-out. This foundation does not establish role authorization or full Security-profile qualification.",
         "owner": "maintainers",
         "follow_up": "PR-501"
       },
@@ -3243,7 +3257,7 @@
         "spec_tls_transport"
       ],
       "evidence_gap": {
-        "detail": "TLS peer roles are extracted but are not composed into every server request authorization decision.",
+        "detail": "TLS peer roles are extracted but are not composed into every server request authorization decision. The identity-only TlsModbusServer deliberately grants all CA-authenticated peers datastore access and rejects configured authorization callbacks at startup; full peer-context and role-authorized serving remain unimplemented.",
         "owner": "maintainers",
         "follow_up": "PR-501, PR-502"
       },
@@ -3279,7 +3293,7 @@
         "spec_tls_transport"
       ],
       "evidence_gap": {
-        "detail": "Authorization policy primitives are not composed into a secured server response path.",
+        "detail": "Authorization policy primitives are not composed into a secured server denial response path. Identity-only TlsModbusServer rejects any authz_callback before bind rather than silently ignoring it; per-request role authorization and denial remain separate PR-502 work.",
         "owner": "maintainers",
         "follow_up": "PR-502"
       },
@@ -3305,6 +3319,18 @@
       "owner": "maintainers",
       "implementation_refs": [
         {
+          "path": "crates/rusty-modbus-server/src/tls.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-server/src/lifecycle.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tcp/src/listener.rs"
+        },
+        {
+          "path": "crates/rusty-modbus-tls/src/acceptor.rs"
+        },
+        {
           "path": "crates/rusty-modbus-tls/src/tls_config.rs"
         },
         {
@@ -3315,10 +3341,11 @@
         }
       ],
       "test_ids": [
+        "spec_tls_server",
         "spec_tls_transport"
       ],
       "evidence_gap": {
-        "detail": "TLS configuration exposes bounds, but no composed secured server enforces them through the full handshake lifecycle.",
+        "detail": "The Rust-only identity-only TlsModbusServer now bounds all admitted sockets, concurrent handshakes and handshake duration, and reuses owned stop/drain/join behavior with separate TLS counters. The low-level TLS listener retains its legacy unenforced limits. Role-authorized serving, full peer context, other public serving surfaces and performance/scale qualification remain outside this foundation; test mapping alone is not recorded execution evidence.",
         "owner": "maintainers",
         "follow_up": "PR-501"
       },
@@ -3327,7 +3354,7 @@
           "profile": "modbus-security",
           "disposition": "compatibility-deviation",
           "evidence": "implemented",
-          "reason": "TLS configuration exposes bounds without a composed secured server that enforces and observes the full handshake lifecycle."
+          "reason": "Bounds are enforced by the opt-in identity-only Rust runtime, not by the unchanged low-level TLS listener or a complete role-authorized Security server."
         }
       ]
     },
@@ -4494,6 +4521,16 @@
         "TCP-009",
         "TCP-011",
         "TCP-013"
+      ],
+      "category": null
+    },
+    {
+      "id": "spec_tls_server",
+      "path": "crates/rusty-modbus-conformance/tests/spec_tls_server.rs",
+      "requirement_ids": [
+        "SEC-002",
+        "SEC-004",
+        "SEC-009"
       ],
       "category": null
     },

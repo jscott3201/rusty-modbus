@@ -12,7 +12,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::Instant;
 use tracing::warn;
 
-fn saturating_instant_add(start: Instant, duration: Duration) -> Instant {
+pub(crate) fn saturating_instant_add(start: Instant, duration: Duration) -> Instant {
     if let Some(deadline) = start.checked_add(duration) {
         return deadline;
     }
