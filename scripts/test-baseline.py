@@ -5760,5 +5760,520 @@ class ScopedBudgetScenarioTests(unittest.TestCase):
             self.assertEqual(result.stdout, b"")
 
 
+class StudyObservationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.s = ScopedBudgetScenarioTests("test_v3_scopes_budgets_to_explicit_different_studies")
+        self.addCleanup(self.s.doCleanups)
+        self.s.setUp()
+        self.s.enable_v3()
+        self.f, self.t = self.s.f, self.s.t
+
+    def export(self) -> dict:
+        return baseline.study_observations(self.f.root, self.f.contract_relative, self.f.bindings_relative)
+
+    def expected_metric(self, artifact: baseline.ArtifactRun, scenario: dict, metric: str) -> dict:
+        # Independent fixture oracle: raw source fields and hand-derived within-run
+        # statistics, not the exporter or the stored report's metric object.
+        if scenario["kind"] == "criterion_estimate":
+            raw_path = artifact.run_dir / scenario["sources"][0]["private_estimates_json"]
+            mean = json.loads(raw_path.read_text())["mean"]
+            return {"confidence_level": mean["confidence_interval"]["confidence_level"],
+                    "lower": mean["confidence_interval"]["lower_bound"], "point": mean["point_estimate"],
+                    "standard_error": mean["standard_error"], "unit": "nanoseconds",
+                    "upper": mean["confidence_interval"]["upper_bound"]}
+        samples = [json.loads((artifact.run_dir / source["raw_stdout"]).read_text()) for source in scenario["sources"]]
+        values = [sample["throughput_ops_sec"] if metric == "throughput" else sample["latency_ms"]["p99"] for sample in samples]
+        count = len(values)
+        mean = sum(values) / count
+        deviation = math.sqrt(sum((value - mean) ** 2 for value in values) / (count - 1)) if count > 1 else 0.0
+        ordered = sorted(values)
+        return {"unit": "operations_per_second" if metric == "throughput" else "milliseconds",
+                "recorded_statistics": {"count": count, "min": min(values), "max": max(values),
+                                        "median": (ordered[(count - 1) // 2] + ordered[count // 2]) / 2,
+                                        "mean": mean, "sample_stddev": deviation,
+                                        "coefficient_of_variation": None if mean == 0 else deviation / mean}}
+
+    def expected_rows(self) -> list[dict]:
+        rows = []
+        studies = {study["study_id"]: study for study in self.f.contract["variance_studies"]}
+        rules = {rule["budget_rule_id"]: rule for rule in self.f.contract["budget_rules"]}
+        for binding in self.f.bindings["budget_bindings"]:
+            rule = rules[binding["budget_rule_id"]]
+            for study_id in binding["study_ids"]:
+                for run in studies[study_id]["runs"]:
+                    evidence_id = run["artifact_evidence_id"]
+                    artifact = self.f.artifacts[evidence_id]
+                    scenario = next(item for item in self.s.report(artifact)["scenarios"]
+                                    if self.s.individual(item)["sha256"] == rule["scenario_identity"]["identity_sha256"])
+                    metric = self.expected_metric(artifact, scenario, rule["metric"])
+                    rows.append({
+                        "budget_rule_id": rule["budget_rule_id"], "declared_scenario_id": rule["scenario_identity"]["scenario_id"],
+                        "study_id": study_id, "artifact_evidence_id": evidence_id,
+                        "target_sha": run["target_sha"], "run_id": run["run_id"],
+                        "artifact_content_sha256": self.f.independent_content_sha256(artifact.run_dir),
+                        "scenario_identity_sha256": rule["scenario_identity"]["identity_sha256"],
+                        "metric": rule["metric"], "budget_unit": rule["unit"], "budget_direction": rule["direction"],
+                        "report_unit": metric["unit"], "recorded_metric": metric,
+                    })
+        return sorted(rows, key=lambda row: (row["budget_rule_id"], row["study_id"], row["artifact_evidence_id"]))
+
+    def test_exports_complete_recorded_metrics_with_verified_provenance(self) -> None:
+        expected = self.expected_rows()
+        before = self.f.inventory()
+        result = self.export()
+        self.assertEqual(result["observations_schema"], {"name": "benchmark-study-observations", "version": 1})
+        self.assertEqual(result["observations"], expected)
+        self.assertEqual(result["observation_count"], 8)
+        self.assertEqual(result["observation_unit"], "retained_bench-full_run")
+        self.assertEqual(result["verification"], self.f.verify())
+        self.assertEqual(result["cross_run_analysis"], {"state": "not_performed", "reason": "recorded_run_metric_export_only"})
+        self.assertEqual(result["budget_evaluation"]["state"], "not_evaluated")
+        self.assertEqual(result["performance_enforcement"]["state"], "not_eligible")
+        self.assertEqual(result["not_verified"], self.s.V2_NOT_VERIFIED[1:])
+        self.assertEqual(self.f.inventory(), before)
+
+    def test_cli_is_canonical_read_only_utf8_from_alternate_cwd(self) -> None:
+        before = self.f.inventory()
+        result = self.f.cli("study-observations", self.f.contract_relative, self.f.bindings_relative, ascii_stdout=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b"")
+        document = json.loads(result.stdout)
+        self.assertEqual(document["observations"], self.expected_rows())
+        self.assertEqual(result.stdout, self.t.encoded(document))
+        self.assertEqual(self.f.inventory(), before)
+
+    def test_existing_v3_and_artifact_scenarios_bytes_are_frozen(self) -> None:
+        manifest = copy.deepcopy(self.f.bindings)
+        manifest["artifacts"].sort(key=lambda item: item["evidence_id"])
+        manifest["budget_bindings"].sort(key=lambda item: item["budget_rule_id"])
+        for binding in manifest["budget_bindings"]:
+            binding["study_ids"].sort()
+        verified = []
+        for study in self.f.contract["variance_studies"]:
+            for run in study["runs"]:
+                artifact = self.f.artifacts[run["artifact_evidence_id"]]
+                verified.append({"evidence_id": run["artifact_evidence_id"], "study_id": study["study_id"],
+                                 "target_sha": run["target_sha"], "run_id": run["run_id"], "mode": "bench-full",
+                                 "content_sha256": self.f.independent_content_sha256(artifact.run_dir),
+                                 "producer_set_sha256": run["producer_set_sha256"], "scenario_set_sha256": run["scenario_set_sha256"]})
+        matches = []
+        for rule in sorted(self.f.contract["budget_rules"], key=lambda item: item["budget_rule_id"]):
+            scope = next(item["study_ids"] for item in manifest["budget_bindings"] if item["budget_rule_id"] == rule["budget_rule_id"])
+            matches.append({"budget_rule_id": rule["budget_rule_id"], "declared_scenario_id": rule["scenario_identity"]["scenario_id"],
+                            "identity_sha256": rule["scenario_identity"]["identity_sha256"], "metric": rule["metric"],
+                            "unit": rule["unit"], "direction": rule["direction"], "study_ids": scope, "matched_run_count": 2 * len(scope)})
+        expected = {
+            "verification_schema": {"name": "benchmark-controlled-artifact-verification", "version": 3},
+            "contract": {"contract_id": self.f.contract["contract_id"], "canonical_sha256": manifest["contract_sha256"]},
+            "binding_manifest": {"schema": manifest["binding_schema"], "canonical_sha256": hashlib.sha256(self.t.encoded(manifest)).hexdigest()},
+            "artifact_content_schema": {"name": "benchmark-artifact-content", "version": 1},
+            "producer_set_schema": {"name": "benchmark-producer-set", "version": 1},
+            "scenario_set_schema": {"name": "benchmark-scenario-set", "version": 1},
+            "scenario_identity_schema": {"name": "benchmark-scenario-identity", "version": 1},
+            "verified_artifacts": sorted(verified, key=lambda row: row["evidence_id"]), "matched_budget_rules": matches,
+            "verification_scope": "all_variance_run_artifacts_and_explicit_study_budget_scenario_metrics_only",
+            "qualification": "integrity_only_not_authentication_producer_execution_attestation_or_owner_authorization",
+            "performance_enforcement": {"state": "not_eligible", "reason": "artifact_binding_verification_only"},
+            "budget_evaluation": {"state": "not_evaluated", "reason": "scenario_metric_matching_only"},
+            "not_verified": self.s.V2_NOT_VERIFIED[1:],
+        }
+        self.assertEqual(baseline.controlled_artifact_bindings_json_text(self.f.bindings).encode(), self.t.encoded(manifest))
+        result = self.f.cli("verify-controlled-artifacts", self.f.contract_relative, self.f.bindings_relative)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.t.encoded(expected))
+        artifact = self.f.artifacts["evidence-run-current-a"]
+        entries = []
+        for scenario in self.s.report(artifact)["scenarios"]:
+            entry = self.s.individual(scenario)
+            pairs = (("p99_latency", "ms", "maximum", "milliseconds"),
+                     ("throughput", "operations_per_second", "minimum", "operations_per_second")) if scenario["kind"] == "tcp_stress" else (("mean_estimate", "ns", "maximum", "nanoseconds"),)
+            entry["metrics"] = [{"metric": metric, "unit": unit, "direction": direction, "report_unit": report_unit}
+                                for metric, unit, direction, report_unit in pairs]
+            entries.append(entry)
+        scenarios = {
+            "artifact_scenarios_schema": {"name": "benchmark-artifact-scenarios", "version": 1},
+            "scenario_identity_schema": {"name": "benchmark-scenario-identity", "version": 1},
+            "source": {"mode": "bench-full", "run_id": artifact.run_id, "target_sha": self.f.sha},
+            "scenarios": sorted(entries, key=lambda item: item["sha256"]),
+            "verification_scope": "individual_scenario_identity_and_supported_metric_descriptors_only",
+            "qualification": "integrity_only_not_authentication_producer_execution_attestation_or_owner_authorization",
+            "budget_evaluation": {"state": "not_evaluated", "reason": "scenario_metric_matching_only"},
+            "performance_enforcement": {"state": "not_eligible", "reason": "artifact_scenario_derivation_only"},
+            "not_verified": ["producer_set_sha256", "scenario_set_sha256", *self.s.V2_NOT_VERIFIED[1:]],
+        }
+        result = self.f.cli("artifact-scenarios", artifact.run_dir.relative_to(self.f.root).as_posix())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.t.encoded(scenarios))
+
+    def assert_failure(self, *, before_artifacts: bool = False) -> None:
+        before = self.f.inventory()
+        with contextlib.ExitStack() as stack:
+            if before_artifacts:
+                stack.enter_context(mock.patch.object(baseline, "_load_benchmark_artifact_evidence", side_effect=AssertionError("premature artifact load")))
+                stack.enter_context(mock.patch.object(baseline.subprocess, "run", side_effect=AssertionError("premature Git")))
+                stack.enter_context(mock.patch.object(baseline, "_sha256", side_effect=AssertionError("premature payload hash")))
+            with self.assertRaises(baseline.BaselineError):
+                self.export()
+        result = self.f.cli("study-observations", self.f.contract_relative, self.f.bindings_relative)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, b"")
+        self.assertTrue(result.stderr.startswith(b"baseline: "))
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertEqual(self.f.inventory(), before)
+
+    def test_one_run_record_keeps_repetitions_and_shared_source_identity(self) -> None:
+        result = self.export()
+        rows = result["observations"]
+        self.assertEqual(len(rows), 8)  # Two TCP scopes of two runs, plus four Criterion rows.
+        self.assertEqual(len({row["artifact_evidence_id"] for row in rows}), 4)
+        self.assertEqual(len({(row["budget_rule_id"], row["study_id"], row["artifact_evidence_id"]) for row in rows}), 8)
+        sources = {item["evidence_id"]: item for item in result["verification"]["verified_artifacts"]}
+        for row in rows:
+            source = sources[row["artifact_evidence_id"]]
+            self.assertEqual((row["target_sha"], row["run_id"], row["artifact_content_sha256"]),
+                             (source["target_sha"], source["run_id"], source["content_sha256"]))
+            metric = row["recorded_metric"]
+            self.assertEqual(row["report_unit"], metric["unit"])
+            if row["metric"] == "mean_estimate":
+                self.assertEqual(set(metric), {"confidence_level", "lower", "point", "standard_error", "unit", "upper"})
+                self.assertEqual(metric["confidence_level"], 0.95)
+                self.assertEqual((row["budget_unit"], row["report_unit"]), ("ns", "nanoseconds"))
+            else:
+                self.assertEqual(set(metric), {"recorded_statistics", "unit"})
+                self.assertEqual(metric["recorded_statistics"]["count"], 5)
+                self.assertIs(type(metric["recorded_statistics"]["count"]), int)
+                if row["metric"] == "p99_latency":
+                    self.assertEqual((row["budget_unit"], row["report_unit"]), ("ms", "milliseconds"))
+        self.assertEqual(result["metric_semantics"], {
+            "throughput": "recorded_per_repetition_throughput_statistics_within_one_run",
+            "p99_latency": "statistics_of_recorded_per_repetition_p99s_not_pooled_latency",
+            "mean_estimate": "producer_within_run_estimate_and_interval_not_cross_run_uncertainty",
+        })
+        self.assertNotIn("independent_sample_count", result)
+        self.assertEqual(result["not_verified"], result["verification"]["not_verified"])
+
+    def test_contract_and_scope_permutations_preserve_sorted_export_bytes(self) -> None:
+        first = self.t.encoded(self.export())
+        self.f.bindings["artifacts"].reverse()
+        self.f.bindings["budget_bindings"].reverse()
+        for binding in self.f.bindings["budget_bindings"]:
+            binding["study_ids"].reverse()
+        self.f.contract["variance_studies"].reverse()
+        self.f.contract["budget_rules"].reverse()
+        self.f.contract["evidence_retention"].reverse()
+        for study in self.f.contract["variance_studies"]:
+            study["runs"].reverse()
+        self.f.write_documents()  # Canonical pins are unchanged; no refresh needed.
+        self.assertEqual(self.t.encoded(self.export()), first)
+        result = self.f.cli("study-observations", self.f.contract_relative, self.f.bindings_relative)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, first)
+
+    def test_metrics_mutation_changes_objects_not_workload_identity(self) -> None:
+        original = self.export()
+        artifact = self.f.artifacts["evidence-run-current-b"]
+        self.t.rewrite_stress(artifact, measurement_delta=25)
+        self.t.refresh_content_pin("evidence-run-current-b")
+        result = self.export()
+        self.assertEqual(result["observations"], self.expected_rows())
+        before = next(row for row in original["observations"] if row["artifact_evidence_id"] == "evidence-run-current-b" and row["metric"] == "throughput")
+        after = next(row for row in result["observations"] if row["artifact_evidence_id"] == "evidence-run-current-b" and row["metric"] == "throughput")
+        self.assertEqual(before["scenario_identity_sha256"], after["scenario_identity_sha256"])
+        self.assertNotEqual(before["artifact_content_sha256"], after["artifact_content_sha256"])
+        self.assertEqual(after["recorded_metric"]["recorded_statistics"]["mean"], before["recorded_metric"]["recorded_statistics"]["mean"] + 25)
+
+    def test_null_cv_and_signed_zero_preserve_complete_original_report_units(self) -> None:
+        artifact = self.f.artifacts["evidence-run-current-a"]
+        summary_path = artifact.run_dir / "summary.json"
+        summary = json.loads(summary_path.read_text())
+        for sample in summary["stress_samples"]:
+            sample["throughput_ops_sec"] = 0.0
+            sample["per_client_ops_sec"] = 0.0
+        raw_path = self.f.root / summary["criterion_results"][0]["source"]
+        estimates = json.loads(raw_path.read_text())
+        estimates["mean"]["point_estimate"] = -0.0
+        estimates["mean"]["standard_error"] = -0.0
+        estimates["mean"]["confidence_interval"].update(lower_bound=-0.0, upper_bound=1e300)
+        baseline.write_json(raw_path, estimates)
+        summary["criterion_results"] = baseline.parse_criterion_estimates(artifact.run_dir / "criterion/raw/01-tcp_throughput", self.f.root)
+        baseline.write_json(artifact.run_dir / "criterion/parsed-estimates.json", summary["criterion_results"])
+        baseline.write_json(summary_path, summary)
+        self.t.rewrite_stress(artifact)  # Existing fixture renderer/validator, no new estimator.
+        self.t.refresh_content_pin("evidence-run-current-a")
+        result = self.export()
+        self.assertEqual(result["observations"], self.expected_rows())
+        rows = [row for row in result["observations"] if row["artifact_evidence_id"] == "evidence-run-current-a"]
+        throughput = next(row["recorded_metric"] for row in rows if row["metric"] == "throughput")
+        self.assertIsNone(throughput["recorded_statistics"]["coefficient_of_variation"])
+        self.assertEqual(throughput["recorded_statistics"]["count"], 5)
+        criterion = next(row["recorded_metric"] for row in rows if row["metric"] == "mean_estimate")
+        self.assertEqual(math.copysign(1, criterion["point"]), -1)
+        self.assertEqual(math.copysign(1, criterion["standard_error"]), -1)
+        self.assertEqual(criterion["upper"], 1e300)
+        self.assertEqual(criterion["unit"], "nanoseconds")
+        encoded = self.t.encoded(result)
+        self.assertIn(b'"point":-0.0', encoded)
+        self.assertIn(b'"coefficient_of_variation":null', encoded)
+
+    def test_saved_report_is_not_the_metric_source_and_invalid_raw_boolean_fails(self) -> None:
+        artifact = self.f.artifacts["evidence-run-old-b"]
+        report_path = artifact.run_dir / "benchmark-report-v1.json"
+        report = json.loads(report_path.read_text())
+        for scenario in report["scenarios"]:
+            if scenario["kind"] == "tcp_stress":
+                scenario["metrics"]["p99_latency"]["recorded_statistics"]["mean"] = 999999
+        baseline.write_json(report_path, report)
+        baseline.write_checksums(self.f.root, artifact.run_dir)
+        self.t.refresh_content_pin("evidence-run-old-b")
+        self.assertEqual(self.export()["observations"], self.expected_rows())
+        raw = next(artifact.run_dir.glob("commands/*/command.stdout"))
+        sample = json.loads(raw.read_text())
+        sample["throughput_ops_sec"] = True
+        baseline.write_json(raw, sample)
+        baseline.write_checksums(self.f.root, artifact.run_dir)
+        self.t.refresh_content_pin("evidence-run-old-b")
+        self.assert_failure()
+
+    def test_limit_values_and_opaque_method_ids_are_not_evaluated_or_dispatched(self) -> None:
+        original = self.export()
+        for limit in (0, 1e300):
+            for rule in self.f.contract["budget_rules"]:
+                rule["limit"] = limit
+            self.f.refresh_contract_pin()
+            result = self.export()
+            self.assertEqual(result["observations"], original["observations"])
+            self.assertEqual(result["cross_run_analysis"], original["cross_run_analysis"])
+            self.assertEqual(result["budget_evaluation"], original["budget_evaluation"])
+            self.assertEqual(result["performance_enforcement"], original["performance_enforcement"])
+        method_id = "synthetic-not-an-executable-method"
+        self.f.contract["statistical_method"]["method_id"] = method_id
+        for study in self.f.contract["variance_studies"]:
+            study["statistical_method"]["method_id"] = method_id
+            for run in study["runs"]:
+                run["statistical_method"]["method_id"] = method_id
+        self.f.refresh_contract_pin()
+        result = self.export()
+        self.assertEqual(result["observations"], original["observations"])
+        self.assertEqual(result["not_verified"], self.s.V2_NOT_VERIFIED[1:])
+
+    def test_requires_v3_and_rejects_scope_pin_paths_and_saved_results_before_payloads(self) -> None:
+        original = copy.deepcopy(self.f.bindings)
+        for version in (1, 2):
+            self.f.bindings = copy.deepcopy(original)
+            self.f.bindings["binding_schema"]["version"] = version
+            del self.f.bindings["scenario_identity_schema"], self.f.bindings["budget_bindings"]
+            if version == 1:
+                del self.f.bindings["producer_set_schema"], self.f.bindings["scenario_set_schema"]
+            self.f.write_documents()
+            with self.assertRaisesRegex(baseline.BaselineError, "version 3"):
+                self.export()
+            self.assert_failure(before_artifacts=True)
+            self.assertEqual(self.f.verify()["verification_schema"]["version"], version)
+        for case in ("pin", "scope", "path", "schema", "saved"):
+            self.f.bindings = copy.deepcopy(original)
+            if case == "pin":
+                self.f.bindings["contract_sha256"] = "f" * 64
+            elif case == "scope":
+                self.f.bindings["budget_bindings"][0]["study_ids"] = ["unknown-study"]
+            elif case == "path":
+                self.f.bindings["artifacts"][-1]["run_dir"] = "../outside"
+            elif case == "schema":
+                self.f.bindings["binding_schema"]["version"] = True
+            else:
+                self.f.bindings = {"verification_schema": {"name": "benchmark-controlled-artifact-verification", "version": 3}}
+            self.f.write_documents()
+            self.assert_failure(before_artifacts=True)
+        self.f.bindings_path.write_bytes(b"\xff")
+        self.assert_failure(before_artifacts=True)
+
+    def test_row_cap_is_inclusive_preflight_only_and_not_a_verifier_limit(self) -> None:
+        self.assertEqual(baseline.STUDY_OBSERVATIONS_MAX_ROWS, 4096)
+        with mock.patch.object(baseline, "STUDY_OBSERVATIONS_MAX_ROWS", 8):
+            self.assertEqual(self.export()["observation_count"], 8)
+        with mock.patch.object(baseline, "STUDY_OBSERVATIONS_MAX_ROWS", 7):
+            with mock.patch.object(baseline, "_load_benchmark_artifact_evidence", side_effect=AssertionError("row cap must precede artifact work")):
+                with self.assertRaisesRegex(baseline.BaselineError, "row limit"):
+                    self.export()
+            self.assertEqual(self.f.verify()["verification_schema"]["version"], 3)
+
+    def test_default_row_cap_rejects_large_structurally_valid_scopes_before_artifact_work(self) -> None:
+        # 65 budgets * 64 declared runs = 4160 rows. Extra artifacts are deliberately
+        # unbuilt: this tests valid document/scope preflight, not their source validity.
+        for number in range(60):
+            run = copy.deepcopy(self.s.current["runs"][0])
+            run.update(run_id=f"unbuilt-run-{number}", artifact_evidence_id=f"unbuilt-evidence-{number}")
+            self.s.current["runs"].append(run)
+            evidence = copy.deepcopy(next(item for item in self.f.contract["evidence_retention"] if item["evidence_id"] == "evidence-run-current-a"))
+            evidence.update(evidence_id=run["artifact_evidence_id"], sha256=f"{10000 + number:064x}", locator=f"opaque:unbuilt/{number}")
+            self.f.contract["evidence_retention"].append(evidence)
+            relative = f"unbuilt/baseline-v1/{self.f.sha}/{run['run_id']}"
+            (self.f.root / relative).mkdir(parents=True)
+            self.f.bindings["artifacts"].append({"evidence_id": run["artifact_evidence_id"], "run_dir": relative})
+        for number in range(62):
+            rule = copy.deepcopy(self.s.mean)
+            rule["budget_rule_id"] = f"extra-budget-{number}"
+            rule["scenario_identity"]["identity_sha256"] = f"{20000 + number:064x}"
+            self.f.contract["budget_rules"].append(rule)
+        self.f.bindings["budget_bindings"] = [
+            {"budget_rule_id": rule["budget_rule_id"], "study_ids": [study["study_id"] for study in self.f.contract["variance_studies"]]}
+            for rule in self.f.contract["budget_rules"]
+        ]
+        self.f.refresh_contract_pin()  # Explicitly proves whole-contract structural validity.
+        with self.assertRaisesRegex(baseline.BaselineError, "row limit"):
+            self.export()
+        self.assert_failure(before_artifacts=True)
+
+    def test_later_source_and_set_failures_never_emit_partial_observations(self) -> None:
+        artifact = self.f.artifacts["evidence-run-old-b"]
+        raw_path = next(artifact.run_dir.glob("commands/*/command.stderr"))
+        raw_path.write_bytes(b"unverified retained change")
+        self.assert_failure()
+        baseline.write_checksums(self.f.root, artifact.run_dir)
+        self.assert_failure()  # Correct checksum inventory still fails declared content.
+        self.t.refresh_content_pin("evidence-run-old-b")
+        self.t.rewrite_stress(artifact, duration_delta=1)
+        self.t.refresh_content_pin("evidence-run-old-b")
+        self.assert_failure()  # Updated content does not bypass declared scenario-set checks.
+
+    def test_later_selected_target_failure_does_not_flush_captured_rows(self) -> None:
+        actual_index = baseline._individual_scenario_index
+        count = 0
+
+        def faulty_index(report, *, capture_metrics=False):
+            nonlocal count
+            count += 1
+            index = actual_index(report, capture_metrics=capture_metrics)
+            if count == 4:
+                # Fault injection after real v3 source/set validation isolates capture's
+                # all-or-nothing behavior; equal honest set digests imply equal membership.
+                del index[self.s.p99["scenario_identity"]["identity_sha256"]]
+            return index
+
+        output, stderr = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with mock.patch.object(baseline, "_individual_scenario_index", faulty_index), \
+                mock.patch.object(baseline, "__file__", str(self.f.script)), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(baseline.main(["study-observations", self.f.contract_relative, self.f.bindings_relative]), 1)
+        self.assertEqual(count, 4)
+        self.assertEqual(output.getvalue(), b"")
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_unbudgeted_study_is_still_verified_before_export_success(self) -> None:
+        self.s.p99["scenario_identity"]["identity_sha256"] = self.s.throughput["scenario_identity"]["identity_sha256"]
+        for binding in self.f.bindings["budget_bindings"]:
+            binding["study_ids"] = [self.s.current["study_id"]]
+        self.f.refresh_contract_pin()
+        result = self.export()
+        self.assertEqual(result["observation_count"], 6)
+        self.assertEqual(len(result["verification"]["verified_artifacts"]), 4)
+        self.assertEqual({row["study_id"] for row in result["observations"]}, {self.s.current["study_id"]})
+        next(self.f.artifacts["evidence-run-old-b"].run_dir.glob("commands/*/command.stderr")).write_bytes(b"unbudgeted source is invalid")
+        self.assert_failure()
+
+    def test_captured_objects_are_detached_and_default_indexes_keep_their_shape(self) -> None:
+        original = baseline._individual_scenario_index
+        source_metrics = []
+
+        def index(report, *, capture_metrics=False):
+            result = original(report, capture_metrics=capture_metrics)
+            self.assertTrue(capture_metrics)
+            for entry in result.values():
+                source_metrics.extend(entry["_recorded_metrics"].values())
+            return result
+
+        with mock.patch.object(baseline, "_individual_scenario_index", index):
+            result = self.export()
+        snapshot = self.t.encoded(result)
+        for metric in source_metrics:
+            metric["unit"] = "mutated after export"
+            if "recorded_statistics" in metric:
+                metric["recorded_statistics"]["mean"] = 999999
+        self.assertEqual(self.t.encoded(result), snapshot)
+        report = baseline.build_benchmark_report(self.f.root, self.f.artifacts["evidence-run-current-a"].run_dir)
+        self.assertTrue(all("_recorded_metrics" not in entry for entry in original(report).values()))
+
+    def test_one_source_pass_releases_full_views_and_preserves_read_only_edges(self) -> None:
+        actual_load, actual_index, actual_run, actual_open = (
+            baseline._load_benchmark_artifact_evidence, baseline._individual_scenario_index, subprocess.run, Path.open
+        )
+        previous = []
+        index_refs = []
+        loads, indexes, git_calls = [], [], []
+
+        class Tracked(dict):
+            pass
+
+        def load(root, path):
+            self.assertTrue(all(reference() is None for reference in previous + index_refs))
+            fingerprint, report = actual_load(root, path)
+            fingerprint, report = Tracked(fingerprint), Tracked(report)
+            previous[:] = [weakref.ref(fingerprint), weakref.ref(report)]
+            loads.append(path)
+            return fingerprint, report
+
+        def index(report, *, capture_metrics=False):
+            self.assertTrue(capture_metrics)
+            result = Tracked(actual_index(report, capture_metrics=capture_metrics))
+            index_refs.append(weakref.ref(result))
+            indexes.append(1)
+            return result
+
+        def local_git(argv, **kwargs):
+            self.assertEqual(tuple(argv[:5]), ("git", "--no-lazy-fetch", "--no-replace-objects", "cat-file", "blob"))
+            self.assertIn(argv[5], (f"{self.f.sha}:Cargo.lock", f"{self.f.sha}:benchmarks/Cargo.toml"))
+            git_calls.append(argv[5])
+            return actual_run(argv, **kwargs)
+
+        def read_only_open(path, mode="r", *args, **kwargs):
+            self.assertIn(mode, ("r", "rb"))
+            self.assertTrue(path in (self.f.contract_path, self.f.bindings_path) or any(path.is_relative_to(artifact.run_dir) for artifact in self.f.artifacts.values()))
+            return actual_open(path, mode, *args, **kwargs)
+
+        before = self.f.inventory()
+        output, stderr = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with contextlib.ExitStack() as stack:
+            for name in ("verify_controlled_artifacts", "_matched_scenario_observation", "run_mode", "run_benchmarks",
+                         "bootstrap_repository", "collect_environment", "utc_now", "load_policy_file",
+                         "controlled_evaluate_artifacts", "write_json", "write_checksums"):
+                stack.enter_context(mock.patch.object(baseline, name, side_effect=AssertionError(name)))
+            for name in ("socket.create_connection", "urllib.request.urlopen"):
+                stack.enter_context(mock.patch(name, side_effect=AssertionError(name)))
+            stack.enter_context(mock.patch.object(baseline, "_load_benchmark_artifact_evidence", load))
+            stack.enter_context(mock.patch.object(baseline, "_individual_scenario_index", index))
+            rebuild = stack.enter_context(mock.patch.object(baseline, "build_benchmark_report", wraps=baseline.build_benchmark_report))
+            stack.enter_context(mock.patch.object(baseline.subprocess, "run", local_git))
+            stack.enter_context(mock.patch.object(Path, "open", read_only_open))
+            stack.enter_context(mock.patch.object(baseline, "__file__", str(self.f.script)))
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            stack.enter_context(contextlib.redirect_stderr(stderr))
+            self.assertEqual(baseline.main(["study-observations", self.f.contract_relative, self.f.bindings_relative]), 0)
+        self.assertEqual(len(loads), 4)
+        self.assertEqual(len(indexes), 4)
+        self.assertEqual(rebuild.call_count, 4)
+        self.assertEqual(len(git_calls), 8)
+        self.assertTrue(all(reference() is None for reference in previous + index_refs))
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["observations"], self.expected_rows())
+        self.assertEqual(stderr.getvalue(), "")
+        for forbidden in (b'"environment"', b'"sources"', b'"_recorded_metrics"', b'"independent_sample_count"'):
+            self.assertNotIn(forbidden, output.getvalue())
+        self.assertEqual(self.f.inventory(), before)
+
+    def test_missing_local_objects_and_usage_errors_fail_without_fallback(self) -> None:
+        for args in (("--help",), ("study-observations", "--help")):
+            result = self.f.cli(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, b"")
+        for args in (("study-observations",), ("study-observations", self.f.contract_relative),
+                     ("study-observations", self.f.contract_relative, self.f.bindings_relative, "--latest")):
+            result = self.f.cli(*args)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stdout, b"")
+        (self.f.root / ".git/objects" / self.f.sha[:2] / self.f.sha[2:]).unlink()
+        self.assert_failure()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

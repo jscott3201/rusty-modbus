@@ -1113,6 +1113,163 @@ manifest/result bytes and `artifact-identities` v1 output remain unchanged.
 Broader PR-601 acceptance remains unfinished with no ledger promotion. See
 [ADR 0008](docs/adr/0008-scoped-budget-scenario-bindings.md).
 
+### Verified study-observation export
+
+`study-observations` exports **recorded metric objects**, not a run-level
+estimator or a statistical-method result. It requires the existing explicit
+binding manifest **v3**; there is no new binding version or implicit upgrade.
+All prior verification and derivation interfaces retain their output shapes and
+canonical bytes.
+
+```bash
+python3 scripts/baseline.py study-observations --help
+python3 scripts/baseline.py study-observations \
+  inputs/controlled-evidence.json inputs/artifact-bindings-v3.json
+```
+
+The example filenames must refer to explicitly supplied documents, not shipped
+production evidence. Both are strict repository-relative UTF-8 JSON files,
+anchored to the script's repository root, not the caller's current directory.
+The existing path, schema, canonical-pin, scope, alias and resource guards apply.
+V1/v2 manifests are rejected before artifact work rather than upgraded.
+
+The exporter runs **all v3 verification gates once per artifact**: actual source
+checksums, full-mode/run identity, producer/scenario sets, individual scenario
+identity and metric/unit matching. This includes artifacts in unbudgeted studies.
+It captures the selected metric from the exact rebuilt report used by that
+successful verification pass. Saved verification results, reports or datasets
+are not accepted as proof. A late failure produces no partial stdout result.
+
+#### Records, provenance and coverage
+
+The new root schema is `benchmark-study-observations` version 1, under
+`observations_schema`. Its fields are:
+
+- `verification`: the existing complete v3 verification result, embedded without
+  changing its schema or values. It carries canonical contract/manifest pins,
+  every verified artifact identity and each effective budget/study scope.
+- `observation_unit`: the fixed string `retained_bench-full_run`.
+- `observation_count`: the number of exported rows, **not** an independent sample
+  count or a count of latency samples.
+- `observations`: one row for every
+  `(budget_rule_id, study_id, artifact_evidence_id)` in the explicit scopes,
+  sorted lexically by that tuple. Missing or duplicate keys fail closed.
+- `metric_semantics`: fixed descriptions of the three recorded metric forms.
+- `verification_scope`: `recorded_run_metrics_from_verified_explicit_budget_study_scopes_only`.
+- `qualification`: the existing integrity-only/no-authentication/no-producer-
+  attestation/no-owner-authorization qualification.
+- `cross_run_analysis`: fixed `state: not_performed` and
+  `reason: recorded_run_metric_export_only`.
+- `budget_evaluation`, `performance_enforcement`, and `not_verified`: unchanged
+  copies of the embedded v3 values, including `not_evaluated` and `not_eligible`.
+
+Every observation row has exactly these fields:
+
+| Fields | Meaning |
+|---|---|
+| `budget_rule_id`, `study_id` | Explicit declared scope; join to the embedded matched budget rules |
+| `declared_scenario_id` | Descriptive contract label, not a selector or derived artifact identity |
+| `artifact_evidence_id` | Join to `verification.verified_artifacts[].evidence_id` |
+| `target_sha`, `run_id` | Verified retained run identity |
+| `artifact_content_sha256` | The same whole-content digest as the joined artifact's `content_sha256` |
+| `scenario_identity_sha256` | Exact individual scenario identity matched during v3 verification |
+| `metric`, `budget_unit`, `budget_direction` | The declared metric tuple, without evaluating its limit |
+| `report_unit` | Actual original unit of the rebuilt report metric |
+| `recorded_metric` | A detached copy of the **complete** matched report metric object |
+
+The embedded `matched_budget_rules[].matched_run_count` provides per-scope row
+coverage; their sum equals `observation_count`. `verified_artifacts` still covers
+unbudgeted studies even though their metrics are not exported. A source used by
+multiple budgets appears in multiple rows with the **same artifact identity and
+digest**. Those rows are not evidence of additional or independent executions.
+
+#### Preserve within-run metric structure
+
+TCP `throughput` and `p99_latency` retain exactly:
+
+```json
+{
+  "recorded_statistics": {
+    "coefficient_of_variation": 0.0,
+    "count": 5,
+    "max": 0.3,
+    "mean": 0.3,
+    "median": 0.3,
+    "min": 0.3,
+    "sample_stddev": 0.0
+  },
+  "unit": "milliseconds"
+}
+```
+
+This is an illustrative synthetic p99 object, not production evidence. All keys
+and numeric types are preserved, including integer `count`, null CV when the
+source report records it, and supported signed-zero values. Throughput uses the
+original `operations_per_second` unit. P99 uses original `milliseconds`; a
+separate `budget_unit: ms` never causes a rewrite or scaling.
+
+Here `count` denotes repetitions **within one retained run**. A five-repetition
+run yields one row per selected budget, not five run observations. P99 statistics
+summarize the recorded per-repetition p99 values. They are not a pooled latency
+distribution or a newly estimated global p99, and the exporter does not select
+the mean, median or another field as a run-level estimator.
+
+Criterion `mean_estimate` retains exactly `confidence_level`, `lower`, `point`,
+`standard_error`, `unit`, and `upper`, with original unit `nanoseconds` even when
+the budget unit is `ns`. These are the producer's **within-run estimate and
+interval**, not cross-run uncertainty. The whole object is copied; `point` is
+not selected as the scalar observation and intervals are not combined.
+
+The fixed `metric_semantics` labels are:
+
+- `throughput`: `recorded_per_repetition_throughput_statistics_within_one_run`;
+- `p99_latency`: `statistics_of_recorded_per_repetition_p99s_not_pooled_latency`;
+- `mean_estimate`: `producer_within_run_estimate_and_interval_not_cross_run_uncertainty`.
+
+The existing report builder still recomputes and validates its established
+within-run aggregates from raw evidence. The exporter adds **no further
+aggregation, estimator selection, effects, variance analysis, uncertainty
+calculation, distribution pooling or limit comparison**. Contract method IDs
+remain opaque declarations and are not dispatched to executable methods. Changing
+a valid limit, including zero or extreme finite values, changes relevant pins,
+not the exported observations or non-evaluation states.
+
+#### Bounds, effects and interpretation
+
+There is an export-only, inclusive cap of **4,096 observation rows**. The expected
+count is calculated from the validated contract/scopes before artifact payload
+hashing, local Git queries or report loading. Excess is rejected, never truncated.
+Ordinary v3 verification is not restricted by this export cap. Existing input
+1 MiB/depth-64, artifact/budget/study limits and source-parser resource
+characteristics remain unchanged.
+
+A private capture mode reuses the verification flow and current scenario index.
+Only selected metric objects are deep-copied into rows. Full reports, fingerprint
+inventories and metric views are released before the next artifact; detached
+bounded rows and compact provenance survive. No full report, raw file, command
+arguments or runner/environment payload is exported.
+
+Success is one canonical sorted-key, compact UTF-8 JSON document followed by one
+LF, independent of stdout locale. Exit 0 means complete verified export only;
+input/verification failure is exit 1 with stderr only and no partial JSON or
+handled-input traceback. Usage errors exit 2 and help exits 0. The module entry
+point is `study_observations(repo_root, contract_json, bindings_json)`; input
+failures raise `BaselineError` and its result uses the existing canonical JSON
+encoding.
+
+The command makes no input writes, selects no latest run, and performs no
+collection, network/fetch, Cargo/benchmark execution, policy call or clock-based
+decision. Local target-SHA Git objects remain required, with no fetch fallback.
+Documents/artifacts must remain unchanged; this is not an atomic or race-proof
+snapshot. If a caller saves stdout, keep that output outside the source artifacts.
+
+Source/target matching does not authenticate evidence or establish runner control,
+independent executions, a statistical method, continued retention, approval,
+baseline acceptance, budget outcomes or enforcement eligibility. The v3
+`not_verified` list remains unchanged. Future inferential-method/estimator choices
+are explicitly deferred; broader PR-601 acceptance remains unfinished with no
+ledger promotion. See [ADR 0009](docs/adr/0009-verified-study-observations.md).
+
 The measured report below remains the June 2026 baseline; the harness does not
 replace those numbers until a clean, committed-SHA run is recorded.
 
